@@ -4,9 +4,11 @@
 # All build dependencies must therefore be present in the image; the
 # build never apt-installs anything at run time.
 #
-# TODO: pin a concrete debian:trixie digest before the first
-# Phase 1 build and record it in releases/{version}/manifest.json.
-FROM debian:trixie@sha256:REPLACE_WITH_CONCRETE_DIGEST
+# Re-pin the digest periodically (quarterly, or after a security
+# refresh of Debian's base image) so the build picks up patched base
+# layers. Each pin should be recorded in the matching release's
+# manifest.json under `container_image`.
+FROM debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8 \
