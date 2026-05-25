@@ -1,0 +1,257 @@
+name: build-kernel
+on:
+  push:
+    tags: ['v*.*.*-hardened*']
+
+# Per spec §6.1: the build stages do NOT hold publish credentials.
+# FORGEJO_PUBLISH_TOKEN and FASTLY_PURGE_TOKEN are referenced only by
+# publish.yml. The kernel signing key is the one credential this
+# workflow has. Compromise of the Forgejo host implies key compromise;
+# the trade-off is accepted for build automation.
+
+jobs:
+  build:
+    runs-on: linux-hardened
+    strategy:
+      matrix:
+        target:
+          - { distro: debian, release: trixie, arch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags so the derive-version step can read the
+          # tagger date and validate against the actual tag object.
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: derive version
+        id: ver
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME:-${{ github.ref_name }}}"
+          # Fail loud on malformed tags. A typo'd tag would otherwise
+          # silently feed garbage to wget in the next step.
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([0-9]+)$ ]]; then
+            echo "tag does not match vX.Y.Z-hardenedN: $tag" >&2
+            exit 1
+          fi
+          kernel="${BASH_REMATCH[1]}"
+          hardened="${BASH_REMATCH[2]}"
+          # Tagger date is stable across rebase/amend; commit timestamp
+          # is not. Lightweight tags have no tagger date, in which case
+          # taggerdate:unix yields empty and we fall back, with a log
+          # line so it's visible in CI output.
+          sde=$(git for-each-ref --format='%(taggerdate:unix)' "refs/tags/$tag")
+          if [[ -z $sde ]]; then
+            echo "lightweight tag, falling back to commit timestamp for SOURCE_DATE_EPOCH" >&2
+            sde=$(git log -1 --format=%ct "$tag^{commit}")
+          fi
+          echo "kernel=$kernel"             >> "$GITHUB_OUTPUT"
+          echo "hardened=$hardened"         >> "$GITHUB_OUTPUT"
+          echo "source_date_epoch=$sde"     >> "$GITHUB_OUTPUT"
+
+      - name: fetch sources
+        env:
+          KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
+          HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          DISTRO: ${{ matrix.target.distro }}
+          RELEASE: ${{ matrix.target.release }}
+          ARCH: ${{ matrix.target.arch }}
+          WORKDIR: ${{ runner.temp }}/work
+        run: |
+          mkdir -p "$WORKDIR"
+          ./build/fetch-sources.sh
+
+      - name: apply patches
+        env:
+          WORKDIR: ${{ runner.temp }}/work
+          KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
+          HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+        run: ./build/apply-patches.sh
+
+      - name: build per-target container
+        run: |
+          set -euo pipefail
+          image="hardened-build:${{ matrix.target.distro }}-${{ matrix.target.release }}-${{ matrix.target.arch }}"
+          docker build \
+            -t "$image" \
+            -f containers/Dockerfile.${{ matrix.target.distro }}-${{ matrix.target.release }}-${{ matrix.target.arch }} \
+            containers/
+          echo "BUILD_IMAGE=$image" >> "$GITHUB_ENV"
+
+      - name: locate prior release's final.config
+        id: prior
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/work"
+          # Find the most recent committed release that isn't the current
+          # tag. Its final.config feeds configure-kernel.sh's new-symbol
+          # guard. If none exists (first build, or releases/ is empty),
+          # leave PREVIOUS_CONFIG_PATH unset and the guard skips with a
+          # warning.
+          tag="${{ github.ref_name }}"
+          prior=""
+          if [[ -d releases ]]; then
+            while IFS= read -r d; do
+              [[ -d $d ]] || continue
+              name=$(basename "$d")
+              [[ $name == "$tag" ]] && continue
+              if [[ -f $d/final.config ]]; then prior=$name; fi
+            done < <(find releases -maxdepth 1 -mindepth 1 -type d | sort -V)
+          fi
+          if [[ -n $prior ]]; then
+            cp "releases/$prior/final.config" "${{ runner.temp }}/work/previous.config"
+            echo "previous=releases/$prior/final.config" >> "$GITHUB_OUTPUT"
+            echo "found prior release final.config: $prior"
+          else
+            echo "previous=" >> "$GITHUB_OUTPUT"
+            echo "no prior release final.config found; new-symbol guard will skip"
+          fi
+
+      - name: fetch distro source + stock config (network ON)
+        env:
+          KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
+          DISTRO: ${{ matrix.target.distro }}
+          RELEASE: ${{ matrix.target.release }}
+          ARCH: ${{ matrix.target.arch }}
+          WORKDIR: ${{ runner.temp }}/work
+        run: |
+          set -euo pipefail
+          # Run as root inside the container so apt-get update works.
+          # Pass the host runner's UID/GID through so the script can
+          # chown its outputs to the right owner, which lets the next
+          # step (running as the host user) read them. Without this,
+          # bind-mount ownership ends up as root and the unprivileged
+          # build step fails on access.
+          docker run --rm \
+            --user 0:0 \
+            -v "$WORKDIR:/home/builder/build" \
+            -v "$(pwd):/repo:ro" \
+            -w /home/builder/build \
+            -e KERNEL_VERSION -e DISTRO -e RELEASE -e ARCH \
+            -e WORKDIR=/home/builder/build \
+            -e RUNNER_UID="$(id -u)" \
+            -e RUNNER_GID="$(id -g)" \
+            "$BUILD_IMAGE" \
+            bash -lc '/repo/build/fetch-distro-source.sh'
+
+      - name: configure + build (network OFF)
+        env:
+          KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
+          HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          DISTRO: ${{ matrix.target.distro }}
+          RELEASE: ${{ matrix.target.release }}
+          ARCH: ${{ matrix.target.arch }}
+          REVISION: ${{ github.run_number }}
+          SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
+          WORKDIR: ${{ runner.temp }}/work
+        run: |
+          set -euo pipefail
+          # All sources are now in $WORKDIR. The kernel build runs with
+          # no network access; any package that wasn't installed at
+          # image-build time or fetched in the previous step is a bug.
+          # PREVIOUS_CONFIG_PATH is set only if the prior step found a
+          # committed final.config for an earlier release. The script
+          # treats it as optional and skips the new-symbol guard if the
+          # var is empty or the file is missing.
+          prev_arg=()
+          if [[ -f "$WORKDIR/previous.config" ]]; then
+              prev_arg+=(-e PREVIOUS_CONFIG_PATH=/home/builder/build/previous.config)
+          fi
+          docker run --rm --network=none \
+            -v "$WORKDIR:/home/builder/build" \
+            -v "$(pwd):/repo:ro" \
+            -w /home/builder/build \
+            -e KERNEL_VERSION -e HARDENED_REVISION \
+            -e DISTRO -e RELEASE -e ARCH \
+            -e REVISION -e SOURCE_DATE_EPOCH \
+            -e WORKDIR=/home/builder/build \
+            -e STOCK_CONFIG_PATH=/home/builder/build/stock.config \
+            "${prev_arg[@]}" \
+            "$BUILD_IMAGE" \
+            bash -lc '/repo/build/configure-kernel.sh && /repo/build/build-debs.sh'
+
+      - name: sign kernel + modules
+        env:
+          WORKDIR: ${{ runner.temp }}/work
+          SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
+          SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
+        run: |
+          set -euo pipefail
+          # Materialize the key + cert into the runner's tmpfs only for
+          # this step. Bash here-strings preserve the secret bytes
+          # verbatim; `printf '%s'` would mis-handle embedded % (format
+          # specifier) and truncate at any NUL byte. The signing key
+          # lives in Forgejo's secret store rather than an HSM.
+          umask 077
+          keydir=$(mktemp -d)
+          trap 'rm -rf "$keydir"' EXIT
+          cat <<<"$SIGNING_KEY"  > "$keydir/signing.key"
+          cat <<<"$SIGNING_CERT" > "$keydir/signing.crt"
+
+          # Validate immediately. A malformed secret here produces a
+          # clear "invalid PEM" error rather than a cryptic failure
+          # inside sign-file/sbsign later.
+          openssl pkey -in "$keydir/signing.key" -noout
+          openssl x509 -in "$keydir/signing.crt" -noout
+
+          SIGNING_KEY_PATH="$keydir/signing.key" \
+          SIGNING_CERT_PATH="$keydir/signing.crt" \
+            ./build/sign-debs.sh
+
+      - name: attach .debs to release
+        # Forgejo's actions/upload-artifact support varies by version,
+        # so we don't depend on it. Instead, attach the signed .debs as
+        # release assets on the tag that triggered this build; publish.yml
+        # fetches them from the release via the Forgejo API. Release
+        # assets persist (workflow artifacts time out), which doubles as
+        # an audit record.
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_RELEASE_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          WORKDIR: ${{ runner.temp }}/work
+        run: |
+          set -euo pipefail
+          api="https://git.unredacted.org/api/v1/repos/${GITHUB_REPOSITORY}"
+
+          # Create the release as a draft. If it already exists (e.g. a
+          # rebuild of the same tag), fetch its id instead. The release
+          # stays draft until an operator publishes it.
+          rel=$(curl -sS -o /tmp/rel.json -w '%{http_code}' \
+              -X POST \
+              -H "Authorization: token $FORGEJO_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"tag_name\":\"$TAG\",\"draft\":true,\"name\":\"$TAG\"}" \
+              "$api/releases")
+          case "$rel" in
+            201) ;;
+            409|422)
+              # Already exists; fetch.
+              curl -fsS -H "Authorization: token $FORGEJO_TOKEN" \
+                   "$api/releases/tags/$TAG" > /tmp/rel.json ;;
+            *) echo "create release failed: HTTP $rel" >&2; cat /tmp/rel.json >&2; exit 1 ;;
+          esac
+          rel_id=$(jq -r '.id' /tmp/rel.json)
+          [[ -n $rel_id && $rel_id != null ]] || { echo "no release id" >&2; exit 1; }
+
+          upload_asset() {
+            local path=$1 name=$2
+            echo "uploading $name"
+            curl -fsS -X POST \
+              -H "Authorization: token $FORGEJO_TOKEN" \
+              -F "attachment=@$path" \
+              "$api/releases/$rel_id/assets?name=$name" \
+              > /dev/null
+          }
+
+          for deb in "$WORKDIR"/*.deb; do
+            [[ -f $deb ]] || continue
+            upload_asset "$deb" "$(basename "$deb")"
+          done
+
+          # Attach the final .config too, so publish.yml can commit it
+          # into releases/{tag}/final.config for the next build's
+          # new-symbol guard.
+          if [[ -f $WORKDIR/final.config ]]; then
+            upload_asset "$WORKDIR/final.config" "final.config"
+          fi

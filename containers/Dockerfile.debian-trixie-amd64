@@ -1,0 +1,71 @@
+# Build environment for Debian 13 (trixie) amd64 kernel packages.
+#
+# The kernel build itself runs inside this image with `--network=none`.
+# All build dependencies must therefore be present in the image; the
+# build never apt-installs anything at run time.
+#
+# TODO: pin a concrete debian:trixie digest before the first
+# Phase 1 build and record it in releases/{version}/manifest.json.
+FROM debian:trixie@sha256:REPLACE_WITH_CONCRETE_DIGEST
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8
+
+# Build deps per spec §6.2 plus what the Debian linux source package
+# requires for `dpkg-buildpackage -us -uc -b`.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        bc \
+        bison \
+        flex \
+        libssl-dev \
+        libelf-dev \
+        dwarves \
+        rsync \
+        kmod \
+        cpio \
+        python3 \
+        debhelper \
+        kernel-wedge \
+        libdw-dev \
+        libpci-dev \
+        pkg-config \
+        zstd \
+        sbsigntool \
+        mokutil \
+        pesign \
+        dpkg-dev \
+        fakeroot \
+        quilt \
+        xz-utils \
+        bzip2 \
+        gzip \
+        ca-certificates \
+        gnupg \
+        wget \
+        patch \
+        gawk \
+        libncurses-dev \
+        liblz4-tool \
+    # Enable deb-src so `apt-get source linux` works inside the container.
+    # Handles both the deb822-format sources.list.d/debian.sources (trixie
+    # default) and the legacy /etc/apt/sources.list as a fallback.
+    && (sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources \
+        || sed -i 's|^deb \(.*\)$|deb \1\ndeb-src \1|' /etc/apt/sources.list) \
+    && apt-get update
+    # Note: apt-lists are intentionally NOT cleaned. fetch-distro-source.sh
+    # runs `apt-get source linux` at build time and needs the indexes
+    # available. Image size cost is ~50 MB.
+
+# A non-root build user keeps `dpkg-buildpackage` honest about its
+# expectations and reduces the blast radius of any build-time mishap.
+RUN useradd --create-home --shell /bin/bash --uid 1000 builder
+USER builder
+WORKDIR /home/builder/build
+
+# The build inputs (source tarball, patch, distro packaging) are
+# mounted in at run time. The signing key never enters this container;
+# kernel/module signing runs outside it on the runner host, against a
+# Forgejo-secret-supplied key materialized into tmpfs for the duration
+# of the signing step. See build/sign-debs.sh for the trust model.

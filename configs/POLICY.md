@@ -1,0 +1,157 @@
+# Kernel configuration policy
+
+The audit trail for every hardening choice that diverges from the distro stock config. Every change to `hardened-overlay.config` or a `{distro}-{release}-{arch}.config` requires a matching entry here.
+
+**Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
+
+The four sysctls in the "Tracing + debugging" section below are shipped as `configs/sysctl.d/99-hardened.conf` and installed by the linux-image .deb. They are not kernel CONFIG_ options; without the drop-in file, the documented policy values are not in effect.
+
+## Memory safety
+
+### `CONFIG_HARDENED_USERCOPY=y`
+
+Bounds-checks `copy_to_user` and `copy_from_user` against the source/destination object's slab/page boundaries. Catches a class of kernel-info-leak and kernel-write bugs at a small per-copy cost. Matches linux-hardened upstream.
+
+### `CONFIG_FORTIFY_SOURCE=y`
+
+Compile-time plus runtime checks on common string/memory functions. Catches overflows that would otherwise read or write past object bounds. Matches linux-hardened upstream.
+
+### `CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y`, `CONFIG_INIT_ON_FREE_DEFAULT_ON=y`
+
+Zero-initialize heap pages on alloc and free. Mitigates uninitialized-memory disclosure bugs and use-after-free reads. Boot-time `init_on_alloc=0 init_on_free=0` reverts for measurement. Matches linux-hardened upstream.
+
+### `CONFIG_INIT_STACK_ALL_ZERO=y`
+
+Zero-initialize on-stack variables at function entry. Closes the same class of disclosure bugs that init-on-alloc closes for heap. Matches linux-hardened upstream.
+
+### `CONFIG_SLAB_FREELIST_HARDENED=y`, `CONFIG_SLAB_FREELIST_RANDOM=y`
+
+Mitigates slab-overflow exploitation patterns. Negligible runtime overhead. Matches linux-hardened upstream.
+
+### `CONFIG_SHUFFLE_PAGE_ALLOCATOR=y`
+
+Randomizes the order pages are placed into the page allocator's free lists. Modest probabilistic mitigation, near-zero overhead. Matches linux-hardened upstream.
+
+### `CONFIG_RANDOMIZE_BASE=y`, `CONFIG_RANDOMIZE_MEMORY=y`
+
+KASLR for the kernel image and the direct-mapping region. Matches linux-hardened upstream.
+
+### `CONFIG_KFENCE=y`
+
+Low-overhead sampling-based detector for use-after-free, out-of-bounds, and invalid-free bugs in kernel allocators. Reports go to dmesg. Matches linux-hardened upstream.
+
+## Control-flow integrity
+
+### `CONFIG_STACKPROTECTOR_STRONG=y`
+
+GCC/Clang stack canary on functions that store local arrays or address-taken locals. Matches linux-hardened upstream.
+
+### `CONFIG_VMAP_STACK=y`
+
+Virtually-mapped kernel stacks with guard pages. Catches stack overflow with a fault instead of corrupting adjacent memory. Matches linux-hardened upstream.
+
+### `CONFIG_REFCOUNT_FULL=y`
+
+Refcount overflow and use-after-free detection on the `refcount_t` API. Matches linux-hardened upstream.
+
+### `CONFIG_BUG_ON_DATA_CORRUPTION=y`
+
+Promote in-kernel data-structure corruption checks (linked-list mangling, slab redzone violations, etc.) from a warning to a BUG. Stops exploitation that would otherwise proceed past a corruption check with only a dmesg line. Matches linux-hardened upstream.
+
+### `CONFIG_SCHED_STACK_END_CHECK=y`
+
+Verify the scheduler's stack-end sentinel on context switch. Catches kernel stack overflow that misses the VMAP_STACK guard. Matches linux-hardened upstream.
+
+## Module + kernel integrity
+
+### `CONFIG_STRICT_KERNEL_RWX=y`, `CONFIG_STRICT_MODULE_RWX=y`
+
+Enforces W^X for kernel and module text. Prevents writable-and-executable mappings inside the kernel. Matches linux-hardened upstream.
+
+### `CONFIG_DEBUG_WX=y`
+
+Boot-time warning if any W^X violation slips through the static enforcement. Matches linux-hardened upstream.
+
+### `CONFIG_MODULE_SIG=y`, `CONFIG_MODULE_SIG_FORCE=y`, `CONFIG_MODULE_SIG_ALL=y`, `CONFIG_MODULE_SIG_SHA256=y`
+
+Build module-signing into the kernel (`CONFIG_MODULE_SIG`), refuse unsigned modules at load (`MODULE_SIG_FORCE`), sign every module in the build (`MODULE_SIG_ALL`), use SHA-256 (`MODULE_SIG_SHA256`). The signing key is the project's Forgejo-resident key, except for DKMS-built out-of-tree modules which are signed with the user's machine-local MOK key. Matches linux-hardened upstream.
+
+### `CONFIG_SECURITY_LOCKDOWN_LSM=y`, `CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y`, `CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y`
+
+Force integrity-mode lockdown when Secure Boot is on, with the LSM initialized early enough to gate the early boot. Blocks `/dev/mem`, `/dev/kmem`, kexec, hibernate, ftrace of certain functions, and other paths that would let userspace modify the running kernel. Matches linux-hardened upstream.
+
+### `CONFIG_PANIC_ON_OOPS=y`
+
+Convert a kernel oops into a panic. An oops in a critical path is already a sign the kernel state may be corrupted; continuing risks exploitation of the corrupt state. Matches linux-hardened upstream.
+
+### `CONFIG_DEBUG_LIST=y`, `CONFIG_DEBUG_SG=y`, `CONFIG_DEBUG_CREDENTIALS=y`, `CONFIG_DEBUG_NOTIFIERS=y`
+
+Runtime sanity checks on linked lists, scatter-gather chains, credential struct integrity, and notifier-chain calls. Each catches a class of kernel memory-corruption bugs at modest cost. Matches linux-hardened upstream.
+
+## Attack-surface reduction (disabled features)
+
+### `CONFIG_DEVMEM=n`, `CONFIG_DEVKMEM=n`, `CONFIG_DEVPORT=n`
+
+`/dev/mem`, `/dev/kmem`, `/dev/port` allow direct physical-memory or port I/O from root. Removing them eliminates a primitive useful to local-root attackers.
+
+User impact: legacy tools that read `/dev/mem` (some firmware utilities, old X.org configurations) will fail. None have a modern use case on a sealed kernel. Matches linux-hardened upstream.
+
+### `CONFIG_IO_STRICT_DEVMEM=y`
+
+Hardens the reduced surface that remains by refusing `/dev/mem` access to memory regions claimed by drivers. Has no effect when the previous three options are off, but provides defense in depth if a future kernel reintroduces a `/dev/mem`-like interface. Matches linux-hardened upstream.
+
+### `CONFIG_PROC_KCORE=n`, `CONFIG_PROC_VMCORE=n`
+
+`/proc/kcore` and `/proc/vmcore` are kernel-memory dumps. Disabling removes a leak surface.
+
+User impact: live-system crash analysis via `crash` is unavailable. Coredump-based userspace debugging is unaffected. Matches linux-hardened upstream.
+
+### `CONFIG_KEXEC=n`, `CONFIG_KEXEC_FILE=n`
+
+kexec loads a new kernel image directly without going through the firmware. That bypasses Secure Boot.
+
+User impact: kdump's crash-collection mechanism cannot run. `systemctl kexec` falls back to firmware reboot. Matches linux-hardened upstream. [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) catalogues this.
+
+### `CONFIG_LEGACY_VSYSCALL_NONE=y`
+
+Disables the legacy `vsyscall` page entirely. Modern glibc has used `vDSO` for over a decade; only very old static binaries need vsyscall. Matches linux-hardened upstream.
+
+### `CONFIG_USELIB=n`, `CONFIG_MODIFY_LDT_SYSCALL=n`
+
+Ancient syscalls (`uselib`, `modify_ldt`) with security history and no modern use. Matches linux-hardened upstream.
+
+### `CONFIG_LEGACY_PTYS=n`
+
+The pre-Unix98 PTY allocation scheme. Replaced by `/dev/pts/` two decades ago. Removing reduces a small attack surface in the TTY code. Matches linux-hardened upstream.
+
+### `CONFIG_SECURITY_DMESG_RESTRICT=y`
+
+Default `kernel.dmesg_restrict=1`, which limits unprivileged reads of `dmesg` to root. Kernel logs frequently contain pointer values and slab addresses that an attacker can use to defeat KASLR. Matches linux-hardened upstream.
+
+## Sysctls
+
+Shipped as `configs/sysctl.d/99-hardened.conf` in the linux-image `.deb`. These are runtime knobs, not kconfig options, so they only take effect with the drop-in installed.
+
+### `kernel.unprivileged_userns_clone=0`
+
+Unprivileged user namespaces are a frequent local-privilege-escalation vector. Disabling them removes that attack surface.
+
+User impact: rootless Docker, rootless Podman, LXC unprivileged, Chromium sandbox, Snap, and Flatpak all stop working. [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) lists the sysctl opt-in.
+
+### `kernel.perf_event_paranoid=3`, `kernel.unprivileged_bpf_disabled=1`, `kernel.yama.ptrace_scope=2`
+
+Restricts perf events, BPF program loading, and ptrace to root. Together these close a large fraction of the "local user pivots to other-process or kernel" attack patterns.
+
+User impact: covered in [docs/users/incompatibilities.md](../docs/users/incompatibilities.md). Matches linux-hardened upstream.
+
+## Per-distro overrides
+
+| Distro    | Override file                          | Notes |
+| --------- | -------------------------------------- | ----- |
+| Debian 13 | `configs/debian-trixie-amd64.config`   | Empty as of Phase 1. Any divergence from `hardened-overlay.config` lands here with a corresponding entry above. |
+
+## Review process
+
+Each new symbol introduced by a kernel-version bump that is not classified by either `hardened-overlay.config` or a distro override is flagged by `build/configure-kernel.sh` and aborts the build. The human reviewer decides the value, adds the entry to the appropriate config file, adds the rationale here, and re-runs the build.
+
+Without this gate, a kernel-version bump can silently inherit defaults chosen for a different threat model.

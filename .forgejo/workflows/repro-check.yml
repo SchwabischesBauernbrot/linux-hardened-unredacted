@@ -1,0 +1,43 @@
+name: repro-check
+on:
+  schedule:
+    - cron: '0 3 * * *'  # nightly 03:00 UTC
+  workflow_run:
+    workflows: ["publish"]
+    types: [completed]
+
+jobs:
+  repro:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: pick the most recent release directory
+        id: rel
+        run: |
+          set -euo pipefail
+          if [[ ! -d releases ]]; then
+            echo "no releases/ directory — nothing to check"
+            exit 0
+          fi
+          ver=$(find releases -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort -V | tail -n1)
+          if [[ -z $ver ]]; then
+            echo "releases/ is empty — nothing to check"
+            exit 0
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: install diff tools
+        run: sudo apt-get update && sudo apt-get install -y jq diffoscope
+
+      - name: run repro check
+        if: steps.rel.outputs.version != ''
+        run: ./tools/repro-check.sh "${{ steps.rel.outputs.version }}"
+
+      - name: upload diff report on failure
+        if: failure() && steps.rel.outputs.version != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-diff-${{ steps.rel.outputs.version }}
+          path: repro-diff/
+          retention-days: 30

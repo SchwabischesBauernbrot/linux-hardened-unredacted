@@ -1,0 +1,109 @@
+# Known incompatibilities
+
+Living document. If you hit something not listed here, file an issue with kernel version, distro, and a reproducer.
+
+## Container runtimes: Docker rootless, Podman rootless, LXC unprivileged
+
+**Symptom:** `clone3: Operation not permitted` or `unshare: cannot unshare user namespace: operation not permitted`.
+
+**Cause:** the kernel ships `/etc/sysctl.d/99-hardened.conf` setting `kernel.unprivileged_userns_clone=0`. The file is a sysctl drop-in, not a baked-in CONFIG_ option, so you can override it.
+
+**Workaround:** drop a higher-numbered file in `/etc/sysctl.d/` that re-enables user namespaces, then reload:
+
+```
+echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/999-userns.conf
+sudo sysctl --system
+```
+
+This widens the kernel's attack surface; only do it if you need user namespaces.
+
+**Status:** working as designed.
+
+## Browser sandboxes: Chromium, Electron
+
+**Symptom:** Renderer or GPU process crashes with `clone3` errors; tabs fail to open.
+
+**Cause:** Chromium uses user namespaces for its sandbox.
+
+**Workaround:** Same `unprivileged_userns_clone=1` sysctl. Also affects Chromium under Snap or Flatpak.
+
+## Snap and Flatpak apps
+
+**Symptom:** App fails to launch with "permission denied" inside the sandbox.
+
+**Cause:** Snap and Flatpak rely on user namespaces and bubblewrap.
+
+**Workaround:** Same `unprivileged_userns_clone=1` sysctl.
+
+## VirtualBox
+
+**Symptom:** `modprobe vboxdrv` fails or guests fail to start.
+
+**Cause:** VirtualBox's out-of-tree modules historically conflict with hardened defaults around `kptr_restrict` and write-execute restrictions.
+
+**Workaround:** Use VirtualBox's current DKMS package. Report your version on the issue.
+
+**Status:** Tested per release; results in the table below.
+
+## QEMU/KVM
+
+**Status:** Standard in-tree KVM works. No known issues.
+
+## perf
+
+**Symptom:** `perf record` reports permission errors.
+
+**Cause:** `kernel.perf_event_paranoid` is higher than the default; non-root tracing is restricted.
+
+**Workaround:** Set `kernel.perf_event_paranoid=1` in `/etc/sysctl.d/`.
+
+## eBPF: bcc, bpftrace
+
+**Symptom:** eBPF programs fail to load for non-root users.
+
+**Cause:** `kernel.unprivileged_bpf_disabled=1`.
+
+**Workaround:** Run as root; or set `unprivileged_bpf_disabled=0` (broadens attack surface).
+
+## gdb attach to non-child processes
+
+**Symptom:** `ptrace: Operation not permitted` when attaching to a process you didn't fork.
+
+**Cause:** `kernel.yama.ptrace_scope=2` (or `=3`).
+
+**Workaround:** Temporarily `sudo sysctl kernel.yama.ptrace_scope=1`.
+
+## kexec and kdump
+
+**Symptom:** `kexec_load` fails; `kdump` cannot capture.
+
+**Cause:** `CONFIG_KEXEC=n` in the hardened config.
+
+**Workaround:** None. kexec is disabled by design. Use an alternative crash-collection mechanism.
+
+**Status:** Working as designed.
+
+## JIT-heavy workloads: V8, WebAssembly runtimes, JVM JIT
+
+**Symptom:** Higher syscall rejection rate; runtime fallbacks to interpreted paths.
+
+**Cause:** W^X enforcement plus restrictions on `mmap`-of-anonymous-with-`PROT_EXEC`.
+
+**Workaround:** Most JITs have already adapted (memfd + remap). If yours hasn't, report runtime and version.
+
+## NVIDIA proprietary driver
+
+Per-release test results:
+
+| linux-hardened version | nvidia DKMS version | Result |
+| ---------------------- | ------------------- | ------ |
+| _(not yet tested; first row appears with Phase 1)_ |  |  |
+
+## DKMS modules
+
+ZFS is in the Phase 1 acceptance criteria. WireGuard is in-tree as of 5.6 and should not need DKMS.
+
+| Module | linux-hardened version | Module version | Result |
+| ------ | ---------------------- | -------------- | ------ |
+| zfs    | _(not yet tested)_     |                |        |
+| wireguard-dkms | _(not yet tested)_ |              |        |

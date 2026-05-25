@@ -1,0 +1,115 @@
+name: publish
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v6.12.8-hardened1)"
+        required: true
+      component:
+        description: "Component: main | debug | archive"
+        default: main
+        required: true
+      distribution:
+        description: "Distribution / codename (trixie, bookworm, noble, jammy)"
+        default: trixie
+        required: true
+
+# Per spec §6.1: this stage holds publish credentials and does NOT have
+# source-fetch credentials. The build artifacts arrive as release assets
+# attached to the tag by build-kernel.yml; we fetch them via the Forgejo
+# release API rather than the actions/download-artifact action so the
+# pipeline works on every Forgejo version that supports releases.
+
+jobs:
+  publish:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download release assets
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_RELEASE_TOKEN }}
+          TAG: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          api="https://git.unredacted.org/api/v1/repos/${GITHUB_REPOSITORY}"
+          # Resolve the release by tag, then download each asset attached
+          # to it. The build-kernel workflow uploads .debs as assets named
+          # after the .deb file, so we save them under that name.
+          rel=$(curl -fsS -H "Authorization: token $FORGEJO_TOKEN" \
+                   "$api/releases/tags/$TAG")
+          count=$(jq '.assets | length' <<<"$rel")
+          if [[ "$count" -eq 0 ]]; then
+            echo "no assets attached to release $TAG" >&2
+            exit 1
+          fi
+          jq -r '.assets[] | "\(.id)\t\(.name)"' <<<"$rel" \
+              | while IFS=$'\t' read -r id name; do
+                  case "$name" in
+                    *.deb|final.config) ;;
+                    *) continue ;;
+                  esac
+                  echo "downloading $name"
+                  curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" \
+                       -o "artifacts/$name" \
+                       "$api/releases/assets/$id"
+                done
+
+      - name: publish to Debian registry + purge Fastly
+        env:
+          FORGEJO_USER: ${{ secrets.FORGEJO_USER }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          FASTLY_SERVICE_ID: ${{ secrets.FASTLY_SERVICE_ID }}
+          FASTLY_PURGE_TOKEN: ${{ secrets.FASTLY_PURGE_TOKEN }}
+        run: |
+          python3 tools/publish.py \
+            --debs-dir artifacts \
+            --distribution "${{ inputs.distribution }}" \
+            --component "${{ inputs.component }}" \
+            --manifest "releases/${{ inputs.version }}/manifest.json"
+
+      - name: commit manifest + final.config
+        # publish.py records each upload into the per-release manifest.
+        # We commit it back, along with the final .config captured at
+        # build time, so the public history shows what shipped and the
+        # next build's new-symbol guard has something to diff against.
+        # MANIFEST_COMMIT_TOKEN is scoped narrowly to push to main
+        # (contents:write).
+        env:
+          MANIFEST_COMMIT_TOKEN: ${{ secrets.MANIFEST_COMMIT_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_dir="releases/${{ inputs.version }}"
+          mkdir -p "$release_dir"
+
+          # Stage the manifest if publish.py wrote one.
+          touched=0
+          if [[ -f $release_dir/manifest.json ]]; then
+            git add "$release_dir/manifest.json"
+            touched=1
+          fi
+
+          # Stage final.config if the build produced one. It's only
+          # downloaded with component=main runs; debug runs don't carry
+          # it (it'd be a duplicate of main's).
+          if [[ -f artifacts/final.config && ! -f $release_dir/final.config ]]; then
+            cp artifacts/final.config "$release_dir/final.config"
+            git add "$release_dir/final.config"
+            touched=1
+          fi
+
+          if [[ $touched -eq 0 ]]; then
+            echo "nothing to commit"
+            exit 0
+          fi
+
+          git config user.name "forgejo-runner"
+          git config user.email "noreply@unredacted.org"
+          if git diff --cached --quiet; then
+            echo "no changes; nothing to commit"
+            exit 0
+          fi
+          git commit -m "publish: ${{ inputs.version }} -> ${{ inputs.component }}"
+          remote="https://oauth2:${MANIFEST_COMMIT_TOKEN}@git.unredacted.org/${GITHUB_REPOSITORY}.git"
+          git push "$remote" "HEAD:${GITHUB_REF_NAME:-main}"

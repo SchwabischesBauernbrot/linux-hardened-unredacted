@@ -1,0 +1,88 @@
+name: validate
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck build/*.sh tools/*.sh
+
+  yamllint:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y yamllint
+      - run: yamllint -d relaxed .forgejo/workflows/
+
+  pycompile:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m py_compile tools/*.py
+
+  config-diff-sanity:
+    # configs/hardened-overlay.config and configs/POLICY.md must agree
+    # on which symbols exist. POLICY.md is the trust narrative; the
+    # overlay is the operational truth. Drift between them is the
+    # silent failure mode the audit caught.
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - name: symbol-by-symbol coverage
+        run: |
+          set -euo pipefail
+          # Extract every CONFIG_X symbol from both files. The overlay
+          # has lines like `CONFIG_X=y` or `# CONFIG_Y is not set`;
+          # POLICY.md mentions them in `### CONFIG_X` headings and
+          # inline code spans.
+          overlay=$(grep -oE 'CONFIG_[A-Z0-9_]+' configs/hardened-overlay.config | sort -u)
+          policy=$(grep -oE 'CONFIG_[A-Z0-9_]+' configs/POLICY.md | sort -u)
+          missing_in_policy=$(comm -23 <(echo "$overlay") <(echo "$policy"))
+          missing_in_overlay=$(comm -13 <(echo "$overlay") <(echo "$policy"))
+          fail=0
+          if [[ -n $missing_in_policy ]]; then
+            echo "symbols in hardened-overlay.config but not POLICY.md:" >&2
+            echo "$missing_in_policy" >&2
+            fail=1
+          fi
+          if [[ -n $missing_in_overlay ]]; then
+            echo "symbols mentioned in POLICY.md but not in hardened-overlay.config:" >&2
+            echo "$missing_in_overlay" >&2
+            fail=1
+          fi
+          exit $fail
+
+  no-duplicate-overlay-entries:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          dupes=$(grep -oE 'CONFIG_[A-Z0-9_]+' configs/hardened-overlay.config | sort | uniq -d)
+          if [[ -n $dupes ]]; then
+            echo "duplicate symbols in configs/hardened-overlay.config:" >&2
+            echo "$dupes" >&2
+            exit 1
+          fi
+
+  no-placeholder-digests:
+    # Pin placeholders must be replaced with concrete digests before a
+    # Phase 1 build. This job runs on push to main only -- Phase 0 PRs
+    # can carry the placeholder so the scaffold builds at all.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          if grep -RnE 'sha256:REPLACE_WITH_CONCRETE_DIGEST' \
+                --include='Dockerfile*' --include='*.yml' --include='*.md' \
+                .; then
+            echo "placeholder digest(s) remain; replace before merging to main" >&2
+            exit 1
+          fi

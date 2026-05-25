@@ -1,0 +1,36 @@
+# Build artifacts and generated files.
+__pycache__/
+*.pyc
+*.pyo
+
+# Reproducibility check output.
+repro-diff/
+
+# Per-release source tarballs are attached as release assets, not committed.
+releases/*/source-*.tar.xz
+
+# Shim vendor certificate — public material, but the build pulls it
+# from a tracked operator path, not the repo. Keeping it out of git
+# prevents accidental commits if it ever lands here as a working copy.
+shim/vendor.der
+
+# Local build work directories.
+work/
+build/.*-output/
+*.deb
+*.dsc
+*.changes
+*.buildinfo
+*.tar.xz
+*.tar.sign
+*.patch
+*.sig
+
+# Editor noise.
+*.swp
+*~
+.DS_Store
+
+# Irrelevant
+DECISIONS.md
+OPERATOR_TODO.md
