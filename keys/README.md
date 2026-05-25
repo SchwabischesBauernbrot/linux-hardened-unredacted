@@ -8,21 +8,26 @@ A key change in this directory is a trust-boundary change. Any commit that adds,
 
 | File | Identity | Used to verify | Source for the fingerprint |
 | ---- | -------- | -------------- | -------------------------- |
-| `kernel-org.gpg` | Linus Torvalds (`ABAF11C65A2970B130ABE3C479BE3E4300411886`) and Greg Kroah-Hartman (`647F28654894E3BD457199BE38DBBDC86092693E`) | Kernel.org tarball signatures | https://kernel.org/category/signatures.html and https://kernel.org/pub/linux/kernel/people/gregkh/Greg_Kroah-Hartman_pubkey.asc |
+| `kernel-org.gpg` | Greg Kroah-Hartman (`647F28654894E3BD457199BE38DBBDC86092693E`) | Stable kernel.org tarball signatures | https://kernel.org/category/signatures.html and https://kernel.org/pub/linux/kernel/people/gregkh/Greg_Kroah-Hartman_pubkey.asc |
 | `anthraxx.gpg` | Levente Polyak / anthraxx (`E240B57E2C4630BA768E2F26FC1B547C8D8172C8`) | linux-hardened patch signatures | Arch Linux PKGBUILD `validpgpkeys=`; Alpine APKBUILD; the linux-hardened release `.sig` files themselves |
+
+### Why kernel-org.gpg holds only Greg KH and not Linus
+
+kernel.org splits signing by release type. Mainline tarballs (`linux-X.Y.tar.xz`, no third version segment) are signed by Linus Torvalds. Stable tarballs (`linux-X.Y.Z.tar.xz`, three-segment versions) are signed by Greg KH. This project follows `linux-hardened`, which only tags against stable releases — the tag format is `vX.Y.Z-hardenedN` and the `Z` is required. Every tarball this pipeline fetches is therefore a stable release signed by Greg KH.
+
+Linus's PGP key (`ABAF11C65A2970B130ABE3C479BE3E4300411886`) is also progressively harder to retrieve from public keyservers, which makes pinning it fragile. We don't pin what we don't use. If the project ever needs to build a mainline `.0` release, add the Linus key in a separate commit and lift the stable-only restriction here.
 
 ## Adding the kernel.org keys
 
 ```
 gpg --no-default-keyring --keyring ./keys/kernel-org.gpg --recv-keys \
-    ABAF11C65A2970B130ABE3C479BE3E4300411886 \
     647F28654894E3BD457199BE38DBBDC86092693E
 
-# verify fingerprints match the canonical sources before committing
+# verify fingerprint matches the canonical source before committing
 gpg --no-default-keyring --keyring ./keys/kernel-org.gpg --fingerprint
 ```
 
-A clean fingerprint match against both kernel.org's published signatures page and the developer's own keyserver is the minimum bar.
+A clean fingerprint match against both kernel.org's published signatures page and Greg KH's own keyserver is the minimum bar.
 
 ## Adding the anthraxx maintainer key
 
