@@ -34,3 +34,6 @@ build/.*-output/
 # Irrelevant
 DECISIONS.md
 OPERATOR_TODO.md
+
+# GPG lockfiles (created by gpg when writing keyrings).
+.#lk*
