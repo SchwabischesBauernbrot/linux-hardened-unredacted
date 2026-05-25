@@ -9,14 +9,16 @@ jobs:
     runs-on: linux-hardened
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      # Forgejo's act-based runner runs jobs as root inside node:22-bookworm.
+      # `sudo` isn't installed; use apt-get directly.
+      - run: apt-get update && apt-get install -y shellcheck
       - run: shellcheck build/*.sh tools/*.sh
 
   yamllint:
     runs-on: linux-hardened
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y yamllint
+      - run: apt-get update && apt-get install -y yamllint
       - run: yamllint -d relaxed .forgejo/workflows/
 
   pycompile:
@@ -72,8 +74,14 @@ jobs:
 
   no-placeholder-digests:
     # Pin placeholders must be replaced with concrete digests before a
-    # Phase 1 build. This job runs on push to main only -- Phase 0 PRs
-    # can carry the placeholder so the scaffold builds at all.
+    # Phase 1 build. This job runs on push to main only; Phase 0 PRs can
+    # carry the placeholder so the scaffold builds at all.
+    #
+    # Scope is narrow: only Dockerfiles under containers/ (where the
+    # build actually uses the digest). The shim track is intentionally
+    # blocked, so shim/Dockerfile's placeholder is accepted. Docs and
+    # workflow YAML are excluded so example commands and the validator's
+    # own grep pattern don't trip the check.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: linux-hardened
     steps:
@@ -81,8 +89,8 @@ jobs:
       - run: |
           set -euo pipefail
           if grep -RnE 'sha256:REPLACE_WITH_CONCRETE_DIGEST' \
-                --include='Dockerfile*' --include='*.yml' --include='*.md' \
-                .; then
-            echo "placeholder digest(s) remain; replace before merging to main" >&2
+                --include='Dockerfile*' \
+                containers/; then
+            echo "placeholder digest(s) remain in containers/; pin before publishing" >&2
             exit 1
           fi
