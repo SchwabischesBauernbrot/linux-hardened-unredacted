@@ -13,11 +13,53 @@ on:
 jobs:
   build:
     runs-on: linux-hardened
+    container:
+      # Use the same debian:trixie digest as the build container in
+      # containers/Dockerfile.debian-trixie-amd64. Docker caches the
+      # layer once and reuses it; the runner image and the build image
+      # share a base, so version skew between orchestration and compile
+      # is impossible.
+      image: debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
+    env:
+      # The Forgejo runner uses a Docker-in-Docker container (named
+      # `docker-in-docker` in its compose stack) for isolation. Job
+      # containers are spawned by dind on its default bridge network,
+      # where dind itself is reachable at the bridge gateway IP.
+      # 172.17.0.1 is the standard docker bridge gateway.
+      DOCKER_HOST: tcp://172.17.0.1:2375
     strategy:
       matrix:
         target:
           - { distro: debian, release: trixie, arch: amd64 }
     steps:
+      # This step must run BEFORE actions/checkout, because actions/
+      # checkout is a JavaScript action and Forgejo's act runner
+      # invokes it by `docker exec node /action/dist/index.js`.
+      # debian:trixie ships neither nodejs nor git, so without this
+      # the very first action fails with `exec: "node": not found`.
+      #
+      #   nodejs                      every JavaScript action (checkout, etc.)
+      #   git, ca-certificates       actions/checkout
+      #   wget, gpg                  build/fetch-sources.sh
+      #   xz-utils, patch            build/apply-patches.sh
+      #   docker.io                  sibling-container pattern
+      #   openssl, libssl3           workflow's key-materialization step
+      #   sbsigntool                 build/sign-debs.sh (sbsign, sbverify)
+      #   zstd                       build/sign-debs.sh (.ko.zst recompression)
+      #   jq, curl                   release-asset upload
+      #
+      # ~30 seconds per job, against a 20-60 minute kernel build.
+      # A follow-up could bake these into a pre-built runner image
+      # pushed to the Forgejo container registry and eliminate this
+      # step entirely.
+      - name: install runtime deps in job container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+              nodejs \
+              git ca-certificates wget gpg xz-utils patch \
+              docker.io openssl libssl3 sbsigntool zstd jq curl
+
       - uses: actions/checkout@v4
         with:
           # Full history + tags so the derive-version step can read the
