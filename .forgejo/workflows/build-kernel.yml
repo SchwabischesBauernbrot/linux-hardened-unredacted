@@ -4,10 +4,11 @@ on:
     tags: ['v*.*.*-hardened*']
 
 # Per spec §6.1: the build stages do NOT hold publish credentials.
-# FORGEJO_PUBLISH_TOKEN and FASTLY_PURGE_TOKEN are referenced only by
-# publish.yml. The kernel signing key is the one credential this
-# workflow has. Compromise of the Forgejo host implies key compromise;
-# the trade-off is accepted for build automation.
+# REGISTRY_TOKEN, FASTLY_PURGE_TOKEN, and MANIFEST_COMMIT_TOKEN are
+# referenced only by publish.yml. This workflow holds the kernel
+# signing secrets and the release-asset token. Compromise of the
+# Forgejo host implies signing-key compromise; the trade-off is
+# accepted for build automation.
 
 jobs:
   build:
@@ -207,7 +208,7 @@ jobs:
         # assets persist (workflow artifacts time out), which doubles as
         # an audit record.
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_RELEASE_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           TAG: ${{ github.ref_name }}
           WORKDIR: ${{ runner.temp }}/work
         run: |

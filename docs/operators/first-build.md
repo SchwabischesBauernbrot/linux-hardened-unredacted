@@ -71,11 +71,13 @@ In the same Forgejo repo settings, add:
 
 | Secret | Value |
 | ------ | ----- |
-| `FORGEJO_USER` | The bot account that will own uploads (e.g. `unredacted-bot`) |
-| `FORGEJO_PUBLISH_TOKEN` | Personal access token with `write:package` on owner `unredacted` |
-| `FORGEJO_RELEASE_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened` |
+| `REGISTRY_USER` | The bot account that will own uploads (e.g. `unredacted-bot`) |
+| `REGISTRY_TOKEN` | Personal access token with `write:package` on owner `unredacted` |
+| `RELEASE_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened` |
 | `MANIFEST_COMMIT_TOKEN` | Token with `write:repository` (push to main) on `unredacted/linux-hardened` |
-| `FORGEJO_ISSUE_TOKEN` | Token with `write:issue` on `unredacted/linux-hardened` |
+| `ISSUE_TOKEN` | Token with `write:issue` on `unredacted/linux-hardened` |
+
+Forgejo reserves secret names starting with `FORGEJO_`, `GITEA_`, and `GITHUB_`, so the secrets above use neutral prefixes. The workflow YAML maps each one to whatever env var name the script expects internally.
 
 Scope each to the workflows that need it (see the table in [runner-setup.md](runner-setup.md)). Don't reuse one token across workflows.
 
@@ -140,7 +142,7 @@ Each failure is a learning. Fix, push the fix, re-tag if necessary (`git tag -d 
 When the build completes:
 
 ```
-curl -fsS -H "Authorization: token $FORGEJO_RELEASE_TOKEN" \
+curl -fsS -H "Authorization: token $RELEASE_TOKEN" \
     https://git.unredacted.org/api/v1/repos/unredacted/linux-hardened/releases/tags/v6.6.0-hardened1 \
     | jq '.assets[].name'
 ```

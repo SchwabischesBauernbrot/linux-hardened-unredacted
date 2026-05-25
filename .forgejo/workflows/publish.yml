@@ -28,7 +28,7 @@ jobs:
 
       - name: download release assets
         env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_RELEASE_TOKEN }}
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           TAG: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -58,8 +58,8 @@ jobs:
 
       - name: publish to Debian registry + purge Fastly
         env:
-          FORGEJO_USER: ${{ secrets.FORGEJO_USER }}
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_PUBLISH_TOKEN }}
+          FORGEJO_USER: ${{ secrets.REGISTRY_USER }}
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           FASTLY_SERVICE_ID: ${{ secrets.FASTLY_SERVICE_ID }}
           FASTLY_PURGE_TOKEN: ${{ secrets.FASTLY_PURGE_TOKEN }}
         run: |

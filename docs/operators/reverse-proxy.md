@@ -28,7 +28,7 @@ The narrowest exception that doesn't widen reads:
 
 The exception is method-and-IP-scoped, so a bystander on the runner's IP range can't read the metadata paths through the upload exception. Pangolin's UI calls this combination "IP & Method allow rule."
 
-If your CI runner doesn't have a stable egress IP, the alternative is to send `X-Origin-Auth` from the runner the same way Fastly does: set it in the runner's environment alongside `FORGEJO_PUBLISH_TOKEN` and pass it as a request header from `tools/publish.py`.
+If your CI runner doesn't have a stable egress IP, the alternative is to send `X-Origin-Auth` from the runner the same way Fastly does: set it in the runner's environment alongside `REGISTRY_TOKEN` and pass it as a request header from `tools/publish.py`.
 
 ## Verification
 
