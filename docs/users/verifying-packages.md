@@ -35,4 +35,6 @@ The SHA-256 fingerprint of the enrolled cert must match the value in the release
 
 ## Build provenance
 
-Each release ships `releases/{version}/manifest.json` in this repository, recording every input hash and the container image digest used to build it. To rebuild and compare, see [building-from-source.md](building-from-source.md).
+Each release ships `releases/{version}/manifest.json` in this repository, recording every input hash and the container image digest used to build it.
+
+Anyone can independently verify a release reproduces. `tools/repro-check.sh <version>` re-verifies the recorded input hashes against upstream, rebuilds the kernel inside the manifest's pinned container, downloads the released `.deb`s, strips signatures from both sides, and compares the unsigned bytes. Exit 0 means your rebuild matched; non-zero writes a per-file `diffoscope` report. A third party who does this and gets exit 0 has confirmed the published binaries correspond to the public source, without trusting our build host. Full flow in [building-from-source.md](building-from-source.md).

@@ -40,6 +40,14 @@ The script:
 
 Exit code 0: byte-identical (post-strip). Non-zero: divergence, and the report names the offending files.
 
+The released `.deb`s to compare against are fetched automatically from the apt repo (`https://repo.unredacted.org/debian`, override with `REPO_BASE_URL`). To compare against a local copy instead — for an offline check, or to diff two of your own builds — point `RELEASED_DIR` at a directory of the released `.deb`s:
+
+```
+RELEASED_DIR=/path/to/released-debs ./tools/repro-check.sh v6.12.8-hardened1
+```
+
+The rebuild needs network access (to fetch the kernel tarball, the hardened patch, and the Debian source) and runs the compile inside the manifest's pinned container, so it takes about as long as a normal build (20–60 minutes).
+
 ## GPL source distribution
 
 Per GPLv2 §3, the complete corresponding source for any binary `.deb` is available for at least three years:
