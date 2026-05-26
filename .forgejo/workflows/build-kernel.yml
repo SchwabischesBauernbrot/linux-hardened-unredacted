@@ -115,6 +115,20 @@ jobs:
       - name: build per-target container
         run: |
           set -euo pipefail
+          # Diagnostic: prior run reported `docker: command not found`
+          # at this step even though docker.io installed cleanly. The
+          # output below tells us whether the binary is missing, on a
+          # different path, or just unreachable via PATH.
+          echo "=== PATH ==="
+          echo "${PATH:-(unset)}"
+          echo "=== which docker ==="
+          command -v docker || echo "(docker not on PATH)"
+          echo "=== files matching /usr/*bin/docker* ==="
+          ls -la /usr/bin/docker* /usr/sbin/docker* 2>&1 | head -20 || true
+          echo "=== files docker.io claims to install ==="
+          dpkg -L docker.io 2>&1 | grep -E '/(bin|sbin)/' | head -20 || true
+          echo "=== end diagnostics ==="
+
           image="hardened-build:${{ matrix.target.distro }}-${{ matrix.target.release }}-${{ matrix.target.arch }}"
           docker build \
             -t "$image" \
