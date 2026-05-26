@@ -24,8 +24,8 @@
 #   WORKDIR
 #   KERNEL_VERSION
 #   HARDENED_REVISION
-#   DISTRO RELEASE ARCH
-#   REVISION              build revision per spec §6.6; increments per rebuild
+#   ARCH
+#   REVISION              kernel build version (uname -v) for traceability
 #   SOURCE_DATE_EPOCH     reproducible-build timestamp
 #
 # Optional:
@@ -39,11 +39,15 @@ umask 022
 : "${WORKDIR:?WORKDIR required}"
 : "${KERNEL_VERSION:?KERNEL_VERSION required}"
 : "${HARDENED_REVISION:?HARDENED_REVISION required}"
-: "${DISTRO:?DISTRO required}"
-: "${RELEASE:?RELEASE required}"
 : "${ARCH:?ARCH required}"
 : "${REVISION:?REVISION required}"
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH required for reproducible builds}"
+
+# DISTRO and RELEASE flow through the workflow for traceability but
+# aren't read here — the apt repo we publish to is per-distro, so the
+# .deb itself doesn't need a distro tag in its name or version. The
+# matrix in build-kernel.yml gates which DISTRO/RELEASE pairs we
+# accept.
 
 export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-hardened}"
 export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-builder}"
@@ -68,25 +72,33 @@ patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
     exit 1
 }
 
-# Distro token feeds the package version string. Even though bindeb-pkg
-# doesn't care which distro we're targeting, the resulting .debs land
-# in a distro/release apt repo and we want the version to identify
-# which release they were built for.
-case "$DISTRO/$RELEASE" in
-    debian/trixie)   distro_token="deb13" ;;
-    debian/bookworm) distro_token="deb12" ;;
-    ubuntu/noble)    distro_token="ubuntu2404" ;;
-    ubuntu/jammy)    distro_token="ubuntu2204" ;;
-    *) echo "unknown DISTRO/RELEASE pair: $DISTRO/$RELEASE" >&2; exit 2 ;;
-esac
-
 # Debian-style version: <upstream>-<revision>.
-#   upstream = bare kernel.org version (parsed by dpkg as MAJOR.MINOR.PATCH)
-#   revision = 1hardened<N>.<distro_token>.<workflow_rev>
 #
-# Sorts higher than a hypothetical Debian "7.0.9-1"; successive
-# rebuilds of the same upstream sort cleanly via apt.
-new_version="${KERNEL_VERSION}-1hardened${HARDENED_REVISION}.${distro_token}.${REVISION}"
+#   upstream = bare kernel.org version (parsed by dpkg as MAJOR.MINOR.PATCH)
+#   revision = hardened<N> — the linux-hardened patch revision
+#
+# Examples:
+#   7.0.9-hardened1   first linux-hardened build of upstream 7.0.9
+#   7.0.9-hardened2   if anthraxx releases v7.0.9-hardened2
+#   7.0.10-hardened1  next upstream
+#
+# Sort behavior: hardened2 > hardened1 (dpkg compares revision strings
+# segment-by-segment with numbers parsed as numbers); 7.0.10-* >
+# 7.0.9-*; ours > a hypothetical Debian 7.0.9-1 because revision
+# "hardened1" sorts above "1".
+#
+# We deliberately don't include $REVISION (github.run_number) or a
+# distro token in the version. CI reruns of the same tag are
+# bit-identical, so apt would see no change and not trigger spurious
+# upgrades. The apt repo is per-distro, so the distro identifier is
+# redundant. The build's run_number stays visible in the kernel binary
+# via KBUILD_BUILD_VERSION (uname -v) for traceability without
+# polluting the user-facing version.
+#
+# If we ever need to re-release the same upstream + same hardened
+# revision with packaging changes only, bump to "hardened1.1" — dpkg
+# accepts this and sorts it above "hardened1".
+new_version="${KERNEL_VERSION}-hardened${HARDENED_REVISION}"
 
 # Local version suffix that becomes part of the kernelrelease and
 # therefore part of the package name and the modules path:
