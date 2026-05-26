@@ -220,65 +220,9 @@ shopt -u nullglob
 if (( ${#image_debs[@]} == 0 )); then
     echo "no linux-image .debs landed in $WORKDIR after bindeb-pkg" >&2
     echo "contents of $WORKDIR:" >&2
-    ls -la "$WORKDIR" >&2 || true
+    find "$WORKDIR" -maxdepth 1 -printf '%f\n' >&2 || true
     exit 1
 fi
-
-# Post-build sanity: confirm the bzImage in the source tree is PE
-# (CONFIG_EFI_STUB working) and the vmlinuz inside the produced .deb
-# matches it byte-for-byte. If sbsign later complains "Invalid DOS
-# header magic", these diagnostics narrow down whether the issue is at
-# build (bzImage itself wrong), packaging (cp into deb broke it), or
-# extraction (dpkg-deb -R on the runner's filesystem corrupts it).
-echo "=== post-build sanity ==="
-bzimage="$patched_dir/arch/x86/boot/bzImage"
-if [[ -f $bzimage ]]; then
-    echo "  source bzImage: $(stat -c %s "$bzimage") bytes"
-    echo "  source bzImage file type: $(file -b "$bzimage")"
-    echo "  source bzImage first 4 bytes: $(head -c 4 "$bzimage" | od -An -tx1)"
-    echo "  source bzImage sha256: $(sha256sum "$bzimage" | awk '{print $1}')"
-else
-    echo "  source bzImage MISSING at $bzimage"
-    ls -la "$patched_dir/arch/x86/boot/" 2>&1 | head -20 | sed 's|^|    |'
-fi
-for deb in "${image_debs[@]}"; do
-    # Skip the -dbg variant: it ships debug symbols at /usr/lib/debug,
-    # not a kernel image. Probing /boot in it is pointless and the
-    # `grep || true` semantics around an empty match would clutter
-    # the output.
-    case "$deb" in *-dbg_*) continue;; esac
-
-    echo "  --- $(basename "$deb") ($(stat -c %s "$deb") bytes) ---"
-    echo "  /boot contents per dpkg-deb -c:"
-    # `|| true` because grep exits 1 on no-match and `set -o pipefail`
-    # would turn that into a script-level failure; we want to print
-    # what we found and move on.
-    dpkg-deb -c "$deb" \
-        | { grep -E ' \./(boot|lib/modules/[^/]+/config)' || true; } \
-        | head -10 \
-        | sed 's|^|    |'
-    # Pull vmlinuz out of the .deb without unpacking to disk, hash it.
-    # Use flag-based awk (not '/.../{...; exit}') so the upstream
-    # dpkg-deb doesn't SIGPIPE — same SIGPIPE trap as in
-    # fetch-distro-source.sh's apt-cache call.
-    vmlinuz_in_deb=$(dpkg-deb -c "$deb" \
-        | awk '!v && /\.\/boot\/vmlinuz-/ {v=$6} END {print v}')
-    if [[ -n $vmlinuz_in_deb ]]; then
-        # dpkg-deb --fsys-tarfile streams the deb data tarball; extract
-        # just the vmlinuz to stdout and hash it. Use the path verbatim
-        # from dpkg-deb -c (which includes the "./" prefix) — stripping
-        # it makes tar miss the member. The sha256 match against the
-        # source bzImage already confirms the bytes are identical, so
-        # no separate first-4-bytes check needed (and avoiding `head -c`
-        # here avoids SIGPIPEing dpkg-deb under set -o pipefail).
-        deb_vmlinuz_hash=$(dpkg-deb --fsys-tarfile "$deb" \
-            | tar -xO -f - "$vmlinuz_in_deb" | sha256sum | awk '{print $1}')
-        echo "  vmlinuz inside deb sha256: $deb_vmlinuz_hash"
-    else
-        echo "  (no vmlinuz entry found in this deb — unexpected for linux-image)"
-    fi
-done
-echo "=== end post-build sanity ==="
 
 # Capture the final .config so the next build's new-symbol guard can
 # diff against it. bindeb-pkg doesn't move .config; it stays in the
