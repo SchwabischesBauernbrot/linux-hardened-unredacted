@@ -49,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         patch \
         gawk \
         libncurses-dev \
-        liblz4-tool \
+        lz4 \
     # Enable deb-src so `apt-get source linux` works inside the container.
     # Handles both the deb822-format sources.list.d/debian.sources (trixie
     # default) and the legacy /etc/apt/sources.list as a fallback.
