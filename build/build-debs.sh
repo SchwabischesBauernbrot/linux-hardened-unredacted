@@ -202,11 +202,27 @@ else
     ls -la "$patched_dir/arch/x86/boot/" 2>&1 | head -20 | sed 's|^|    |'
 fi
 for deb in "${image_debs[@]}"; do
+    # Skip the -dbg variant: it ships debug symbols at /usr/lib/debug,
+    # not a kernel image. Probing /boot in it is pointless and the
+    # `grep || true` semantics around an empty match would clutter
+    # the output.
+    case "$deb" in *-dbg_*) continue;; esac
+
     echo "  --- $(basename "$deb") ($(stat -c %s "$deb") bytes) ---"
     echo "  /boot contents per dpkg-deb -c:"
-    dpkg-deb -c "$deb" | grep -E ' \./(boot|lib/modules/[^/]+/config)' | head -10 | sed 's|^|    |'
+    # `|| true` because grep exits 1 on no-match and `set -o pipefail`
+    # would turn that into a script-level failure; we want to print
+    # what we found and move on.
+    dpkg-deb -c "$deb" \
+        | { grep -E ' \./(boot|lib/modules/[^/]+/config)' || true; } \
+        | head -10 \
+        | sed 's|^|    |'
     # Pull vmlinuz out of the .deb without unpacking to disk, hash it.
-    vmlinuz_in_deb=$(dpkg-deb -c "$deb" | awk '/\.\/boot\/vmlinuz-/{print $6; exit}')
+    # Use flag-based awk (not '/.../{...; exit}') so the upstream
+    # dpkg-deb doesn't SIGPIPE — same SIGPIPE trap as in
+    # fetch-distro-source.sh's apt-cache call.
+    vmlinuz_in_deb=$(dpkg-deb -c "$deb" \
+        | awk '!v && /\.\/boot\/vmlinuz-/ {v=$6} END {print v}')
     if [[ -n $vmlinuz_in_deb ]]; then
         # dpkg-deb --fsys-tarfile streams the deb data tarball; extract
         # just the vmlinuz to stdout and hash it.
@@ -216,6 +232,8 @@ for deb in "${image_debs[@]}"; do
         first_bytes=$(dpkg-deb --fsys-tarfile "$deb" \
             | tar -xO -f - "${vmlinuz_in_deb#./}" | head -c 4 | od -An -tx1)
         echo "  vmlinuz inside deb first 4 bytes: $first_bytes"
+    else
+        echo "  (no vmlinuz entry found in this deb — unexpected for linux-image)"
     fi
 done
 echo "=== end post-build sanity ==="
