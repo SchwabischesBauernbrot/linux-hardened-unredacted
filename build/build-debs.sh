@@ -99,15 +99,54 @@ local_version="-hardened-${ARCH}"
 cd "$patched_dir"
 
 # Pre-flight: sanity-check the merged .config that configure-kernel.sh
-# produced. If CONFIG_EFI isn't =y here, the resulting kernel won't be
-# PE-format and sbsign will reject it; better to fail loud here than
-# to spend 30 minutes compiling first. Also wipe any stale .debs from
-# a previous attempt in WORKDIR so sign-debs.sh doesn't pick them up.
+# produced. If CONFIG_EFI or CONFIG_EFI_STUB isn't =y, the resulting
+# kernel won't be PE-format and sbsign will reject it with "Invalid
+# DOS header magic" 30+ minutes from now. Abort here instead.
+#
+# Similarly, on amd64 we need CONFIG_X86_64=y; without it we'd build
+# a 32-bit kernel and the .deb naming + sign assumptions all break.
+#
+# These checks are intentionally strict for Phase 0 — we always want
+# Secure-Boot-signable kernels. Loosen if/when we add non-EFI build
+# targets (VM appliances, embedded).
 echo "=== pre-build sanity ==="
 echo "  .config size: $(stat -c %s .config) bytes, lines: $(wc -l < .config)"
-echo "  CONFIG_EFI* lines in .config:"
-grep -E '^(CONFIG_EFI|# CONFIG_EFI)' .config | head -10 | sed 's|^|    |' \
-    || echo "    (none — EFI is off, vmlinuz will not be PE-format)"
+required_y=(CONFIG_EFI CONFIG_EFI_STUB)
+case "$ARCH" in
+    amd64) required_y+=(CONFIG_X86_64) ;;
+    arm64) required_y+=(CONFIG_ARM64) ;;
+esac
+missing=()
+for sym in "${required_y[@]}"; do
+    if grep -q "^${sym}=y" .config; then
+        echo "  $sym=y: present"
+    else
+        echo "  $sym=y: MISSING" >&2
+        missing+=("$sym")
+    fi
+done
+if (( ${#missing[@]} > 0 )); then
+    cat >&2 <<EOF
+
+ABORT: required kconfig symbols are not =y in the merged .config:
+  ${missing[*]}
+
+Without these the build would produce a kernel that's not bootable
+under UEFI / not sbsign-able / wrong arch — and the failure would
+only surface 30+ minutes from now in the sign step.
+
+Most likely causes:
+  - fetch-distro-source.sh is missing a config fragment (we previously
+    missed debian/config/kernelarch-x86/config; check it's now in the
+    stock.config sources list).
+  - configure-kernel.sh's merge dropped these symbols (check the
+    "redefined" warnings in the configure step's log).
+  - olddefconfig defaulted them off because a transitive dependency
+    is missing.
+
+EOF
+    exit 5
+fi
 echo "  wiping any stale .debs from $WORKDIR"
 rm -f "$WORKDIR"/linux-*.deb
 echo "=== end pre-build sanity ==="

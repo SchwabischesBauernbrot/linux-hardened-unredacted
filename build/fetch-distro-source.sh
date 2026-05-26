@@ -91,24 +91,33 @@ echo "distro source dir: $distro_src"
 # Record the distro source dir so build-debs.sh consumes the same path.
 printf '%s\n' "$distro_src" > "$WORKDIR/distro-source-dir.txt"
 
+# Two arch names: the dpkg arch (used in directory names like
+# debian/config/amd64/) and the kernel arch (used in
+# debian/config/kernelarch-x86/, which holds CONFIG_X86_64=y, CONFIG_EFI=y,
+# CONFIG_EFI_STUB=y, etc.). Earlier versions of this script missed the
+# kernelarch directory entirely, which silently dropped X86_64 + EFI from
+# the merged config — olddefconfig then built a non-x86_64, non-PE
+# "kernel" whose vmlinuz failed sbsign with "Invalid DOS header magic".
 case "$ARCH" in
-    amd64) deb_arch=amd64 ;;
-    arm64) deb_arch=arm64 ;;
+    amd64) deb_arch=amd64; kernel_arch=x86 ;;
+    arm64) deb_arch=arm64; kernel_arch=arm64 ;;
     *) echo "unsupported ARCH: $ARCH" >&2; exit 2 ;;
 esac
 
-# Assemble the stock kconfig by concatenating Debian's fragment files.
-# Layout in trixie:
-#   debian/config/config             common across all arches
-#   debian/config/$arch/config       arch common
-#   debian/config/$arch/config.*     featureset + flavor variants
+# Assemble the stock kconfig by concatenating Debian's fragment files
+# in the same order Debian's own debian/bin/kconfig.py uses. Per the
+# gencontrol output, the canonical sequence for an amd64 build is:
 #
-# Fragment files include `##`-prefixed comments that aren't valid
-# kconfig; grep filters down to lines kconfig understands.
+#   debian/config/config                  cross-arch defaults
+#   debian/config/kernelarch-x86/config   kernel-arch defaults (sets
+#                                         CONFIG_X86_64=y, CONFIG_EFI=y,
+#                                         CONFIG_EFI_STUB=y, ACPI, PCI...)
+#   debian/config/amd64/config            dpkg-arch tuning
+#   debian/config/amd64/config.*          featureset/flavor variants if any
 #
-# Glob order is shell-locale-dependent; sort the variant fragments
-# explicitly so a future locale change doesn't silently reorder merge
-# precedence and produce a different .config.
+# Later fragments override earlier ones. Fragment files include
+# ##-prefixed comments that aren't valid kconfig; grep filters down to
+# lines kconfig understands.
 stock=$WORKDIR/stock.config
 stock_sources=$WORKDIR/stock-config-sources.txt
 : > "$stock_sources"
@@ -118,13 +127,16 @@ emit_with_record() {
     if [[ -f $src ]]; then
         sha256sum "$src" >> "$stock_sources"
         cat "$src"
+    else
+        echo "missing config fragment: $src" >&2
     fi
 }
 
 {
     emit_with_record "$distro_src/debian/config/config"
+    emit_with_record "$distro_src/debian/config/kernelarch-${kernel_arch}/config"
     emit_with_record "$distro_src/debian/config/${deb_arch}/config"
-    # Explicit sort so glob ordering is deterministic across locales.
+    # Sort to make ordering deterministic across locales.
     while IFS= read -r f; do
         emit_with_record "$f"
     done < <(find "$distro_src/debian/config/${deb_arch}" \
