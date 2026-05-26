@@ -56,8 +56,10 @@ jobs:
       #   build-essential, bc, bison, flex, libssl-dev, libelf-dev,
       #   dwarves, rsync, kmod, cpio, python3, debhelper, kernel-wedge,
       #   libdw-dev, libpci-dev, pkg-config, mokutil, pesign, dpkg-dev,
-      #   fakeroot, quilt, gawk, libncurses-dev
+      #   fakeroot, quilt, gawk, libncurses-dev, devscripts
       #                           dpkg-buildpackage on the Debian linux source
+      #                           (devscripts provides `dch` for the
+      #                           changelog rewrite in build-debs.sh)
       #
       # Cost: ~3 minutes against a 20-60 minute kernel build. A follow-up
       # bakes these into a pre-built runner image pushed to the Forgejo
@@ -72,7 +74,7 @@ jobs:
               build-essential bc bison flex libssl-dev libelf-dev \
               dwarves rsync kmod cpio python3 debhelper kernel-wedge \
               libdw-dev libpci-dev pkg-config mokutil pesign dpkg-dev \
-              fakeroot quilt gawk libncurses-dev
+              fakeroot quilt gawk libncurses-dev devscripts
           # Enable deb-src so `apt-get source linux` works.
           # Handles both the deb822-format sources.list.d/debian.sources
           # (trixie default) and the legacy /etc/apt/sources.list.
