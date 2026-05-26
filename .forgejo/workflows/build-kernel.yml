@@ -42,42 +42,47 @@ jobs:
       #
       # Since the build now runs directly in this job container (no
       # inner docker), we also install the full kernel-build toolchain
-      # here. The list is everything the old per-target Dockerfile had,
-      # plus the orchestration tools the workflow itself needs.
+      # here. The list has two parts:
       #
-      #   nodejs                  every JavaScript action (checkout, etc.)
-      #   git, ca-certificates    actions/checkout
-      #   wget, gpg               build/fetch-sources.sh
-      #   xz-utils, patch         build/apply-patches.sh
-      #   openssl, libssl3        workflow's key-materialization step
-      #   sbsigntool              build/sign-debs.sh (sbsign, sbverify)
-      #   zstd, lz4, bzip2, gzip  build/sign-debs.sh + kernel image compression
-      #   jq, curl                release-asset upload
-      #   build-essential, bc, bison, flex, libssl-dev, libelf-dev,
-      #   dwarves, rsync, kmod, cpio, python3, debhelper, kernel-wedge,
-      #   libdw-dev, libpci-dev, pkg-config, mokutil, pesign, dpkg-dev,
-      #   fakeroot, quilt, gawk, libncurses-dev, devscripts
-      #                           dpkg-buildpackage on the Debian linux source
-      #                           (devscripts provides `dch` for the
-      #                           changelog rewrite in build-debs.sh)
+      #   1. An explicit set the workflow scripts call directly:
+      #        nodejs                every JavaScript action (checkout, etc.)
+      #        git, ca-certificates  actions/checkout
+      #        wget, gpg             build/fetch-sources.sh
+      #        xz-utils, patch       build/apply-patches.sh
+      #        openssl, libssl3      key-materialization step
+      #        sbsigntool            build/sign-debs.sh (sbsign, sbverify)
+      #        zstd, lz4, bzip2, gzip   build/sign-debs.sh + kernel image
+      #                                 compression
+      #        jq, curl              release-asset upload
+      #        dpkg-dev, devscripts  dch + dpkg-architecture (consumed by
+      #                              build-debs.sh and by apt-get build-dep
+      #                              below)
       #
-      # Cost: ~3 minutes against a 20-60 minute kernel build. A follow-up
+      #   2. Everything the Debian linux source package declares as a
+      #      build dependency, fetched via `apt-get build-dep linux`.
+      #      That's the canonical source of truth: the Debian maintainers
+      #      already enumerated what their packaging needs (build-essential,
+      #      kernel-wedge, python3-dacite, kernel-package, etc.). Pulling
+      #      it from the source package means we don't drift from upstream
+      #      Debian's build inputs and don't play whack-a-mole every time
+      #      they add a Python module to debian/bin/.
+      #
+      # Cost: ~5 minutes against a 20-60 minute kernel build. A follow-up
       # bakes these into a pre-built runner image pushed to the Forgejo
       # container registry and drops this step to ~10 seconds.
       - name: install build deps in job container
         run: |
+          set -euo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
               nodejs \
               git ca-certificates wget gpg xz-utils patch \
               openssl libssl3 sbsigntool zstd lz4 bzip2 gzip jq curl \
-              build-essential bc bison flex libssl-dev libelf-dev \
-              dwarves rsync kmod cpio python3 debhelper kernel-wedge \
-              libdw-dev libpci-dev pkg-config mokutil pesign dpkg-dev \
-              fakeroot quilt gawk libncurses-dev devscripts
-          # Enable deb-src so `apt-get source linux` works.
-          # Handles both the deb822-format sources.list.d/debian.sources
-          # (trixie default) and the legacy /etc/apt/sources.list.
+              dpkg-dev devscripts
+          # Enable deb-src so `apt-get source linux` and `apt-get build-dep
+          # linux` work. Handles both the deb822-format
+          # sources.list.d/debian.sources (trixie default) and the legacy
+          # /etc/apt/sources.list.
           if [ -f /etc/apt/sources.list.d/debian.sources ]; then
               sed -i 's/^Types: deb$/Types: deb deb-src/' \
                   /etc/apt/sources.list.d/debian.sources
@@ -85,6 +90,13 @@ jobs:
               sed -i 's|^deb \(.*\)$|deb \1\ndeb-src \1|' /etc/apt/sources.list
           fi
           apt-get update
+          # Pull in the Debian linux source's declared build dependencies.
+          # This is the canonical set; it covers build-essential, bc, bison,
+          # flex, libssl-dev, libelf-dev, dwarves, rsync, kmod, cpio, python3,
+          # python3-dacite, debhelper, kernel-wedge, libdw-dev, libpci-dev,
+          # pkg-config, fakeroot, quilt, gawk, libncurses-dev, and anything
+          # else upstream adds in future point releases.
+          apt-get build-dep -y --no-install-recommends linux
 
       - uses: actions/checkout@v4
         with:
