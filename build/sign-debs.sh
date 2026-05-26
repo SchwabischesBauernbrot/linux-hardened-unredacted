@@ -42,20 +42,34 @@ sign_one_module() {
             "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$ko"
             ;;
         *.ko.zst)
+            # Match the kernel build's zstd options. The kernel's in-tree
+            # zstd decoder (lib/zstd/) supports the standard format; using
+            # --long here would produce a stream the kernel can't read.
             local raw=${ko%.zst}
             zstd -q -d -f "$ko" -o "$raw"
             rm "$ko"
             "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$raw"
-            zstd -q -19 -f "$raw" -o "$ko"
+            zstd -q -T1 -19 -f "$raw" -o "$ko"
             rm "$raw"
             ;;
         *.ko.xz)
+            # Match the kernel build's xz options. Default `xz` uses
+            # --check=crc64 + 8 MiB dict; the kernel's in-tree xz_dec
+            # decoder (lib/xz/) cannot parse that, and at boot every
+            # modprobe fails with "decompression failed with status 6"
+            # (XZ_OPTIONS_ERROR). scripts/Makefile.modinst pins
+            # --lzma2=preset=6,dict=1MiB --check=crc32 -T1; we have to
+            # match those bytes exactly for the kernel's in-kernel
+            # decompressor to accept the result.
             local raw=${ko%.xz}
             xz -d "$ko"
             "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$raw"
-            xz "$raw"
+            xz --lzma2=preset=6,dict=1MiB --check=crc32 -T1 "$raw"
             ;;
         *.ko.gz)
+            # gzip format is unambiguous; the kernel's in-tree zlib
+            # decoder accepts the default gzip stream. -n suppresses the
+            # mtime field so the output is byte-stable across rebuilds.
             local raw=${ko%.gz}
             gunzip "$ko"
             "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$raw"
