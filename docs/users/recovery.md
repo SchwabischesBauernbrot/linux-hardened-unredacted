@@ -21,7 +21,7 @@ Send `journalctl -k -b -1` and the full `dmesg` from the failed boot to `securit
 ## Remove the hardened kernel
 
 ```
-sudo apt remove linux-image-{version}-hardened-amd64
+sudo apt remove linux-image-{version}-hardened-unredacted-amd64
 sudo apt autoremove
 sudo update-grub
 ```
@@ -29,13 +29,13 @@ sudo update-grub
 ## Re-enable later
 
 ```
-sudo apt install linux-image-hardened-amd64
+sudo apt install linux-image-hardened-unredacted-amd64
 sudo reboot
 ```
 
 ## If the hardened kernel is somehow the only kernel
 
-`apt install linux-image-hardened-amd64` does not remove existing kernels, so this should not happen on a default install. If it does:
+`apt install linux-image-hardened-unredacted-amd64` does not remove existing kernels, so this should not happen on a default install. If it does:
 
 1. Boot a Debian rescue image (USB, netinst).
 2. Chroot into the installed system (`mount /dev/sdaN /mnt; mount --bind /dev /mnt/dev; mount --bind /proc /mnt/proc; mount --bind /sys /mnt/sys; chroot /mnt`).

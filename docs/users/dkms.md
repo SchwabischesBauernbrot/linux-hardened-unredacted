@@ -5,15 +5,15 @@ Out-of-tree modules (ZFS, NVIDIA, VirtualBox, sometimes WireGuard) must be rebui
 ## Install the headers
 
 ```
-sudo apt install linux-headers-{version}-hardened-amd64
+sudo apt install linux-headers-{version}-hardened-unredacted-amd64
 ```
 
-If you installed the generic `linux-image-hardened-amd64` metapackage, also install `linux-headers-hardened-amd64`.
+If you installed the generic `linux-image-hardened-unredacted-amd64` metapackage, also install `linux-headers-hardened-unredacted-amd64`.
 
 ## Trigger DKMS rebuilds
 
 ```
-sudo dkms autoinstall -k {version}-hardened-amd64
+sudo dkms autoinstall -k {version}-hardened-unredacted-amd64
 ```
 
 Errors usually mean the out-of-tree module hasn't caught up with the kernel's API for that release.

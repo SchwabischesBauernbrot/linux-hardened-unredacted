@@ -59,9 +59,9 @@ chown -R "$RUNNER_UID:$RUNNER_GID" $WORKDIR   # hand back to the build user
 
 Outputs land in the parent directory:
 
-- `linux-image-${HARDENED_VERSION}-hardened-amd64_${VERSION_STR}_amd64.deb`
-- `linux-headers-${HARDENED_VERSION}-hardened-amd64_${VERSION_STR}_amd64.deb`
-- `linux-image-${HARDENED_VERSION}-hardened-amd64-dbg_${VERSION_STR}_amd64.deb` (debug-symbol component; opt-in for users)
+- `linux-image-${HARDENED_VERSION}-hardened-unredacted-amd64_${VERSION_STR}_amd64.deb`
+- `linux-headers-${HARDENED_VERSION}-hardened-unredacted-amd64_${VERSION_STR}_amd64.deb`
+- `linux-image-${HARDENED_VERSION}-hardened-unredacted-amd64-dbg_${VERSION_STR}_amd64.deb` (debug-symbol component; opt-in for users)
 
 ## Ubuntu (Phase 2)
 

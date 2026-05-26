@@ -61,7 +61,7 @@ The signing layer is attested separately by `signing_cert_sha256` in the manifes
       "component": "main",
       "deb_files": [
         {
-          "name": "linux-image-6.12.8-hardened-amd64_6.12.8.hardened1-deb13.1~hardened1_amd64.deb",
+          "name": "linux-image-6.12.8-hardened-unredacted-amd64_6.12.8-hardened1_amd64.deb",
           "sha256": "<sha of the signed .deb>",
           "unsigned_deb_sha256": "<sha of the .deb after sigs stripped>",
           "size": 123456789,

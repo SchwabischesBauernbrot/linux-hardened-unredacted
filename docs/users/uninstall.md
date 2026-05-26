@@ -3,7 +3,7 @@
 ## Remove the kernel packages
 
 ```
-sudo apt remove --purge 'linux-image-*-hardened-amd64' 'linux-headers-*-hardened-amd64'
+sudo apt remove --purge 'linux-image-*-hardened-unredacted-amd64' 'linux-headers-*-hardened-unredacted-amd64'
 sudo apt autoremove
 ```
 
@@ -32,8 +32,8 @@ Refresh the apt cache so it reflects the removed source, then check:
 
 ```
 sudo apt update
-apt-cache policy linux-image-hardened-amd64       # Candidate: (none)
-ls /boot/vmlinuz-*-hardened* 2>/dev/null          # produces no output
+apt-cache policy linux-image-hardened-unredacted-amd64   # Candidate: (none)
+ls /boot/vmlinuz-*-hardened-unredacted* 2>/dev/null      # produces no output
 ```
 
 ## Remove the MOK enrollment (optional)

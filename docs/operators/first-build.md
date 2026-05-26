@@ -147,7 +147,7 @@ curl -fsS -H "Authorization: token $RELEASE_TOKEN" \
     | jq '.assets[].name'
 ```
 
-Expected output: `linux-image-...-hardened-amd64_*.deb`, `linux-headers-...-hardened-amd64_*.deb`, `final.config`, and (if you built debug) `linux-image-...-hardened-amd64-dbg_*.deb`.
+Expected output: `linux-image-...-hardened-unredacted-amd64_*.deb`, `linux-headers-...-hardened-unredacted-amd64_*.deb`, `final.config`, and (if you built debug) `linux-image-...-hardened-unredacted-amd64-dbg_*.deb`.
 
 ## 10. Run publish.yml against the test tag
 
@@ -179,7 +179,7 @@ gpg --show-keys /etc/apt/keyrings/unredacted-hardened.asc
 echo 'deb [signed-by=/etc/apt/keyrings/unredacted-hardened.asc] https://repo.unredacted.org/debian trixie main' \
   | sudo tee /etc/apt/sources.list.d/unredacted-hardened.list
 sudo apt update
-sudo apt install linux-image-hardened-amd64 linux-headers-hardened-amd64
+sudo apt install linux-image-hardened-unredacted-amd64 linux-headers-hardened-unredacted-amd64
 ```
 
 During install, set a one-time MOK password. Reboot, enroll the MOK at the firmware prompt, boot into the hardened kernel.

@@ -43,17 +43,17 @@ To also enable kernel debug symbols, add `debug` after `main`:
 deb [signed-by=/etc/apt/keyrings/unredacted-hardened.asc] https://repo.unredacted.org/debian trixie main debug
 ```
 
-Then `apt install linux-image-{version}-hardened-amd64-dbg` will fetch the matching debug `.deb` (typically 1–2 GB).
+Then `apt install linux-image-{version}-hardened-unredacted-amd64-dbg` will fetch the matching debug `.deb` (typically 1–2 GB).
 
 > Phase 1 will confirm whether Forgejo's Debian registry exposes `main` and `debug` as components of one `Release` file (one sources.list line) or as separate suites (two lines, `... trixie main` and `... trixie debug`). If the single-line form errors during `apt update` with "Conflicting distribution," switch to two `deb` lines.
 
 ## Install
 
 ```
-sudo apt install linux-image-hardened-amd64 linux-headers-hardened-amd64
+sudo apt install linux-image-hardened-unredacted-amd64 linux-headers-hardened-unredacted-amd64
 ```
 
-This pulls the highest-version kernel currently in `main` for `trixie`. To pin a specific version, install the explicit name (e.g. `linux-image-6.12.8-hardened-amd64`).
+This pulls the highest-version kernel currently in `main` for `trixie`. To pin a specific version, install the explicit name (e.g. `linux-image-6.12.8-hardened-unredacted-amd64`).
 
 The install regenerates the initramfs and updates GRUB. On Secure Boot machines it also queues a MOK enrollment request; follow [secure-boot.md](secure-boot.md) before rebooting.
 

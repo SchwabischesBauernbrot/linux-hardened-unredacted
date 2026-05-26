@@ -17,8 +17,9 @@
 #     if we ship one later.
 #   - No secureboot signing helpers — we sign in sign-debs.sh anyway.
 #   - Package names are linux-image-<kernelrelease> / linux-headers-...,
-#     not linux-image-hardened-amd64. A future meta-package can paper
-#     over the naming; tracked in OPERATOR_TODO.md.
+#     not linux-image-hardened-unredacted-amd64 (the future meta name).
+#     A future meta-package can paper over the naming; tracked in
+#     OPERATOR_TODO.md.
 #
 # Required env:
 #   WORKDIR
@@ -104,9 +105,14 @@ new_version="${KERNEL_VERSION}-hardened${HARDENED_REVISION}"
 # therefore part of the package name and the modules path:
 #   /lib/modules/${KERNEL_VERSION}${local_version}/
 #   linux-image-${KERNEL_VERSION}${local_version}_${new_version}_amd64.deb
-# Hard-coding "hardened-${ARCH}" keeps our binary distinct from any
-# stock kernel a user might also have installed.
-local_version="-hardened-${ARCH}"
+#
+# "hardened-unredacted-${ARCH}" identifies both the patchset (anthraxx's
+# linux-hardened) and the distributor (Unredacted). Without the
+# -unredacted marker, our package name would collide visually with
+# anthraxx's own `linux-hardened` Arch package and the various
+# community linux-hardened ports — users couldn't tell which build
+# they have installed.
+local_version="-hardened-unredacted-${ARCH}"
 
 cd "$patched_dir"
 
@@ -115,8 +121,8 @@ cd "$patched_dir"
 # The patch contributes a "-hardenedN" suffix to the kernelrelease via
 # (a) a localversion-hardened file shipped in the patched tree, or (b) an
 # EXTRAVERSION assignment in the top-level Makefile. Left alone, this
-# combines with our LOCALVERSION to produce a doubly-redundant
-# kernelrelease like "7.0.9-hardened1-hardened-amd64" — and that string
+# combines with our LOCALVERSION to produce a doubly-tagged
+# kernelrelease like "7.0.9-hardened1-hardened-unredacted-amd64" — and that string
 # becomes the package name and the /lib/modules/ path.
 #
 # We don't need the upstream tag in the kernelrelease: the hardened

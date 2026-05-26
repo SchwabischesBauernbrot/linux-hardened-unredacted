@@ -34,7 +34,12 @@ shopt -s nullglob
 # Process every linux-image .deb except the -dbg variant. -dbg ships
 # debug symbols at /usr/lib/debug, not a kernel image; signing it is
 # pointless and would just slow the step down for ~1 GB of files.
-for deb in linux-image-*-hardened-*_*.deb; do
+#
+# Glob requires "-hardened-unredacted-" so we only ever sign our own
+# kernels — if a build pipeline ever lands somewhere with stray
+# upstream .debs (anthraxx's, Arch's), this glob deliberately won't
+# match them.
+for deb in linux-image-*-hardened-unredacted-*_*.deb; do
     [[ -f $deb ]] || continue
     case "$deb" in *-dbg_*) continue;; esac
 
