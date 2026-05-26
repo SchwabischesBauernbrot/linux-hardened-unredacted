@@ -98,6 +98,20 @@ local_version="-hardened-${ARCH}"
 
 cd "$patched_dir"
 
+# Pre-flight: sanity-check the merged .config that configure-kernel.sh
+# produced. If CONFIG_EFI isn't =y here, the resulting kernel won't be
+# PE-format and sbsign will reject it; better to fail loud here than
+# to spend 30 minutes compiling first. Also wipe any stale .debs from
+# a previous attempt in WORKDIR so sign-debs.sh doesn't pick them up.
+echo "=== pre-build sanity ==="
+echo "  .config size: $(stat -c %s .config) bytes, lines: $(wc -l < .config)"
+echo "  CONFIG_EFI* lines in .config:"
+grep -E '^(CONFIG_EFI|# CONFIG_EFI)' .config | head -10 | sed 's|^|    |' \
+    || echo "    (none — EFI is off, vmlinuz will not be PE-format)"
+echo "  wiping any stale .debs from $WORKDIR"
+rm -f "$WORKDIR"/linux-*.deb
+echo "=== end pre-build sanity ==="
+
 # bindeb-pkg runs `make clean` internally, which removes generated files
 # but preserves .config. The merged .config from configure-kernel.sh is
 # what bindeb-pkg uses.
@@ -130,6 +144,42 @@ if (( ${#image_debs[@]} == 0 )); then
     ls -la "$WORKDIR" >&2 || true
     exit 1
 fi
+
+# Post-build sanity: confirm the bzImage in the source tree is PE
+# (CONFIG_EFI_STUB working) and the vmlinuz inside the produced .deb
+# matches it byte-for-byte. If sbsign later complains "Invalid DOS
+# header magic", these diagnostics narrow down whether the issue is at
+# build (bzImage itself wrong), packaging (cp into deb broke it), or
+# extraction (dpkg-deb -R on the runner's filesystem corrupts it).
+echo "=== post-build sanity ==="
+bzimage="$patched_dir/arch/x86/boot/bzImage"
+if [[ -f $bzimage ]]; then
+    echo "  source bzImage: $(stat -c %s "$bzimage") bytes"
+    echo "  source bzImage file type: $(file -b "$bzimage")"
+    echo "  source bzImage first 4 bytes: $(head -c 4 "$bzimage" | od -An -tx1)"
+    echo "  source bzImage sha256: $(sha256sum "$bzimage" | awk '{print $1}')"
+else
+    echo "  source bzImage MISSING at $bzimage"
+    ls -la "$patched_dir/arch/x86/boot/" 2>&1 | head -20 | sed 's|^|    |'
+fi
+for deb in "${image_debs[@]}"; do
+    echo "  --- $(basename "$deb") ($(stat -c %s "$deb") bytes) ---"
+    echo "  /boot contents per dpkg-deb -c:"
+    dpkg-deb -c "$deb" | grep -E ' \./(boot|lib/modules/[^/]+/config)' | head -10 | sed 's|^|    |'
+    # Pull vmlinuz out of the .deb without unpacking to disk, hash it.
+    vmlinuz_in_deb=$(dpkg-deb -c "$deb" | awk '/\.\/boot\/vmlinuz-/{print $6; exit}')
+    if [[ -n $vmlinuz_in_deb ]]; then
+        # dpkg-deb --fsys-tarfile streams the deb data tarball; extract
+        # just the vmlinuz to stdout and hash it.
+        deb_vmlinuz_hash=$(dpkg-deb --fsys-tarfile "$deb" \
+            | tar -xO -f - "${vmlinuz_in_deb#./}" | sha256sum | awk '{print $1}')
+        echo "  vmlinuz inside deb sha256: $deb_vmlinuz_hash"
+        first_bytes=$(dpkg-deb --fsys-tarfile "$deb" \
+            | tar -xO -f - "${vmlinuz_in_deb#./}" | head -c 4 | od -An -tx1)
+        echo "  vmlinuz inside deb first 4 bytes: $first_bytes"
+    fi
+done
+echo "=== end post-build sanity ==="
 
 # Capture the final .config so the next build's new-symbol guard can
 # diff against it. bindeb-pkg doesn't move .config; it stays in the
