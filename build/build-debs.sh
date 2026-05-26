@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
 # Build .deb packages from the patched + configured kernel tree using
-# the distro's native packaging flow (overlay approach — see
-# docs/operators/per-distro-build.md).
+# the kernel's built-in `make bindeb-pkg` target.
+#
+# We previously used Debian's linux source debian/ skeleton (apt-get
+# source linux), grafted onto our patched tree, and ran dpkg-buildpackage.
+# Each CI iteration tripped on a different Debian-kernel-build quirk:
+# stale debian/control, .pc/ quilt state, abi-check, multi-flavor builds.
+# The kernel's bindeb-pkg target sidesteps all of that — it generates a
+# minimal debian/ via scripts/package/mkdebian and uses scripts/package/
+# debian/rules (~50 lines, no quilt, no abi-check, no featuresets).
+#
+# Trade-off vs Debian's source machinery:
+#   - No -dbg package split unless CONFIG_DEBUG_INFO=y in our overlay.
+#   - No initramfs hook scripts — modern Debian's linux-base provides
+#     update-initramfs as a command and we run it from our own postinst
+#     if we ship one later.
+#   - No secureboot signing helpers — we sign in sign-debs.sh anyway.
+#   - Package names are linux-image-<kernelrelease> / linux-headers-...,
+#     not linux-image-hardened-amd64. A future meta-package can paper
+#     over the naming; tracked in OPERATOR_TODO.md.
 #
 # Required env:
 #   WORKDIR
@@ -32,91 +49,29 @@ export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-hardened}"
 export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-builder}"
 export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-$(date -u -d "@$SOURCE_DATE_EPOCH" +"%a %b %d %T UTC %Y")}"
 
-cd "$WORKDIR"
-
-# fetch-distro-source.sh has already run (in a network-enabled container
-# step) and recorded the unpacked dir name. Re-using its captured path
-# rather than globbing avoids collisions when KERNEL_VERSION coincides
-# with Debian's upstream version.
-if [[ -f distro-source-dir.txt ]]; then
-    distro_src_dir=$(cat distro-source-dir.txt)
-else
-    # Fallback for local development runs that skipped the marker.
-    distro_src_dir=$(find . -maxdepth 1 -type d -name 'linux-*' \
-        ! -name "linux-${KERNEL_VERSION}" -print -quit)
-fi
-[[ -n $distro_src_dir && -d $distro_src_dir ]] || {
-    echo "no unpacked distro linux source found in $WORKDIR" >&2
-    echo "run build/fetch-distro-source.sh first (network access required;" >&2
-    echo "this script intentionally has none)" >&2
-    exit 1
-}
-
-# Step 2: repackage our patched tree as the orig tarball that
-# debian/source/format = 3.0 (quilt) expects. The flags pin file ordering,
-# ownership, and mtime so the tarball is reproducible.
-patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
-[[ -d $patched_dir ]] || { echo "patched tree missing at $patched_dir" >&2; exit 1; }
-
-# Translate the Debian arch name to the kernel build's arch name for
-# any direct `make` call here. The kernel has arch/x86/ and arch/arm64/
-# but no arch/amd64/; without the override, ARCH=amd64 from the workflow
-# env propagates into make and it fails looking for arch/amd64/Makefile.
-# dpkg-buildpackage further down handles its own translation, so this
-# only affects the bare make calls in this script.
+# Translate the Debian/dpkg arch name (amd64, arm64) to the kernel
+# build's arch name (x86_64, arm64). The kernel has arch/x86/ and
+# arch/arm64/; there is no arch/amd64/.
 case "$ARCH" in
     amd64) kernel_arch=x86_64 ;;
     arm64) kernel_arch=arm64 ;;
     *) echo "unsupported ARCH: $ARCH" >&2; exit 2 ;;
 esac
 
-echo "cleaning patched tree"
-( cd "$patched_dir" && make ARCH="$kernel_arch" -s distclean )
+patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
+[[ -d $patched_dir ]] || {
+    echo "patched tree missing at $patched_dir" >&2
+    exit 1
+}
+[[ -f $patched_dir/.config ]] || {
+    echo "no .config in $patched_dir; run configure-kernel.sh first" >&2
+    exit 1
+}
 
-# Step 2a: pack the (pristine, patched) kernel tree as an orig tarball.
-# This is the artifact the reproducibility check (tools/repro-check.sh)
-# compares between independent rebuilds — byte-identical means same
-# source. It's also placed where dpkg-source can find it if format 3.0
-# (quilt) validates the orig at build time. The flags pin file
-# ordering, ownership, and mtime so the tarball is reproducible.
-orig_tarball="$WORKDIR/linux_${KERNEL_VERSION}.orig.tar.xz"
-echo "creating orig tarball: $orig_tarball"
-tar --sort=name \
-    --owner=0 --group=0 --numeric-owner \
-    --mtime="@${SOURCE_DATE_EPOCH}" \
-    --xz \
-    -cf "$orig_tarball" \
-    -C "$WORKDIR" "linux-${KERNEL_VERSION}"
-
-# Step 2b: graft Debian's debian/ skeleton onto our patched kernel tree.
-# Without this, dpkg-buildpackage would build whatever was in
-# $distro_src_dir — Debian's stock kernel sources — and the linux-hardened
-# patches we just applied would never make it into the .deb. The orig
-# tarball above is the audit trail; this graft is what dpkg-buildpackage
-# actually builds.
-echo "grafting Debian debian/ skeleton onto patched tree"
-rm -rf "$patched_dir/debian"
-cp -a "$distro_src_dir/debian" "$patched_dir/debian"
-
-# Step 3: rebuild the version string per spec §6.6.
-#
-# Debian's linux source has its own VersionLinux parser that requires the
-# upstream portion (before the first dash) to look like a kernel.org
-# version: X.Y or X.Y.Z (optionally with ~rcN). Earlier we tried to
-# encode "hardened1" in the upstream (KERNEL_VERSION.hardenedN-...);
-# that fails with "Invalid debian version" at debian/rules clean. Move
-# everything custom into the Debian revision portion (after the dash).
-#
-# Format: <upstream>-1hardened<N>.<distro_token>.<rev>
-#   upstream     = bare kernel.org version (7.0.9, 6.12.27, ...)
-#   1            = Debian's "first revision" convention
-#   hardenedN    = which linux-hardened release we tracked
-#   distro_token = which distro/release (deb13, deb12, ...)
-#   rev          = our build revision (workflow run_number)
-#
-# Example: 7.0.9-1hardened1.deb13.44 sorts higher than Debian's
-# hypothetical 7.0.9-1, and successive rebuilds of the same upstream
-# (.44, .45, .46) upgrade cleanly via apt.
+# Distro token feeds the package version string. Even though bindeb-pkg
+# doesn't care which distro we're targeting, the resulting .debs land
+# in a distro/release apt repo and we want the version to identify
+# which release they were built for.
 case "$DISTRO/$RELEASE" in
     debian/trixie)   distro_token="deb13" ;;
     debian/bookworm) distro_token="deb12" ;;
@@ -124,94 +79,67 @@ case "$DISTRO/$RELEASE" in
     ubuntu/jammy)    distro_token="ubuntu2204" ;;
     *) echo "unknown DISTRO/RELEASE pair: $DISTRO/$RELEASE" >&2; exit 2 ;;
 esac
+
+# Debian-style version: <upstream>-<revision>.
+#   upstream = bare kernel.org version (parsed by dpkg as MAJOR.MINOR.PATCH)
+#   revision = 1hardened<N>.<distro_token>.<workflow_rev>
+#
+# Sorts higher than a hypothetical Debian "7.0.9-1"; successive
+# rebuilds of the same upstream sort cleanly via apt.
 new_version="${KERNEL_VERSION}-1hardened${HARDENED_REVISION}.${distro_token}.${REVISION}"
 
+# Local version suffix that becomes part of the kernelrelease and
+# therefore part of the package name and the modules path:
+#   /lib/modules/${KERNEL_VERSION}${local_version}/
+#   linux-image-${KERNEL_VERSION}${local_version}_${new_version}_amd64.deb
+# Hard-coding "hardened-${ARCH}" keeps our binary distinct from any
+# stock kernel a user might also have installed.
+local_version="-hardened-${ARCH}"
+
 cd "$patched_dir"
-dch -v "$new_version" --distribution "$RELEASE" \
-    "linux-hardened ${KERNEL_VERSION}-hardened${HARDENED_REVISION} for $DISTRO $RELEASE $ARCH."
 
-# Defuse debian/patches. Debian's 3.0 (quilt) source format applies
-# debian/patches/series against the orig tarball at build time. Our
-# patched tree is already pre-patched with linux-hardened, so letting
-# quilt apply Debian's patches on top double-patches the tree: conflicts
-# at best, silently-wrong source at worst. Truncating the series file
-# disables Debian's quilt step without affecting the rest of the
-# packaging.
-if [[ -f debian/patches/series ]]; then
-    echo "truncating debian/patches/series (tree is pre-patched)"
-    : > debian/patches/series
+# bindeb-pkg runs `make clean` internally, which removes generated files
+# but preserves .config. The merged .config from configure-kernel.sh is
+# what bindeb-pkg uses.
+echo "running make bindeb-pkg"
+echo "  KDEB_PKGVERSION=$new_version"
+echo "  LOCALVERSION=$local_version"
+echo "  ARCH=$kernel_arch  -j$(nproc)"
+
+# DEB_HOST_ARCH tells dpkg-buildpackage (which bindeb-pkg calls
+# internally) what arch the .deb should target. The kernel make
+# call uses ARCH=$kernel_arch (x86_64) for the kernel build itself.
+make \
+    ARCH="$kernel_arch" \
+    -j"$(nproc)" \
+    KDEB_PKGVERSION="$new_version" \
+    LOCALVERSION="$local_version" \
+    KBUILD_BUILD_VERSION="$REVISION" \
+    bindeb-pkg
+
+# bindeb-pkg writes its .debs to $WORKDIR (one level above $patched_dir).
+# Confirm at least one image .deb landed; if not, the build silently
+# produced nothing useful and the sign step would fail later with a
+# less helpful error.
+shopt -s nullglob
+image_debs=( "$WORKDIR"/linux-image-*_"${ARCH}".deb )
+shopt -u nullglob
+if (( ${#image_debs[@]} == 0 )); then
+    echo "no linux-image .debs landed in $WORKDIR after bindeb-pkg" >&2
+    echo "contents of $WORKDIR:" >&2
+    ls -la "$WORKDIR" >&2 || true
+    exit 1
 fi
-
-# Step 4: defuse known Debian-kernel-build traps before invoking the
-# actual build. Each of these is a well-documented quirk; addressing
-# them up front saves an iteration of CI per quirk.
-#
-# 4a. Stale debian/control. Debian's linux source ships a
-#     debian/control.md5sum. Anything that changes debian/changelog
-#     (which we just did with dch -v) invalidates the md5sum. On the
-#     next call, the rule regenerates debian/control AND deliberately
-#     exits 1 as a guard against developers shipping a stale control.
-#     Trigger the regeneration once up front and ignore the expected
-#     exit; subsequent calls will see the md5sum matches and skip.
-echo "pre-regenerating debian/control (intentional exit 1 expected)"
-make -f debian/rules debian/control || true
-
-# 4b. ABI check + selftests. Debian's source compares the kernel's
-#     exported symbols against a reference file in debian/abi/<version>/
-#     and builds an extensive selftest suite. We don't ship a reference
-#     ABI for our hardened tree (the ABI is intentionally different
-#     from Debian's), and we don't ship selftests. Both are expensive
-#     and would block the build with no security benefit for us.
-#
-#     nocheck                       skips dh_auto_test (selftests).
-#     DEBIAN_KERNEL_DISABLE_DEBUG   skips debian/rules' abi-check step.
-export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
-export DEBIAN_KERNEL_DISABLE_DEBUG=true
-
-# 4c. Multi-flavor build. Debian's defines.toml for amd64 lists both
-#     "amd64" and "cloud-amd64" flavors, and the rt featureset adds
-#     "rt-amd64". A default `dpkg-buildpackage -b` builds all three,
-#     which 3x the iteration time for no value to us (we ship only
-#     the general-purpose amd64 flavor). Target the rules.gen
-#     binary-arch step for our specific flavor instead.
-case "$ARCH" in
-    amd64) make_target="binary-arch_amd64_none_amd64" ;;
-    arm64) make_target="binary-arch_arm64_none_arm64" ;;
-    *) echo "no rules.gen target mapped for ARCH=$ARCH" >&2; exit 2 ;;
-esac
-
-echo "running make $make_target"
-make -f debian/rules.gen "$make_target" -j"$(nproc)"
-
-# rules.gen leaves the .deb files in $WORKDIR (one level above
-# $patched_dir). dpkg-buildpackage would have put them there too;
-# the downstream sign + attach steps already glob $WORKDIR/*.deb.
 
 # Capture the final .config so the next build's new-symbol guard can
-# diff against it. The Debian linux source writes the post-olddefconfig
-# .config to debian/build/build_<arch>_<featureset>_<flavor>/.config.
-# We don't know the exact dir name in advance (it depends on the
-# featureset and flavor), so find the first match. For a single-flavor
-# amd64 build there's exactly one. For multi-flavor builds, future
-# work should produce one final.config per flavor.
-final_config=$(find debian/build -mindepth 2 -maxdepth 2 -name '.config' -type f -print -quit 2>/dev/null || true)
-if [[ -n $final_config && -f $final_config ]]; then
-    cp "$final_config" "$WORKDIR/final.config"
-    echo "captured final.config from $final_config"
-else
-    echo "WARNING: could not locate final .config in debian/build/" >&2
-    echo "the next build will skip the new-symbol guard against this one" >&2
-fi
+# diff against it. bindeb-pkg doesn't move .config; it stays in the
+# patched tree.
+cp "$patched_dir/.config" "$WORKDIR/final.config"
+echo "captured final.config from $patched_dir/.config"
 
-# The Debian linux source emits linux-image-*-dbg.deb alongside the
-# regular image. We ship those to the apt `debug` component (decision 6),
-# so we leave them in the output directory; publish.yml uploads them
-# in a separate run with component=debug.
-
-# Signing runs as a separate step (build/sign-debs.sh) after this
-# script, against the .deb files in $WORKDIR. Splitting the steps keeps
-# the build container free of any signing material — the signing key
-# only enters the runner's environment for sign-debs.sh.
+# The signing step runs separately. It iterates over $WORKDIR/*.deb,
+# signs vmlinuz with sbsign and modules with sign-file, then repacks.
+# The signing key never enters this script.
 
 echo "build-debs.sh: OK"
 ls -1 "$WORKDIR"/*.deb
