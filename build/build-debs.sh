@@ -98,6 +98,33 @@ local_version="-hardened-${ARCH}"
 
 cd "$patched_dir"
 
+# Strip linux-hardened's own kernelrelease tag.
+#
+# The patch contributes a "-hardenedN" suffix to the kernelrelease via
+# (a) a localversion-hardened file shipped in the patched tree, or (b) an
+# EXTRAVERSION assignment in the top-level Makefile. Left alone, this
+# combines with our LOCALVERSION to produce a doubly-redundant
+# kernelrelease like "7.0.9-hardened1-hardened-amd64" — and that string
+# becomes the package name and the /lib/modules/ path.
+#
+# We don't need the upstream tag in the kernelrelease: the hardened
+# revision is already encoded in the .deb version (KDEB_PKGVERSION,
+# above, includes "hardened${HARDENED_REVISION}"), and the build
+# manifest records it independently. apt upgrades correctly across
+# hardened revisions of the same kernel because the .deb version sorts
+# right; users who'd want hardened1 + hardened2 of the same upstream
+# kernel installed concurrently are a vanishingly rare case for our
+# threat model.
+#
+# Defuse both possible sources:
+#   - localversion-* files: remove anything matching, since the kernel
+#     concatenates all of them into the kernelrelease.
+#   - EXTRAVERSION in Makefile: override via `make EXTRAVERSION=` below.
+rm -f localversion-* localversion
+echo "post-defuse localversion-* files in patched tree:"
+find . -maxdepth 1 -name 'localversion*' -print | sed 's|^|  |' \
+    || echo "  (none — clean)"
+
 # Pre-flight: sanity-check the merged .config that configure-kernel.sh
 # produced. If CONFIG_EFI or CONFIG_EFI_STUB isn't =y, the resulting
 # kernel won't be PE-format and sbsign will reject it with "Invalid
@@ -167,6 +194,7 @@ make \
     -j"$(nproc)" \
     KDEB_PKGVERSION="$new_version" \
     LOCALVERSION="$local_version" \
+    EXTRAVERSION="" \
     KBUILD_BUILD_VERSION="$REVISION" \
     bindeb-pkg
 
