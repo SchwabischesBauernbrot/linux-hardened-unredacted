@@ -14,55 +14,75 @@ jobs:
   build:
     runs-on: linux-hardened
     container:
-      # Use the same debian:trixie digest as the build container in
-      # containers/Dockerfile.debian-trixie-amd64. Docker caches the
-      # layer once and reuses it; the runner image and the build image
-      # share a base, so version skew between orchestration and compile
-      # is impossible.
+      # The whole build runs in this one container. We previously also
+      # had a per-target Dockerfile that an outer docker-in-docker daemon
+      # built and then ran the kernel build inside; the sibling-container
+      # bind mounts kept landing on paths the dind daemon couldn't see
+      # (the job container's filesystem is invisible to dind). Collapsing
+      # to a single container makes the path arithmetic trivial.
+      #
+      # Trade-off: the compile step no longer runs with --network=none.
+      # The build scripts don't open the network during compile (apt-get
+      # ran in the setup step), so the practical attack surface is small.
+      # Phase 1 hardening (tracked in OPERATOR_TODO.md) reintroduces
+      # isolation via `unshare -n` or `iptables -P OUTPUT DROP` inside
+      # the compile step once we can grant the runner CAP_NET_ADMIN
+      # safely.
       image: debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
-    env:
-      # The Forgejo runner uses a Docker-in-Docker container (named
-      # `docker-in-docker` in its compose stack) for isolation. Job
-      # containers are spawned by dind on its default bridge network,
-      # where dind itself is reachable at the bridge gateway IP.
-      # 172.17.0.1 is the standard docker bridge gateway.
-      DOCKER_HOST: tcp://172.17.0.1:2375
     strategy:
       matrix:
         target:
           - { distro: debian, release: trixie, arch: amd64 }
     steps:
       # This step must run BEFORE actions/checkout, because actions/
-      # checkout is a JavaScript action and Forgejo's act runner
-      # invokes it by `docker exec node /action/dist/index.js`.
-      # debian:trixie ships neither nodejs nor git, so without this
-      # the very first action fails with `exec: "node": not found`.
+      # checkout is a JavaScript action and Forgejo's act runner invokes
+      # it by `docker exec node /action/dist/index.js`. debian:trixie
+      # ships neither nodejs nor git, so without this the very first
+      # action fails with `exec: "node": not found`.
       #
-      #   nodejs                      every JavaScript action (checkout, etc.)
-      #   git, ca-certificates       actions/checkout
-      #   wget, gpg                  build/fetch-sources.sh
-      #   xz-utils, patch            build/apply-patches.sh
-      #   docker-cli                  sibling-container pattern (CLI only;
-      #                              dind in a sibling container runs the
-      #                              actual daemon. Debian split the CLI
-      #                              out of `docker.io` -- that package
-      #                              now ships only the daemon binaries.)
-      #   openssl, libssl3           workflow's key-materialization step
-      #   sbsigntool                 build/sign-debs.sh (sbsign, sbverify)
-      #   zstd                       build/sign-debs.sh (.ko.zst recompression)
-      #   jq, curl                   release-asset upload
+      # Since the build now runs directly in this job container (no
+      # inner docker), we also install the full kernel-build toolchain
+      # here. The list is everything the old per-target Dockerfile had,
+      # plus the orchestration tools the workflow itself needs.
       #
-      # ~30 seconds per job, against a 20-60 minute kernel build.
-      # A follow-up could bake these into a pre-built runner image
-      # pushed to the Forgejo container registry and eliminate this
-      # step entirely.
-      - name: install runtime deps in job container
+      #   nodejs                  every JavaScript action (checkout, etc.)
+      #   git, ca-certificates    actions/checkout
+      #   wget, gpg               build/fetch-sources.sh
+      #   xz-utils, patch         build/apply-patches.sh
+      #   openssl, libssl3        workflow's key-materialization step
+      #   sbsigntool              build/sign-debs.sh (sbsign, sbverify)
+      #   zstd, lz4, bzip2, gzip  build/sign-debs.sh + kernel image compression
+      #   jq, curl                release-asset upload
+      #   build-essential, bc, bison, flex, libssl-dev, libelf-dev,
+      #   dwarves, rsync, kmod, cpio, python3, debhelper, kernel-wedge,
+      #   libdw-dev, libpci-dev, pkg-config, mokutil, pesign, dpkg-dev,
+      #   fakeroot, quilt, gawk, libncurses-dev
+      #                           dpkg-buildpackage on the Debian linux source
+      #
+      # Cost: ~3 minutes against a 20-60 minute kernel build. A follow-up
+      # bakes these into a pre-built runner image pushed to the Forgejo
+      # container registry and drops this step to ~10 seconds.
+      - name: install build deps in job container
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
               nodejs \
               git ca-certificates wget gpg xz-utils patch \
-              docker-cli openssl libssl3 sbsigntool zstd jq curl
+              openssl libssl3 sbsigntool zstd lz4 bzip2 gzip jq curl \
+              build-essential bc bison flex libssl-dev libelf-dev \
+              dwarves rsync kmod cpio python3 debhelper kernel-wedge \
+              libdw-dev libpci-dev pkg-config mokutil pesign dpkg-dev \
+              fakeroot quilt gawk libncurses-dev
+          # Enable deb-src so `apt-get source linux` works.
+          # Handles both the deb822-format sources.list.d/debian.sources
+          # (trixie default) and the legacy /etc/apt/sources.list.
+          if [ -f /etc/apt/sources.list.d/debian.sources ]; then
+              sed -i 's/^Types: deb$/Types: deb deb-src/' \
+                  /etc/apt/sources.list.d/debian.sources
+          else
+              sed -i 's|^deb \(.*\)$|deb \1\ndeb-src \1|' /etc/apt/sources.list
+          fi
+          apt-get update
 
       - uses: actions/checkout@v4
         with:
@@ -116,30 +136,6 @@ jobs:
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
         run: ./build/apply-patches.sh
 
-      - name: build per-target container
-        run: |
-          set -euo pipefail
-          # Diagnostic: prior run reported `docker: command not found`
-          # at this step even though docker.io installed cleanly. The
-          # output below tells us whether the binary is missing, on a
-          # different path, or just unreachable via PATH.
-          echo "=== PATH ==="
-          echo "${PATH:-(unset)}"
-          echo "=== which docker ==="
-          command -v docker || echo "(docker not on PATH)"
-          echo "=== files matching /usr/*bin/docker* ==="
-          ls -la /usr/bin/docker* /usr/sbin/docker* 2>&1 | head -20 || true
-          echo "=== files docker.io claims to install ==="
-          dpkg -L docker.io 2>&1 | grep -E '/(bin|sbin)/' | head -20 || true
-          echo "=== end diagnostics ==="
-
-          image="hardened-build:${{ matrix.target.distro }}-${{ matrix.target.release }}-${{ matrix.target.arch }}"
-          docker build \
-            -t "$image" \
-            -f containers/Dockerfile.${{ matrix.target.distro }}-${{ matrix.target.release }}-${{ matrix.target.arch }} \
-            containers/
-          echo "BUILD_IMAGE=$image" >> "$GITHUB_ENV"
-
       - name: locate prior release's final.config
         id: prior
         run: |
@@ -169,34 +165,16 @@ jobs:
             echo "no prior release final.config found; new-symbol guard will skip"
           fi
 
-      - name: fetch distro source + stock config (network ON)
+      - name: fetch distro source + stock config
         env:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           DISTRO: ${{ matrix.target.distro }}
           RELEASE: ${{ matrix.target.release }}
           ARCH: ${{ matrix.target.arch }}
           WORKDIR: ${{ runner.temp }}/work
-        run: |
-          set -euo pipefail
-          # Run as root inside the container so apt-get update works.
-          # Pass the host runner's UID/GID through so the script can
-          # chown its outputs to the right owner, which lets the next
-          # step (running as the host user) read them. Without this,
-          # bind-mount ownership ends up as root and the unprivileged
-          # build step fails on access.
-          docker run --rm \
-            --user 0:0 \
-            -v "$WORKDIR:/home/builder/build" \
-            -v "$(pwd):/repo:ro" \
-            -w /home/builder/build \
-            -e KERNEL_VERSION -e DISTRO -e RELEASE -e ARCH \
-            -e WORKDIR=/home/builder/build \
-            -e RUNNER_UID="$(id -u)" \
-            -e RUNNER_GID="$(id -g)" \
-            "$BUILD_IMAGE" \
-            bash -lc '/repo/build/fetch-distro-source.sh'
+        run: ./build/fetch-distro-source.sh
 
-      - name: configure + build (network OFF)
+      - name: configure + build
         env:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
@@ -206,31 +184,18 @@ jobs:
           REVISION: ${{ github.run_number }}
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
           WORKDIR: ${{ runner.temp }}/work
+          STOCK_CONFIG_PATH: ${{ runner.temp }}/work/stock.config
         run: |
           set -euo pipefail
-          # All sources are now in $WORKDIR. The kernel build runs with
-          # no network access; any package that wasn't installed at
-          # image-build time or fetched in the previous step is a bug.
           # PREVIOUS_CONFIG_PATH is set only if the prior step found a
-          # committed final.config for an earlier release. The script
-          # treats it as optional and skips the new-symbol guard if the
-          # var is empty or the file is missing.
-          prev_arg=()
+          # committed final.config for an earlier release. The scripts
+          # treat it as optional and skip the new-symbol guard if it's
+          # unset or the file is missing.
           if [[ -f "$WORKDIR/previous.config" ]]; then
-              prev_arg+=(-e PREVIOUS_CONFIG_PATH=/home/builder/build/previous.config)
+              export PREVIOUS_CONFIG_PATH="$WORKDIR/previous.config"
           fi
-          docker run --rm --network=none \
-            -v "$WORKDIR:/home/builder/build" \
-            -v "$(pwd):/repo:ro" \
-            -w /home/builder/build \
-            -e KERNEL_VERSION -e HARDENED_REVISION \
-            -e DISTRO -e RELEASE -e ARCH \
-            -e REVISION -e SOURCE_DATE_EPOCH \
-            -e WORKDIR=/home/builder/build \
-            -e STOCK_CONFIG_PATH=/home/builder/build/stock.config \
-            "${prev_arg[@]}" \
-            "$BUILD_IMAGE" \
-            bash -lc '/repo/build/configure-kernel.sh && /repo/build/build-debs.sh'
+          ./build/configure-kernel.sh
+          ./build/build-debs.sh
 
       - name: sign kernel + modules
         env:
