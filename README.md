@@ -8,6 +8,19 @@ Distributed by [Unredacted](https://unredacted.org) a 501(c)(3) nonprofit.
 
 Phase 0: repository scaffold. No published packages yet.
 
+## What this kernel changes
+
+On top of Debian's stock kernel, this build applies the [`anthraxx/linux-hardened`](https://github.com/anthraxx/linux-hardened) patch set plus a configuration overlay ([`configs/hardened-overlay.config`](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/configs/hardened-overlay.config); per-symbol rationale in [`configs/POLICY.md`](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/configs/POLICY.md)). The hardening falls into four buckets: memory-safety (heap and stack zero-init, hardened usercopy, FORTIFY_SOURCE, slab freelist hardening, KASLR, KFENCE); integrity (W^X for kernel and module text, forced module-signature verification, integrity-mode lockdown under Secure Boot); attack-surface reduction (`/dev/mem`, `/dev/kmem`, `/proc/kcore`, kexec, and several legacy syscalls removed); and restrictive sysctl defaults (unprivileged user namespaces off; perf, BPF, and ptrace restricted to root).
+
+That hardening comes with friction worth knowing before you install:
+
+- **Out-of-tree modules** (NVIDIA, ZFS, VirtualBox) must be rebuilt against our headers and signed. DKMS does this automatically with a machine-local MOK key you enroll once at reboot.
+- **Rootless containers** (Docker, Podman), the Chromium sandbox, Snap, and Flatpak depend on unprivileged user namespaces, which are off by default. Re-enable them via the opt-in in [docs/users/incompatibilities.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/incompatibilities.md).
+- **kexec/kdump, hibernation, and `/dev/mem`-based tools** do not work.
+- **Every module must be signed.** An unsigned out-of-tree module will not load (`MODULE_SIG_FORCE`).
+
+Per-symptom workarounds are in [docs/users/incompatibilities.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/incompatibilities.md). Keep your distro's stock kernel installed as a recovery fallback; both coexist and GRUB lists both.
+
 ## Layout
 
 | Path | Contents |
@@ -33,8 +46,6 @@ Once Phase 1 publishes packages, end users follow [docs/users/install.md](https:
 
 GPLv2. See [LICENSE](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/LICENSE).
 
-Project scripts under `build/` and `tools/` may be relicensed under MIT in the future. Until that happens, the whole repository is GPLv2.
-
 ## Security
 
 - Contact: `security@unredacted.org`. PGP key fingerprint will be added to [SECURITY.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/SECURITY.md) once generated.
@@ -48,3 +59,7 @@ Sustained by the [unredacted.org](https://unredacted.org) 501(c)(3). Donations f
 ## Reproducibility
 
 Each release ships a `manifest.json` recording every input hash and the container image digest used to build it. The byte-identical rebuild contract applies to the unsigned `.deb`s; the signing layer is attested separately by the cert fingerprint in the manifest. Independent rebuild instructions live in [docs/users/building-from-source.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/building-from-source.md).
+
+## Authorship and review
+
+Substantial portions of the build pipeline, scripts, and documentation in this repository were co-authored with Claude (Anthropic) during pair-programming sessions. Each commit's `Co-Authored-By:` trailer records the model and the human committer responsible for review. Signing keys, infrastructure secrets, and final-merge authority remain in human hands.
