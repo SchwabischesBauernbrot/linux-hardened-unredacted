@@ -45,6 +45,27 @@ cp "$STOCK_CONFIG_PATH" .config
 echo "merging hardening overlay"
 ./scripts/kconfig/merge_config.sh -m .config "$overlay" "$target_override"
 
+# If the workflow materialized a project signing key + cert PEM and
+# passed MODULE_SIG_KEY_PATH, override CONFIG_MODULE_SIG_KEY to point
+# at it. The kernel build then signs every module with our project
+# key during compile and embeds the matching cert in the kernel's
+# .builtin_trusted_keys. Without this, the build auto-generates an
+# ephemeral key, embeds the ephemeral cert, and our post-build module
+# signatures fail to verify at boot ("Loading of module with
+# unavailable key is rejected").
+#
+# This goes BETWEEN merge_config.sh and olddefconfig so the override
+# survives the default-fill pass.
+if [[ -n "${MODULE_SIG_KEY_PATH:-}" ]]; then
+    [[ -f $MODULE_SIG_KEY_PATH ]] || {
+        echo "MODULE_SIG_KEY_PATH set but file missing: $MODULE_SIG_KEY_PATH" >&2
+        exit 1
+    }
+    echo "pinning CONFIG_MODULE_SIG_KEY=$MODULE_SIG_KEY_PATH"
+    sed -i '/^CONFIG_MODULE_SIG_KEY=/d; /^# CONFIG_MODULE_SIG_KEY/d' .config
+    printf 'CONFIG_MODULE_SIG_KEY="%s"\n' "$MODULE_SIG_KEY_PATH" >> .config
+fi
+
 # Translate the Debian/dpkg arch name (amd64, arm64) to the kernel
 # build's arch name (x86_64, arm64). The kernel has arch/x86/ and
 # arch/arm64/; there is no arch/amd64/, so passing ARCH=amd64 straight

@@ -199,8 +199,34 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
           WORKDIR: ${{ runner.temp }}/work
           STOCK_CONFIG_PATH: ${{ runner.temp }}/work/stock.config
+          SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
+          SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
         run: |
           set -euo pipefail
+          # Materialize the project signing key + cert into a tmpfs file
+          # for the kernel build to consume as CONFIG_MODULE_SIG_KEY. The
+          # build then signs every module with our project key and embeds
+          # our cert in .builtin_trusted_keys, so the kernel intrinsically
+          # trusts our signatures without needing MOK enrollment. The same
+          # key+cert is reused by sign-debs.sh later to sign vmlinuz for
+          # UEFI Secure Boot.
+          umask 077
+          keydir=$(mktemp -d)
+          trap 'rm -rf "$keydir"' EXIT
+          cat <<<"$SIGNING_KEY"  > "$keydir/signing.key"
+          cat <<<"$SIGNING_CERT" > "$keydir/signing.crt"
+          # The kernel build wants one PEM file containing both the key
+          # and the cert. Concatenate in that order.
+          cat "$keydir/signing.key" "$keydir/signing.crt" \
+              > "$keydir/signing.pem"
+          openssl pkey -in "$keydir/signing.key" -noout
+          openssl x509 -in "$keydir/signing.crt" -noout
+          export MODULE_SIG_KEY_PATH="$keydir/signing.pem"
+          # Export the individual paths too so sign-debs.sh (which runs
+          # later in this same job, after this trap fires) re-materializes
+          # them from the same secrets — the trap rm -rf cleans this dir
+          # at the end of THIS step.
+
           # PREVIOUS_CONFIG_PATH is set only if the prior step found a
           # committed final.config for an earlier release. The scripts
           # treat it as optional and skip the new-symbol guard if it's

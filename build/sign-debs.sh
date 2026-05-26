@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Sign the kernel images and modules in the built .deb packages.
+# Sign the kernel image (vmlinuz) in the built linux-image .deb for
+# UEFI Secure Boot. Modules are NOT signed here; they were signed at
+# build time via CONFIG_MODULE_SIG_KEY in configure-kernel.sh, which
+# avoids the decompress/sign/recompress dance and embeds our cert in
+# the kernel's .builtin_trusted_keys.
 #
-# Run after build/build-debs.sh. Operates in-place on the .debs in $WORKDIR.
+# Run after build/build-debs.sh. Operates in-place on the .debs in
+# $WORKDIR.
 #
 # Inputs from env:
 #   WORKDIR              directory containing built .deb files
@@ -24,118 +29,29 @@ umask 022
 
 cd "$WORKDIR"
 
-# Locate the kernel's sign-file helper — built as a side effect of the
-# kernel build and shipped at scripts/sign-file under the source tree.
-sign_file=$(find . -path './linux-*/scripts/sign-file' -type f -executable -print -quit || true)
-[[ -n $sign_file ]] || {
-    echo "scripts/sign-file not found; run build-debs.sh first" >&2
-    exit 1
-}
-sign_file=$(readlink -f "$sign_file")
-
 shopt -s nullglob
 
-sign_one_module() {
-    local ko=$1
-    case "$ko" in
-        *.ko)
-            "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$ko"
-            ;;
-        *.ko.zst)
-            # Match the kernel build's zstd options. The kernel's in-tree
-            # zstd decoder (lib/zstd/) supports the standard format; using
-            # --long here would produce a stream the kernel can't read.
-            local raw=${ko%.zst}
-            zstd -q -d -f "$ko" -o "$raw"
-            rm "$ko"
-            "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$raw"
-            zstd -q -T1 -19 -f "$raw" -o "$ko"
-            rm "$raw"
-            ;;
-        *.ko.xz)
-            # Match the kernel build's xz options. Default `xz` uses
-            # --check=crc64 + 8 MiB dict; the kernel's in-tree xz_dec
-            # decoder (lib/xz/) cannot parse that, and at boot every
-            # modprobe fails with "decompression failed with status 6"
-            # (XZ_OPTIONS_ERROR). scripts/Makefile.modinst pins
-            # --lzma2=preset=6,dict=1MiB --check=crc32 -T1; we have to
-            # match those bytes exactly for the kernel's in-kernel
-            # decompressor to accept the result.
-            local raw=${ko%.xz}
-            xz -d "$ko"
-            "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$raw"
-            xz --lzma2=preset=6,dict=1MiB --check=crc32 -T1 "$raw"
-            ;;
-        *.ko.gz)
-            # gzip format is unambiguous; the kernel's in-tree zlib
-            # decoder accepts the default gzip stream. -n suppresses the
-            # mtime field so the output is byte-stable across rebuilds.
-            local raw=${ko%.gz}
-            gunzip "$ko"
-            "$sign_file" sha256 "$SIGNING_KEY_PATH" "$SIGNING_CERT_PATH" "$raw"
-            gzip -n "$raw"
-            ;;
-        *)
-            ;;
-    esac
-    # Module recompression isn't bitwise-deterministic across all
-    # zstd/xz implementations, and the post-signing step embeds
-    # signing-key-dependent bytes. Both are expected to diff post-sign;
-    # tools/repro-check.sh strips signatures from both sides before
-    # comparing, so reproducibility is checked on the pre-signing
-    # outputs. See releases/README.md for the contract.
-}
-
-for deb in linux-image-*-hardened-*_*.deb linux-headers-*-hardened-*_*.deb; do
+# Process every linux-image .deb except the -dbg variant. -dbg ships
+# debug symbols at /usr/lib/debug, not a kernel image; signing it is
+# pointless and would just slow the step down for ~1 GB of files.
+for deb in linux-image-*-hardened-*_*.deb; do
     [[ -f $deb ]] || continue
     case "$deb" in *-dbg_*) continue;; esac
 
-    echo "post-signing $deb"
+    echo "signing vmlinuz in $deb"
     extracted=$(mktemp -d)
     dpkg-deb -R "$deb" "$extracted"
 
-    # Diagnostic: dump everything in $extracted/boot to see what
-    # bindeb-pkg actually installed. The previous run showed vmlinuz
-    # starting with FF FF FF FF — that's not bzImage, PE, or ELF; we
-    # need to see the full picture.
-    echo "  --- contents of $extracted/boot ---"
-    ls -la "$extracted/boot/" 2>/dev/null || echo "  (no boot/ directory)"
-    echo "  --- end boot/ ---"
-
+    # Sign every vmlinuz-* under /boot. There should be exactly one per
+    # linux-image deb; loop anyway for safety.
     while read -r vmlinuz; do
         [[ -n $vmlinuz ]] || continue
-
-        echo "  --- diagnostic for $(basename "$vmlinuz") ---"
-        echo "  size: $(stat -c %s "$vmlinuz") bytes"
-        echo "  file: $(file -b "$vmlinuz")"
-        echo "  first 64 bytes:"
-        head -c 64 "$vmlinuz" | od -An -tx1 -w16 | sed 's|^|    |'
-
-        # Also check the matching config file. Previous run reported no
-        # CONFIG_EFI* lines, which is suspicious; either the file isn't
-        # what we think or EFI got disabled. Dump head + count.
-        config_file=$(dirname "$vmlinuz")/config-"$(basename "$vmlinuz" | sed 's/^vmlinuz-//')"
-        if [[ -f $config_file ]]; then
-            echo "  $(basename "$config_file"): size=$(stat -c %s "$config_file"), lines=$(wc -l < "$config_file")"
-            echo "  first 5 lines:"
-            head -5 "$config_file" | sed 's|^|    |'
-            efi_count=$(grep -cE '^CONFIG_EFI' "$config_file" || true)
-            echo "  CONFIG_EFI* line count: $efi_count"
-        else
-            echo "  config file $config_file: NOT FOUND"
-        fi
-        echo "  --- end diagnostic ---"
-
         sbsign --key "$SIGNING_KEY_PATH" --cert "$SIGNING_CERT_PATH" \
                --output "$vmlinuz.signed" "$vmlinuz"
         mv "$vmlinuz.signed" "$vmlinuz"
         sbverify --cert "$SIGNING_CERT_PATH" "$vmlinuz" >/dev/null
+        echo "  signed: $(basename "$vmlinuz")"
     done < <(find "$extracted/boot" -maxdepth 1 -name 'vmlinuz-*' -type f 2>/dev/null || true)
-
-    while read -r ko; do
-        [[ -n $ko ]] || continue
-        sign_one_module "$ko"
-    done < <(find "$extracted/lib/modules" -name '*.ko*' -type f 2>/dev/null || true)
 
     repacked="${deb%.deb}.tmp.deb"
     dpkg-deb -b "$extracted" "$repacked"
