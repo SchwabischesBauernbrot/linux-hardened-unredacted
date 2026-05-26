@@ -58,8 +58,20 @@ fi
 patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 [[ -d $patched_dir ]] || { echo "patched tree missing at $patched_dir" >&2; exit 1; }
 
+# Translate the Debian arch name to the kernel build's arch name for
+# any direct `make` call here. The kernel has arch/x86/ and arch/arm64/
+# but no arch/amd64/; without the override, ARCH=amd64 from the workflow
+# env propagates into make and it fails looking for arch/amd64/Makefile.
+# dpkg-buildpackage further down handles its own translation, so this
+# only affects the bare make calls in this script.
+case "$ARCH" in
+    amd64) kernel_arch=x86_64 ;;
+    arm64) kernel_arch=arm64 ;;
+    *) echo "unsupported ARCH: $ARCH" >&2; exit 2 ;;
+esac
+
 echo "repackaging patched tree as orig tarball"
-( cd "$patched_dir" && make -s distclean )
+( cd "$patched_dir" && make ARCH="$kernel_arch" -s distclean )
 
 orig_tarball="linux_${KERNEL_VERSION}.hardened${HARDENED_REVISION}.orig.tar.xz"
 tar --sort=name \
