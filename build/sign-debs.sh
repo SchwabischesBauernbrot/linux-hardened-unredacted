@@ -80,24 +80,37 @@ for deb in linux-image-*-hardened-*_*.deb linux-headers-*-hardened-*_*.deb; do
     extracted=$(mktemp -d)
     dpkg-deb -R "$deb" "$extracted"
 
+    # Diagnostic: dump everything in $extracted/boot to see what
+    # bindeb-pkg actually installed. The previous run showed vmlinuz
+    # starting with FF FF FF FF — that's not bzImage, PE, or ELF; we
+    # need to see the full picture.
+    echo "  --- contents of $extracted/boot ---"
+    ls -la "$extracted/boot/" 2>/dev/null || echo "  (no boot/ directory)"
+    echo "  --- end boot/ ---"
+
     while read -r vmlinuz; do
         [[ -n $vmlinuz ]] || continue
 
-        # Diagnostic: confirm the file is PE-format before invoking sbsign.
-        # sbsign requires "MZ" (0x4d 0x5a) at offset 0; on x86_64 with
-        # CONFIG_EFI_STUB=y the bzImage carries this. If we see anything
-        # else, print enough context to diagnose whether EFI_STUB ended
-        # up off, the file is a vmlinux ELF (would start with 7f 45 4c 46),
-        # or something else wrapped it.
-        head -c 4 "$vmlinuz" | od -An -tx1 -c | head -2 | \
-            sed "s|^|  $(basename "$vmlinuz") first-4-bytes: |"
-        # Also dump whether EFI_STUB is set in the matching config file.
+        echo "  --- diagnostic for $(basename "$vmlinuz") ---"
+        echo "  size: $(stat -c %s "$vmlinuz") bytes"
+        echo "  file: $(file -b "$vmlinuz")"
+        echo "  first 64 bytes:"
+        head -c 64 "$vmlinuz" | od -An -tx1 -w16 | sed 's|^|    |'
+
+        # Also check the matching config file. Previous run reported no
+        # CONFIG_EFI* lines, which is suspicious; either the file isn't
+        # what we think or EFI got disabled. Dump head + count.
         config_file=$(dirname "$vmlinuz")/config-"$(basename "$vmlinuz" | sed 's/^vmlinuz-//')"
         if [[ -f $config_file ]]; then
-            grep -E '^CONFIG_EFI(_STUB)?=' "$config_file" \
-                | sed 's|^|  '"$(basename "$config_file")"': |' \
-                || echo "  $(basename "$config_file"): no CONFIG_EFI* lines"
+            echo "  $(basename "$config_file"): size=$(stat -c %s "$config_file"), lines=$(wc -l < "$config_file")"
+            echo "  first 5 lines:"
+            head -5 "$config_file" | sed 's|^|    |'
+            efi_count=$(grep -cE '^CONFIG_EFI' "$config_file" || true)
+            echo "  CONFIG_EFI* line count: $efi_count"
+        else
+            echo "  config file $config_file: NOT FOUND"
         fi
+        echo "  --- end diagnostic ---"
 
         sbsign --key "$SIGNING_KEY_PATH" --cert "$SIGNING_CERT_PATH" \
                --output "$vmlinuz.signed" "$vmlinuz"
