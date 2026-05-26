@@ -52,7 +52,11 @@ apt-get update -q
 # kernel rebuilt a week apart can pull two different debian/ skeletons
 # and produce two different binary outputs. Recording the version up
 # front also gives publish.py a value to write into the manifest.
-distro_kernel_version=$(apt-cache showsrc linux | awk '/^Version:/{print $2; exit}')
+# Don't use `awk '...; exit'` here: it closes stdin once the first
+# Version: line matches, apt-cache SIGPIPEs trying to write more, and
+# `set -o pipefail` turns that 141 into a step failure. The flag form
+# keeps awk reading until apt-cache is done.
+distro_kernel_version=$(apt-cache showsrc linux | awk '/^Version:/ && !v {v=$2} END {print v}')
 [[ -n $distro_kernel_version ]] || {
     echo "could not determine distro linux source version" >&2
     exit 1
