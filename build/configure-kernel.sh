@@ -45,8 +45,20 @@ cp "$STOCK_CONFIG_PATH" .config
 echo "merging hardening overlay"
 ./scripts/kconfig/merge_config.sh -m .config "$overlay" "$target_override"
 
+# Translate the Debian/dpkg arch name (amd64, arm64) to the kernel
+# build's arch name (x86_64, arm64). The kernel has arch/x86/ and
+# arch/arm64/; there is no arch/amd64/, so passing ARCH=amd64 straight
+# through to make fails with "arch/amd64/Makefile: No such file".
+# The matrix and the override config filenames stay on the Debian
+# convention; this translation is local to the make invocation.
+case "$ARCH" in
+    amd64) kernel_arch=x86_64 ;;
+    arm64) kernel_arch=arm64 ;;
+    *) echo "unsupported ARCH: $ARCH" >&2; exit 2 ;;
+esac
+
 echo "running olddefconfig"
-make ARCH="$ARCH" olddefconfig
+make ARCH="$kernel_arch" olddefconfig
 
 # New-symbol guard.
 extract_symbols() {
