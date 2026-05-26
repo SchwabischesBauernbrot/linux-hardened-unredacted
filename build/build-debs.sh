@@ -142,10 +142,50 @@ if [[ -f debian/patches/series ]]; then
     : > debian/patches/series
 fi
 
-# Step 4: build. -us -uc skips dpkg-buildpackage's own signing
-# (we do that in sign-debs.sh, post-build). -b builds binary-only.
-echo "running dpkg-buildpackage"
-dpkg-buildpackage -us -uc -b -d -j"$(nproc)"
+# Step 4: defuse known Debian-kernel-build traps before invoking the
+# actual build. Each of these is a well-documented quirk; addressing
+# them up front saves an iteration of CI per quirk.
+#
+# 4a. Stale debian/control. Debian's linux source ships a
+#     debian/control.md5sum. Anything that changes debian/changelog
+#     (which we just did with dch -v) invalidates the md5sum. On the
+#     next call, the rule regenerates debian/control AND deliberately
+#     exits 1 as a guard against developers shipping a stale control.
+#     Trigger the regeneration once up front and ignore the expected
+#     exit; subsequent calls will see the md5sum matches and skip.
+echo "pre-regenerating debian/control (intentional exit 1 expected)"
+make -f debian/rules debian/control || true
+
+# 4b. ABI check + selftests. Debian's source compares the kernel's
+#     exported symbols against a reference file in debian/abi/<version>/
+#     and builds an extensive selftest suite. We don't ship a reference
+#     ABI for our hardened tree (the ABI is intentionally different
+#     from Debian's), and we don't ship selftests. Both are expensive
+#     and would block the build with no security benefit for us.
+#
+#     nocheck                       skips dh_auto_test (selftests).
+#     DEBIAN_KERNEL_DISABLE_DEBUG   skips debian/rules' abi-check step.
+export DEB_BUILD_OPTIONS="parallel=$(nproc) nocheck"
+export DEBIAN_KERNEL_DISABLE_DEBUG=true
+
+# 4c. Multi-flavor build. Debian's defines.toml for amd64 lists both
+#     "amd64" and "cloud-amd64" flavors, and the rt featureset adds
+#     "rt-amd64". A default `dpkg-buildpackage -b` builds all three,
+#     which 3x the iteration time for no value to us (we ship only
+#     the general-purpose amd64 flavor). Target the rules.gen
+#     binary-arch step for our specific flavor instead.
+case "$ARCH" in
+    amd64) make_target="binary-arch_amd64_none_amd64" ;;
+    arm64) make_target="binary-arch_arm64_none_arm64" ;;
+    *) echo "no rules.gen target mapped for ARCH=$ARCH" >&2; exit 2 ;;
+esac
+
+echo "running make $make_target"
+make -f debian/rules.gen "$make_target" -j"$(nproc)"
+
+# rules.gen leaves the .deb files in $WORKDIR (one level above
+# $patched_dir). dpkg-buildpackage would have put them there too;
+# the downstream sign + attach steps already glob $WORKDIR/*.deb.
 
 # Capture the final .config so the next build's new-symbol guard can
 # diff against it. The Debian linux source writes the post-olddefconfig
