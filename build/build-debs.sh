@@ -70,10 +70,17 @@ case "$ARCH" in
     *) echo "unsupported ARCH: $ARCH" >&2; exit 2 ;;
 esac
 
-echo "repackaging patched tree as orig tarball"
+echo "cleaning patched tree"
 ( cd "$patched_dir" && make ARCH="$kernel_arch" -s distclean )
 
-orig_tarball="linux_${KERNEL_VERSION}.hardened${HARDENED_REVISION}.orig.tar.xz"
+# Step 2a: pack the (pristine, patched) kernel tree as an orig tarball.
+# This is the artifact the reproducibility check (tools/repro-check.sh)
+# compares between independent rebuilds — byte-identical means same
+# source. It's also placed where dpkg-source can find it if format 3.0
+# (quilt) validates the orig at build time. The flags pin file
+# ordering, ownership, and mtime so the tarball is reproducible.
+orig_tarball="$WORKDIR/linux_${KERNEL_VERSION}.orig.tar.xz"
+echo "creating orig tarball: $orig_tarball"
 tar --sort=name \
     --owner=0 --group=0 --numeric-owner \
     --mtime="@${SOURCE_DATE_EPOCH}" \
@@ -81,7 +88,35 @@ tar --sort=name \
     -cf "$orig_tarball" \
     -C "$WORKDIR" "linux-${KERNEL_VERSION}"
 
+# Step 2b: graft Debian's debian/ skeleton onto our patched kernel tree.
+# Without this, dpkg-buildpackage would build whatever was in
+# $distro_src_dir — Debian's stock kernel sources — and the linux-hardened
+# patches we just applied would never make it into the .deb. The orig
+# tarball above is the audit trail; this graft is what dpkg-buildpackage
+# actually builds.
+echo "grafting Debian debian/ skeleton onto patched tree"
+rm -rf "$patched_dir/debian"
+cp -a "$distro_src_dir/debian" "$patched_dir/debian"
+
 # Step 3: rebuild the version string per spec §6.6.
+#
+# Debian's linux source has its own VersionLinux parser that requires the
+# upstream portion (before the first dash) to look like a kernel.org
+# version: X.Y or X.Y.Z (optionally with ~rcN). Earlier we tried to
+# encode "hardened1" in the upstream (KERNEL_VERSION.hardenedN-...);
+# that fails with "Invalid debian version" at debian/rules clean. Move
+# everything custom into the Debian revision portion (after the dash).
+#
+# Format: <upstream>-1hardened<N>.<distro_token>.<rev>
+#   upstream     = bare kernel.org version (7.0.9, 6.12.27, ...)
+#   1            = Debian's "first revision" convention
+#   hardenedN    = which linux-hardened release we tracked
+#   distro_token = which distro/release (deb13, deb12, ...)
+#   rev          = our build revision (workflow run_number)
+#
+# Example: 7.0.9-1hardened1.deb13.44 sorts higher than Debian's
+# hypothetical 7.0.9-1, and successive rebuilds of the same upstream
+# (.44, .45, .46) upgrade cleanly via apt.
 case "$DISTRO/$RELEASE" in
     debian/trixie)   distro_token="deb13" ;;
     debian/bookworm) distro_token="deb12" ;;
@@ -89,21 +124,21 @@ case "$DISTRO/$RELEASE" in
     ubuntu/jammy)    distro_token="ubuntu2204" ;;
     *) echo "unknown DISTRO/RELEASE pair: $DISTRO/$RELEASE" >&2; exit 2 ;;
 esac
-new_version="${KERNEL_VERSION}.hardened${HARDENED_REVISION}-${distro_token}.${REVISION}~hardened1"
+new_version="${KERNEL_VERSION}-1hardened${HARDENED_REVISION}.${distro_token}.${REVISION}"
 
-cd "$distro_src_dir"
+cd "$patched_dir"
 dch -v "$new_version" --distribution "$RELEASE" \
     "linux-hardened ${KERNEL_VERSION}-hardened${HARDENED_REVISION} for $DISTRO $RELEASE $ARCH."
 
 # Defuse debian/patches. Debian's 3.0 (quilt) source format applies
-# debian/patches/series against the orig tarball at build time. Our orig
-# tarball is already pre-patched with linux-hardened (apply-patches.sh),
-# so letting quilt apply Debian's patches on top double-patches the
-# tree: conflicts at best, silently-wrong source at worst. Truncating
-# the series file disables Debian's quilt step without affecting the
-# rest of the packaging.
+# debian/patches/series against the orig tarball at build time. Our
+# patched tree is already pre-patched with linux-hardened, so letting
+# quilt apply Debian's patches on top double-patches the tree: conflicts
+# at best, silently-wrong source at worst. Truncating the series file
+# disables Debian's quilt step without affecting the rest of the
+# packaging.
 if [[ -f debian/patches/series ]]; then
-    echo "truncating debian/patches/series (orig tarball is pre-patched)"
+    echo "truncating debian/patches/series (tree is pre-patched)"
     : > debian/patches/series
 fi
 
