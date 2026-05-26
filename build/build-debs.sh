@@ -225,12 +225,14 @@ for deb in "${image_debs[@]}"; do
         | awk '!v && /\.\/boot\/vmlinuz-/ {v=$6} END {print v}')
     if [[ -n $vmlinuz_in_deb ]]; then
         # dpkg-deb --fsys-tarfile streams the deb data tarball; extract
-        # just the vmlinuz to stdout and hash it.
+        # just the vmlinuz to stdout and hash it. Use the path verbatim
+        # from dpkg-deb -c (which includes the "./" prefix) — stripping
+        # it makes tar miss the member.
         deb_vmlinuz_hash=$(dpkg-deb --fsys-tarfile "$deb" \
-            | tar -xO -f - "${vmlinuz_in_deb#./}" | sha256sum | awk '{print $1}')
+            | tar -xO -f - "$vmlinuz_in_deb" | sha256sum | awk '{print $1}')
         echo "  vmlinuz inside deb sha256: $deb_vmlinuz_hash"
         first_bytes=$(dpkg-deb --fsys-tarfile "$deb" \
-            | tar -xO -f - "${vmlinuz_in_deb#./}" | head -c 4 | od -An -tx1)
+            | tar -xO -f - "$vmlinuz_in_deb" | head -c 4 | od -An -tx1)
         echo "  vmlinuz inside deb first 4 bytes: $first_bytes"
     else
         echo "  (no vmlinuz entry found in this deb — unexpected for linux-image)"
