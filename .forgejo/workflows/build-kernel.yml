@@ -42,7 +42,11 @@ jobs:
       #   git, ca-certificates       actions/checkout
       #   wget, gpg                  build/fetch-sources.sh
       #   xz-utils, patch            build/apply-patches.sh
-      #   docker.io                  sibling-container pattern
+      #   docker-cli                  sibling-container pattern (CLI only;
+      #                              dind in a sibling container runs the
+      #                              actual daemon. Debian split the CLI
+      #                              out of `docker.io` -- that package
+      #                              now ships only the daemon binaries.)
       #   openssl, libssl3           workflow's key-materialization step
       #   sbsigntool                 build/sign-debs.sh (sbsign, sbverify)
       #   zstd                       build/sign-debs.sh (.ko.zst recompression)
@@ -58,7 +62,7 @@ jobs:
           apt-get install -y --no-install-recommends \
               nodejs \
               git ca-certificates wget gpg xz-utils patch \
-              docker.io openssl libssl3 sbsigntool zstd jq curl
+              docker-cli openssl libssl3 sbsigntool zstd jq curl
 
       - uses: actions/checkout@v4
         with:
