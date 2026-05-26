@@ -16,10 +16,10 @@
 #     update-initramfs as a command and we run it from our own postinst
 #     if we ship one later.
 #   - No secureboot signing helpers — we sign in sign-debs.sh anyway.
-#   - Package names are linux-image-<kernelrelease> / linux-headers-...,
-#     not linux-image-hardened-unredacted-amd64 (the future meta name).
-#     A future meta-package can paper over the naming; tracked in
-#     OPERATOR_TODO.md.
+#   - Concrete package names are linux-image-<kernelrelease> /
+#     linux-headers-<kernelrelease>. We additionally emit stable
+#     meta-packages (linux-image-hardened-unredacted-amd64 etc.) at the
+#     end of this script so users have a fixed name to install and track.
 #
 # Required env:
 #   WORKDIR
@@ -236,9 +236,76 @@ fi
 cp "$patched_dir/.config" "$WORKDIR/final.config"
 echo "captured final.config from $patched_dir/.config"
 
-# The signing step runs separately. It iterates over $WORKDIR/*.deb,
-# signs vmlinuz with sbsign and modules with sign-file, then repacks.
-# The signing key never enters this script.
+# --- Meta-packages -------------------------------------------------------
+# bindeb-pkg names its packages after the kernelrelease
+# (linux-image-7.0.9-hardened-unredacted-amd64), which changes on every
+# kernel bump. Users want a stable name to install and track, so we also
+# emit tiny (~3 KB) meta-packages whose only content is a Depends on the
+# current concrete package:
+#
+#   linux-image-hardened-unredacted-amd64   -> linux-image-<kernelrelease>
+#   linux-headers-hardened-unredacted-amd64 -> linux-headers-<kernelrelease>
+#
+# apt resolves the meta to the concrete; `apt upgrade` follows the meta
+# forward as new kernels publish. This mirrors Debian's own
+# linux-image-amd64 meta-package.
+
+# Derive the concrete kernelrelease from the produced image .deb rather
+# than reconstructing it, so the Depends can never point at a name the
+# build didn't actually emit. Skip the -dbg variant.
+kernelrelease=""
+for deb in "${image_debs[@]}"; do
+    case "$deb" in *-dbg_*) continue;; esac
+    base=$(basename "$deb")          # linux-image-<kr>_<version>_<arch>.deb
+    kr=${base#linux-image-}
+    kernelrelease=${kr%%_*}
+    break
+done
+[[ -n $kernelrelease ]] || {
+    echo "could not determine kernelrelease from produced .debs" >&2
+    exit 1
+}
+echo "concrete kernelrelease: $kernelrelease"
+
+emit_meta() {
+    # $1 = kind ("image" | "headers"); $2 = short description
+    local kind=$1 short=$2
+    local meta_pkg="linux-${kind}-hardened-unredacted-${ARCH}"
+    local concrete="linux-${kind}-${kernelrelease}"
+    local metadir
+    metadir=$(mktemp -d)
+    mkdir -p "$metadir/DEBIAN"
+    {
+        echo "Package: ${meta_pkg}"
+        echo "Source: linux-hardened"
+        echo "Version: ${new_version}"
+        echo "Architecture: ${ARCH}"
+        echo "Maintainer: Unredacted <security@unredacted.org>"
+        echo "Depends: ${concrete} (= ${new_version})"
+        echo "Section: kernel"
+        echo "Priority: optional"
+        echo "Description: ${short}"
+        echo " Meta-package that depends on the current linux-hardened ${kind}"
+        echo " built and signed by Unredacted. Install this name to track the"
+        echo " latest hardened kernel as new versions publish; apt upgrades"
+        echo " follow it forward automatically."
+    } > "$metadir/DEBIAN/control"
+    # --root-owner-group keeps the .deb owner-independent; SOURCE_DATE_EPOCH
+    # (exported above) clamps mtimes so the meta is reproducible.
+    dpkg-deb --build --root-owner-group "$metadir" \
+        "$WORKDIR/${meta_pkg}_${new_version}_${ARCH}.deb" >/dev/null
+    rm -rf "$metadir"
+    echo "  emitted ${meta_pkg}_${new_version}_${ARCH}.deb -> Depends ${concrete}"
+}
+
+echo "generating meta-packages"
+emit_meta image   "Hardened Linux kernel image for ${ARCH} (latest)"
+emit_meta headers "Hardened Linux kernel headers for ${ARCH} (latest)"
+
+# The signing step runs separately. It iterates over the concrete
+# linux-image .debs in $WORKDIR (the meta-packages have no vmlinuz, so
+# the sign step's glob deliberately skips them), signs vmlinuz with
+# sbsign, then repacks. The signing key never enters this script.
 
 echo "build-debs.sh: OK"
 ls -1 "$WORKDIR"/*.deb
