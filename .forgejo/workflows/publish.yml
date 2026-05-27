@@ -21,10 +21,15 @@ on:
       version:
         description: "Release tag (e.g. v7.0.10-hardened1)"
         required: true
+        # Forgejo requires an explicit input type; unlike GitHub it does
+        # not default a typeless input to string, and renders
+        # "Invalid input type" without it.
+        type: string
       distribution:
         description: "Distribution / codename (trixie, bookworm, noble, jammy)"
         default: trixie
         required: true
+        type: string
 
 # Per spec §6.1: this stage holds publish credentials and does NOT have
 # source-fetch credentials. The build artifacts arrive as release assets
