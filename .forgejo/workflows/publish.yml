@@ -49,6 +49,16 @@ jobs:
         with:
           ref: main
 
+      # The default node:22-bookworm runner image has curl and git but
+      # not jq (used to parse the release API) and not necessarily a
+      # python3 binary (tools/publish.py). Install both. act runs the
+      # job as root, so no sudo — same pattern as cve-watch.yml /
+      # validate.yml.
+      - name: install jq + python3
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends jq python3
+
       - name: resolve target
         id: target
         run: |
