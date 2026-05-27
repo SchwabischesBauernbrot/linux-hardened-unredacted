@@ -268,10 +268,13 @@ done
 echo "concrete kernelrelease: $kernelrelease"
 
 emit_meta() {
-    # $1 = kind ("image" | "headers"); $2 = short description
-    local kind=$1 short=$2
+    # $1 = kind ("image" | "headers"); $2 = short description;
+    # $3 = optional extra Depends clause, appended to the concrete dep.
+    local kind=$1 short=$2 extra_dep=${3:-}
     local meta_pkg="linux-${kind}-hardened-unredacted-${ARCH}"
     local concrete="linux-${kind}-${kernelrelease}"
+    local depends="${concrete} (= ${new_version})"
+    [[ -n $extra_dep ]] && depends="${depends}, ${extra_dep}"
     local metadir
     metadir=$(mktemp -d)
     mkdir -p "$metadir/DEBIAN"
@@ -281,7 +284,7 @@ emit_meta() {
         echo "Version: ${new_version}"
         echo "Architecture: ${ARCH}"
         echo "Maintainer: Unredacted <security@unredacted.org>"
-        echo "Depends: ${concrete} (= ${new_version})"
+        echo "Depends: ${depends}"
         echo "Section: kernel"
         echo "Priority: optional"
         echo "Description: ${short}"
@@ -298,8 +301,59 @@ emit_meta() {
     echo "  emitted ${meta_pkg}_${new_version}_${ARCH}.deb -> Depends ${concrete}"
 }
 
+# --- Defaults package ----------------------------------------------------
+# Ship the sysctl drop-in (configs/sysctl.d/99-hardened.conf) in a
+# separate arch-independent package, NOT in the kernel .deb. Two
+# concurrently-installed kernel versions would both claim
+# /usr/lib/sysctl.d/99-hardened.conf and dpkg would flag a file conflict.
+# The image meta-package Depends on this, so installing the kernel pulls
+# the documented sysctl policy. Admins override individual values with a
+# higher-numbered file in /etc/sysctl.d/ (which wins over /usr/lib).
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+sysctl_src="$repo_root/configs/sysctl.d/99-hardened.conf"
+[[ -f $sysctl_src ]] || { echo "missing $sysctl_src" >&2; exit 1; }
+
+echo "generating defaults package"
+defaults_pkg="unredacted-hardened-defaults"
+ddir=$(mktemp -d)
+mkdir -p "$ddir/DEBIAN" "$ddir/usr/lib/sysctl.d"
+cp "$sysctl_src" "$ddir/usr/lib/sysctl.d/99-hardened.conf"
+{
+    echo "Package: ${defaults_pkg}"
+    echo "Source: linux-hardened"
+    echo "Version: ${new_version}"
+    echo "Architecture: all"
+    echo "Maintainer: Unredacted <security@unredacted.org>"
+    echo "Section: admin"
+    echo "Priority: optional"
+    echo "Description: Hardened runtime defaults (sysctl) for the unredacted kernel"
+    echo " Ships /usr/lib/sysctl.d/99-hardened.conf, the sysctl policy"
+    echo " documented in the project's POLICY.md: unprivileged user"
+    echo " namespaces, ptrace, BPF, and perf restricted to root. Admins"
+    echo " override individual values with a higher-numbered file in"
+    echo " /etc/sysctl.d/. Pulled in by linux-image-hardened-unredacted-${ARCH}."
+} > "$ddir/DEBIAN/control"
+# Apply the sysctls on install so a reboot isn't required. `|| true`
+# because a key may not exist on the running (possibly stock) kernel;
+# sysctl --system logs and continues, and a missing key must not fail
+# package configuration.
+cat > "$ddir/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ]; then
+    sysctl --system >/dev/null 2>&1 || true
+fi
+POSTINST
+chmod 0755 "$ddir/DEBIAN/postinst"
+dpkg-deb --build --root-owner-group "$ddir" \
+    "$WORKDIR/${defaults_pkg}_${new_version}_all.deb" >/dev/null
+rm -rf "$ddir"
+echo "  emitted ${defaults_pkg}_${new_version}_all.deb"
+
 echo "generating meta-packages"
-emit_meta image   "Hardened Linux kernel image for ${ARCH} (latest)"
+# The image meta pulls in the defaults package; the headers meta does not.
+emit_meta image   "Hardened Linux kernel image for ${ARCH} (latest)" \
+    "${defaults_pkg} (>= ${new_version})"
 emit_meta headers "Hardened Linux kernel headers for ${ARCH} (latest)"
 
 # The signing step runs separately. It iterates over the concrete

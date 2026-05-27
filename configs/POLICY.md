@@ -4,7 +4,7 @@ The audit trail for every hardening choice that diverges from the distro stock c
 
 **Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
 
-The four sysctls in the "Tracing + debugging" section below are shipped as `configs/sysctl.d/99-hardened.conf` and installed by the linux-image .deb. They are not kernel CONFIG_ options; without the drop-in file, the documented policy values are not in effect.
+The four sysctls in the "Sysctls" section below ship in the `unredacted-hardened-defaults` package (a small arch-independent `.deb` pulled in by the `linux-image-hardened-unredacted-amd64` meta-package), which installs `configs/sysctl.d/99-hardened.conf` to `/usr/lib/sysctl.d/`. They are not kernel CONFIG_ options; without that package the documented policy values are not in effect. They live in a separate package rather than the kernel `.deb` so two concurrently-installed kernel versions don't conflict over the same file path.
 
 ## Memory safety
 
@@ -160,7 +160,7 @@ Compile-time equivalent of `kernel.perf_event_paranoid=3`: restricts the `perf_e
 
 ## Sysctls
 
-Shipped as `configs/sysctl.d/99-hardened.conf` in the linux-image `.deb`. These are runtime knobs, not kconfig options, so they only take effect with the drop-in installed.
+Shipped as `/usr/lib/sysctl.d/99-hardened.conf` by the `unredacted-hardened-defaults` package (pulled in by the `linux-image-hardened-unredacted-amd64` meta). These are runtime knobs, not kconfig options, so they only take effect with that package installed; the package's postinst runs `sysctl --system` so they apply without a reboot.
 
 ### `kernel.unprivileged_userns_clone=0`
 

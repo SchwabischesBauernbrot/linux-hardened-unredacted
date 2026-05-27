@@ -6,7 +6,7 @@ Living document. If you hit something not listed here, file an issue with kernel
 
 **Symptom:** `clone3: Operation not permitted` or `unshare: cannot unshare user namespace: operation not permitted`.
 
-**Cause:** the kernel ships `/etc/sysctl.d/99-hardened.conf` setting `kernel.unprivileged_userns_clone=0`. The file is a sysctl drop-in, not a baked-in CONFIG_ option, so you can override it.
+**Cause:** the `unredacted-hardened-defaults` package (installed with the kernel via the meta-package) ships `/usr/lib/sysctl.d/99-hardened.conf` setting `kernel.unprivileged_userns_clone=0`. It's a sysctl drop-in, not a baked-in CONFIG_ option, so you can override it from `/etc/sysctl.d/` (which wins over `/usr/lib/sysctl.d/`).
 
 **Workaround:** drop a higher-numbered file in `/etc/sysctl.d/` that re-enables user namespaces, then reload:
 
