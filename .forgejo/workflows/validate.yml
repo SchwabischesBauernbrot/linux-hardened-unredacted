@@ -38,23 +38,32 @@ jobs:
       - name: symbol-by-symbol coverage
         run: |
           set -euo pipefail
-          # Extract every CONFIG_X symbol from both files. The overlay
-          # has lines like `CONFIG_X=y` or `# CONFIG_Y is not set`;
-          # POLICY.md mentions them in `### CONFIG_X` headings and
-          # inline code spans.
-          overlay=$(grep -oE 'CONFIG_[A-Z0-9_]+' configs/hardened-overlay.config | sort -u)
+          # Every symbol we SET — in the hardening overlay or in any
+          # per-target override (configs/{distro}-{release}-{arch}.config) —
+          # must be documented in POLICY.md, and POLICY.md must not document
+          # symbols we don't set. Match kconfig setting lines only
+          # (`CONFIG_X=...` / `# CONFIG_X is not set`) so a comment that
+          # references a symbol by name isn't mistaken for setting it.
+          # POLICY.md mentions symbols in `### CONFIG_X` headings and code
+          # spans, so a plain token grep is the right read for it.
+          set_symbols() {
+            sed -nE \
+                -e 's/^(CONFIG_[A-Z0-9_]+)=.*/\1/p' \
+                -e 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1/p' "$@" | sort -u
+          }
+          configured=$(set_symbols configs/*.config)
           policy=$(grep -oE 'CONFIG_[A-Z0-9_]+' configs/POLICY.md | sort -u)
-          missing_in_policy=$(comm -23 <(echo "$overlay") <(echo "$policy"))
-          missing_in_overlay=$(comm -13 <(echo "$overlay") <(echo "$policy"))
+          missing_in_policy=$(comm -23 <(echo "$configured") <(echo "$policy"))
+          extra_in_policy=$(comm -13 <(echo "$configured") <(echo "$policy"))
           fail=0
           if [[ -n $missing_in_policy ]]; then
-            echo "symbols in hardened-overlay.config but not POLICY.md:" >&2
+            echo "symbols set in configs/*.config but not documented in POLICY.md:" >&2
             echo "$missing_in_policy" >&2
             fail=1
           fi
-          if [[ -n $missing_in_overlay ]]; then
-            echo "symbols mentioned in POLICY.md but not in hardened-overlay.config:" >&2
-            echo "$missing_in_overlay" >&2
+          if [[ -n $extra_in_policy ]]; then
+            echo "symbols documented in POLICY.md but not set in any configs/*.config:" >&2
+            echo "$extra_in_policy" >&2
             fail=1
           fi
           exit $fail
@@ -65,7 +74,12 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           set -euo pipefail
-          dupes=$(grep -oE 'CONFIG_[A-Z0-9_]+' configs/hardened-overlay.config | sort | uniq -d)
+          # Count kconfig setting lines only; a comment that names a symbol
+          # is not a duplicate setting.
+          dupes=$(sed -nE \
+              -e 's/^(CONFIG_[A-Z0-9_]+)=.*/\1/p' \
+              -e 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1/p' \
+              configs/hardened-overlay.config | sort | uniq -d)
           if [[ -n $dupes ]]; then
             echo "duplicate symbols in configs/hardened-overlay.config:" >&2
             echo "$dupes" >&2
