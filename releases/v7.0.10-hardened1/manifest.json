@@ -1,0 +1,108 @@
+{
+  "publishes": [
+    {
+      "component": "main",
+      "distribution": "trixie",
+      "purge": {
+        "purged": true,
+        "results": [
+          {
+            "body": "{ \"status\": \"ok\", \"id\": \"8230145-1779317046-1240816\" }",
+            "key": "dist-trixie",
+            "status": 200
+          },
+          {
+            "body": "{ \"status\": \"ok\", \"id\": \"8230225-1779246923-924124\" }",
+            "key": "comp-trixie-main",
+            "status": 200
+          }
+        ],
+        "surrogate_keys": [
+          "dist-trixie",
+          "comp-trixie-main"
+        ]
+      },
+      "uploads": [
+        {
+          "component": "main",
+          "distribution": "trixie",
+          "file": "linux-headers-7.0.10-hardened-unredacted-amd64_7.0.10-hardened1_amd64.deb",
+          "sha256": "f679f02709845831166650ec0064302836a90d5b42e8060f1bfb7309d59d4efe",
+          "size": 10662744,
+          "status": 201,
+          "url": "https://git.unredacted.org/api/packages/unredacted/debian/pool/trixie/main/upload"
+        },
+        {
+          "component": "main",
+          "distribution": "trixie",
+          "file": "linux-headers-hardened-unredacted-amd64_7.0.10-hardened1_amd64.deb",
+          "sha256": "2a42c2f45639ca5b94eb604f2059bd55089eed736dd58e16872771a6074556b4",
+          "size": 888,
+          "status": 201,
+          "url": "https://git.unredacted.org/api/packages/unredacted/debian/pool/trixie/main/upload"
+        },
+        {
+          "component": "main",
+          "distribution": "trixie",
+          "file": "linux-image-7.0.10-hardened-unredacted-amd64_7.0.10-hardened1_amd64.deb",
+          "sha256": "21b05e18032f177beb81c203c8e1a24af1c95b0358709c706806efea44be189b",
+          "size": 165222932,
+          "status": 201,
+          "url": "https://git.unredacted.org/api/packages/unredacted/debian/pool/trixie/main/upload"
+        },
+        {
+          "component": "main",
+          "distribution": "trixie",
+          "file": "linux-image-hardened-unredacted-amd64_7.0.10-hardened1_amd64.deb",
+          "sha256": "34ae5d12e255ffaf8b3dd57234aeee81c47e87e402bedc425b54ad309a6d524f",
+          "size": 888,
+          "status": 201,
+          "url": "https://git.unredacted.org/api/packages/unredacted/debian/pool/trixie/main/upload"
+        },
+        {
+          "component": "main",
+          "distribution": "trixie",
+          "file": "linux-libc-dev_7.0.10-hardened1_amd64.deb",
+          "sha256": "91fc6cbe4f865cd1201eb7e4a13327ca108c709789ca222efa172904da9956b9",
+          "size": 1491124,
+          "status": 201,
+          "url": "https://git.unredacted.org/api/packages/unredacted/debian/pool/trixie/main/upload"
+        }
+      ]
+    },
+    {
+      "component": "debug",
+      "distribution": "trixie",
+      "purge": {
+        "purged": true,
+        "results": [
+          {
+            "body": "{ \"status\": \"ok\", \"id\": \"8230136-1778148483-3314905\" }",
+            "key": "dist-trixie",
+            "status": 200
+          },
+          {
+            "body": "{ \"status\": \"ok\", \"id\": \"8230029-1779814159-77099\" }",
+            "key": "comp-trixie-debug",
+            "status": 200
+          }
+        ],
+        "surrogate_keys": [
+          "dist-trixie",
+          "comp-trixie-debug"
+        ]
+      },
+      "uploads": [
+        {
+          "component": "debug",
+          "distribution": "trixie",
+          "file": "linux-image-7.0.10-hardened-unredacted-amd64-dbg_7.0.10-hardened1_amd64.deb",
+          "sha256": "08bcd29c6e5b302c14d22c452a232c911618427c5c21903784f613c9b5a4bc17",
+          "size": 1083539448,
+          "status": 201,
+          "url": "https://git.unredacted.org/api/packages/unredacted/debian/pool/trixie/debug/upload"
+        }
+      ]
+    }
+  ]
+}
