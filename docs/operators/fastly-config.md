@@ -14,14 +14,15 @@ End users hit URLs under `repo.unredacted.org/debian/...`. Fastly rewrites those
 | `repo.unredacted.org/debian/pool/*`  | `git.unredacted.org/api/packages/unredacted/debian/pool/*`  |
 | `repo.unredacted.org/debian/repository.key` | `git.unredacted.org/api/packages/unredacted/debian/repository.key` |
 
-In Fastly VCL (vcl_recv):
+The two blocks below are written as **VCL snippets**, which is the easier path in the Fastly UI (VCL → Snippets → Create snippet). A snippet placed *within* a subroutine contains **only the statements** — Fastly generates the `sub vcl_recv { … }` wrapper and the `#FASTLY recv` macro for you. Do **not** paste a `sub vcl_recv { … }` block into a snippet; that defines a second subroutine and fails to validate with `Expected an action, 'if', '{' or '}'`.
+
+If you instead use Complete/Custom VCL (VCL → Custom VCL), wrap each body in its `sub vcl_recv { … #FASTLY recv }` / `sub vcl_fetch { … #FASTLY fetch }` subroutine, keeping the `#FASTLY` macro line.
+
+Create a snippet of type **`recv`** (priority 100) with this body:
 
 ```vcl
-sub vcl_recv {
-    if (req.url ~ "^/debian/") {
-        set req.url = regsub(req.url, "^/debian/", "/api/packages/unredacted/debian/");
-    }
-    #FASTLY recv
+if (req.url ~ "^/debian/") {
+  set req.url = regsub(req.url, "^/debian/", "/api/packages/unredacted/debian/");
 }
 ```
 
@@ -39,37 +40,33 @@ Per spec §11.2:
 | `pool/**/*.deb` | 1 year | never (content-addressed) |
 | `repository.key` | 1 day | only on key rotation |
 
-VCL fragment:
+Create a snippet of type **`fetch`** with this body. Note it matches on `bereq.url` — the backend request URL, which carries the rewritten `/api/packages/...` path from the recv snippet. (`beresp` is the backend *response* and has no `.url`.)
 
 ```vcl
-sub vcl_fetch {
-    if (beresp.url ~ "^/api/packages/unredacted/debian/dists/") {
-        set beresp.ttl = 300s;
+if (bereq.url ~ "^/api/packages/unredacted/debian/dists/") {
+  set beresp.ttl = 300s;
 
-        # dist-{distribution}: tag every metadata response. Purging this
-        # key invalidates InRelease, Release, Release.gpg, and every
-        # per-component artifact under the distribution.
-        set beresp.http.Surrogate-Key = "dist-" + regsub(beresp.url,
-            "^/api/packages/unredacted/debian/dists/([^/]+)/.*$", "\1");
+  # dist-{distribution}: tag every metadata response. Purging this
+  # key invalidates InRelease, Release, Release.gpg, and every
+  # per-component artifact under the distribution.
+  set beresp.http.Surrogate-Key = "dist-" + regsub(bereq.url,
+      "^/api/packages/unredacted/debian/dists/([^/]+)/.*$", "\1");
 
-        # comp-{distribution}-{component}: tag responses that live
-        # under a component segment. Apt's per-component artifacts
-        # are Packages*, by-hash/**, i18n/**, source/**, and the
-        # binary-*/ subdirectories. The InRelease and Release files
-        # at dists/{distribution}/ level have no component segment,
-        # so they only carry the dist- key, which is what we want.
-        if (beresp.url ~ "^/api/packages/unredacted/debian/dists/[^/]+/[^/]+/(binary-|source/|by-hash/|i18n/|Contents-|Packages|Sources)") {
-            set beresp.http.Surrogate-Key = beresp.http.Surrogate-Key + " comp-"
-                + regsub(beresp.url,
-                    "^/api/packages/unredacted/debian/dists/([^/]+)/([^/]+)/.*$",
-                    "\1-\2");
-        }
-    } else if (beresp.url ~ "^/api/packages/unredacted/debian/pool/") {
-        set beresp.ttl = 31536000s;  // 1 year
-    } else if (beresp.url ~ "^/api/packages/unredacted/debian/repository\.key$") {
-        set beresp.ttl = 86400s;     // 1 day
-    }
-    #FASTLY fetch
+  # comp-{distribution}-{component}: tag responses that live under a
+  # component segment. Apt's per-component artifacts are Packages*,
+  # by-hash/**, i18n/**, source/**, and the binary-*/ subdirectories.
+  # The InRelease and Release files at dists/{distribution}/ level have
+  # no component segment, so they only carry the dist- key.
+  if (bereq.url ~ "^/api/packages/unredacted/debian/dists/[^/]+/[^/]+/(binary-|source/|by-hash/|i18n/|Contents-|Packages|Sources)") {
+    set beresp.http.Surrogate-Key = beresp.http.Surrogate-Key + " comp-"
+        + regsub(bereq.url,
+            "^/api/packages/unredacted/debian/dists/([^/]+)/([^/]+)/.*$",
+            "\1-\2");
+  }
+} else if (bereq.url ~ "^/api/packages/unredacted/debian/pool/") {
+  set beresp.ttl = 31536000s;  # 1 year
+} else if (bereq.url ~ "^/api/packages/unredacted/debian/repository\.key$") {
+  set beresp.ttl = 86400s;     # 1 day
 }
 ```
 
