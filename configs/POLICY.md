@@ -28,9 +28,13 @@ Zero-initialize on-stack variables at function entry. Closes the same class of d
 
 Mitigates slab-overflow exploitation patterns. Negligible runtime overhead. Matches linux-hardened upstream.
 
+### `# CONFIG_SLAB_MERGE_DEFAULT is not set`
+
+Slab merging coalesces caches with identical size/flags across unrelated allocation sites; disabling it keeps unrelated objects in separate caches, improving use-after-free containment, and is a prerequisite for `CONFIG_SLAB_CANARY` to even be offered by kconfig. The Debian stock seed sets this `=y`, so we override it back off. Matches linux-hardened upstream, which ships it off.
+
 ### `CONFIG_SLAB_CANARY=y`
 
-Places a canary value at the end of each slab allocation and checks it on free, detecting linear slab overflows that overran into the canary. A linux-hardened patch-added symbol (`default y`); we pin it explicitly so the protection is declared rather than inherited from the patch default. Matches linux-hardened upstream.
+Places a canary value at the end of each slab allocation and checks it on free, detecting linear slab overflows that overran into the canary. A linux-hardened patch-added symbol (`default y`); we pin it explicitly so the protection is declared rather than inherited from the patch default. It is only available when slab merging is off (see `SLAB_MERGE_DEFAULT` above) — the Debian seed's `SLAB_MERGE_DEFAULT=y` previously hid it, which is why we disable merging. Matches linux-hardened upstream.
 
 ### `CONFIG_PAGE_SANITIZE_VERIFY=y`, `CONFIG_SLAB_SANITIZE_VERIFY=y`
 
@@ -51,6 +55,17 @@ Low-overhead sampling-based detector for use-after-free, out-of-bounds, and inva
 ### `CONFIG_KFENCE_BUG_ON_DATA_CORRUPTION=y`
 
 Promotes a KFENCE-detected corruption from a dmesg report to a kernel BUG, mirroring the `CONFIG_BUG_ON_DATA_CORRUPTION` stance for KFENCE's canary checks. Active only because we enable `CONFIG_KFENCE`. linux-hardened patch default `y`; pinned explicitly. Matches linux-hardened upstream.
+
+### `CONFIG_GCC_PLUGINS=y`, `CONFIG_GCC_PLUGIN_STACKLEAK=y` / `CONFIG_KSTACK_ERASE=y`, `CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y`
+
+GCC plugin–based hardening, all enabled by upstream linux-hardened / Arch:
+
+- **STACKLEAK / KSTACK_ERASE** erases the used portion of the kernel stack on return to userspace, shrinking the window in which leaked stack contents or a stale stack address are useful and closing a class of uninitialized-stack disclosures. Small per-syscall cost.
+- **LATENT_ENTROPY** mixes compiler-inserted entropy into the kernel RNG during early boot, improving seeding before other sources are available.
+
+These require the `gcc-<ver>-plugin-dev` package at config/build time; the build container installs it (matched to the default gcc major version) in `.forgejo/workflows/build-kernel.yml`. Without it, kconfig hides the entire plugin subtree and these options are silently dropped — which is what happened in builds before this was wired up. The older `GCC_PLUGIN_STRUCTLEAK` plugin is deliberately left off (superseded by `INIT_STACK_ALL_ZERO`), and `RANDSTRUCT` stays off (kernel default) to avoid a rebuild-fragile struct ABI, matching upstream.
+
+**Reproducibility caveat:** the latent_entropy plugin perturbs codegen, so bit-for-bit rebuild verification must pin/derive the plugin seed deterministically rather than assume identical output across toolchains. Tracked alongside the broader reproducible-build work; not yet wired into `tools/repro-check.sh`.
 
 ## Control-flow integrity
 

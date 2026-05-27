@@ -82,24 +82,45 @@ echo "running olddefconfig"
 make ARCH="$kernel_arch" olddefconfig
 
 # New-symbol guard.
+#
+# Catches the real risk: a kernel-version bump (or a patch change) that
+# turns some symbol ON by default behind our back, inheriting a setting the
+# linux-hardened threat model never evaluated. It deliberately does NOT fire
+# on:
+#   - symbols that merely became visible but stayed off — no new code, no
+#     new risk (e.g. the sub-options that appear once GCC_PLUGINS is on);
+#   - symbols we enabled ourselves in the overlay or the per-target override
+#     — the review is the commit plus the POLICY.md entry.
+# So the guard fires only on a symbol that is newly *enabled* (=y/=m),
+# absent from the prior release's config, and not classified by us.
 extract_symbols() {
-    # Emit a sorted list of CONFIG_* symbols (with =Y/=M/=N normalized).
+    # Sorted list of CONFIG_* names mentioned in $1 (set, or "is not set").
     sed -E -n \
         -e 's/^(CONFIG_[A-Z0-9_]+)=.*/\1/p' \
         -e 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1/p' \
         "$1" | sort -u
 }
+enabled_symbols() {
+    # Sorted list of CONFIG_* names set to y or m in $1.
+    sed -E -n 's/^(CONFIG_[A-Z0-9_]+)=(y|m)$/\1/p' "$1" | sort -u
+}
 
 if [[ -n "${PREVIOUS_CONFIG_PATH:-}" ]] && [[ -f $PREVIOUS_CONFIG_PATH ]]; then
-    new_symbols=$(comm -13 \
-        <(extract_symbols "$PREVIOUS_CONFIG_PATH") \
-        <(extract_symbols .config) || true)
-    if [[ -n $new_symbols ]]; then
-        echo "new kconfig symbols not classified by overlay/override:" >&2
-        printf '%s\n' "$new_symbols" >&2
+    # Symbols we explicitly set (on or off) in the overlay or the per-target
+    # override count as reviewed.
+    classified=$(cat <(extract_symbols "$overlay") \
+                     <(extract_symbols "$target_override") | sort -u)
+    # newly_enabled = enabled now, absent from the prior config entirely.
+    # unreviewed    = newly_enabled minus what we classified.
+    unreviewed=$(comm -23 \
+        <(comm -13 <(extract_symbols "$PREVIOUS_CONFIG_PATH") <(enabled_symbols .config)) \
+        <(printf '%s\n' "$classified"))
+    if [[ -n $unreviewed ]]; then
+        echo "newly-enabled kconfig symbols not classified by overlay/override:" >&2
+        printf '%s\n' "$unreviewed" >&2
         cat >&2 <<EOF
 
-Each new symbol must be:
+Each newly-enabled symbol must be:
   1. Reviewed and recorded in configs/POLICY.md.
   2. Set explicitly in configs/hardened-overlay.config or
      configs/${DISTRO}-${RELEASE}-${ARCH}.config.

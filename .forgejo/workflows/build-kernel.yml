@@ -97,6 +97,12 @@ jobs:
           # pkg-config, fakeroot, quilt, gawk, libncurses-dev, and anything
           # else upstream adds in future point releases.
           apt-get build-dep -y --no-install-recommends linux
+          # GCC plugin headers so kconfig can enable CONFIG_GCC_PLUGINS
+          # (stackleak / latent_entropy hardening). build-dep above pulled
+          # in gcc itself; match its major version. Without this package the
+          # whole plugin subtree is hidden and silently dropped from .config.
+          apt-get install -y --no-install-recommends \
+              "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev"
 
       - uses: actions/checkout@v4
         with:

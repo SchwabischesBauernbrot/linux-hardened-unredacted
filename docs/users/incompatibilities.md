@@ -8,6 +8,8 @@ Living document. If you hit something not listed here, file an issue with kernel
 
 **Cause:** the `unredacted-hardened-defaults` package (installed with the kernel via the meta-package) ships `/usr/lib/sysctl.d/99-hardened.conf` setting `kernel.unprivileged_userns_clone=0`. It's a sysctl drop-in, not a baked-in CONFIG_ option, so you can override it from `/etc/sysctl.d/` (which wins over `/usr/lib/sysctl.d/`).
 
+**Rootful Docker is unaffected.** The standard `dockerd` systemd service (and rootful Podman/containerd) runs as root and does not use unprivileged user namespaces, so it starts and runs normally. Only *rootless* daemons — and workloads that create their own user namespace inside a container — need the override below.
+
 **Workaround:** drop a higher-numbered file in `/etc/sysctl.d/` that re-enables user namespaces, then reload:
 
 ```
