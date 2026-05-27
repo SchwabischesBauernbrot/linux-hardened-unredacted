@@ -1,13 +1,19 @@
 name: publish
 on:
-  # Publishing to the public apt repo is gated on a human publishing the
-  # release. build-kernel.yml attaches the signed .debs to a DRAFT
-  # release; an operator reviews it (and ideally boot-tests the kernel),
-  # then clicks "Publish" in Forgejo, which fires this workflow. The
-  # human checkpoint matters because the kernel is a boot trust root.
+  # The human gate is workflow_dispatch. build-kernel.yml attaches the
+  # signed .debs to a DRAFT release; an operator reviews it (and ideally
+  # boot-tests the kernel), then runs this workflow from the Actions UI
+  # with the release tag. The checkpoint matters because the kernel is a
+  # boot trust root.
   #
-  # workflow_dispatch stays as a manual fallback: to re-publish, or if
-  # the release event doesn't fire on this Forgejo version.
+  # NOTE on the release trigger: Forgejo's `release: published` fires
+  # only when a release is *created* as published, NOT when a draft is
+  # later un-drafted (verified on Forgejo v12.10.1). Since we create
+  # drafts for review, un-drafting emits no event — so the release
+  # trigger below never fires in the normal flow. It's kept only for the
+  # case of a release created already-published (or a future Forgejo that
+  # fixes the draft-publish transition). workflow_dispatch is the gate
+  # that actually works today.
   release:
     types: [published]
   workflow_dispatch:
