@@ -93,16 +93,21 @@ jobs:
             echo "no assets attached to release $TAG" >&2
             exit 1
           fi
-          jq -r '.assets[] | "\(.id)\t\(.name)"' <<<"$rel" \
-              | while IFS=$'\t' read -r id name; do
+          # Download each asset by its browser_download_url. The
+          # /releases/assets/{id} API path doesn't exist in Forgejo
+          # (404), and the get-attachment API returns JSON metadata, not
+          # the file. browser_download_url is the actual file link; the
+          # token header authorizes it even while the release is a draft.
+          jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"' <<<"$rel" \
+              | while IFS=$'\t' read -r name url; do
                   case "$name" in
                     *.deb|final.config) ;;
                     *) continue ;;
                   esac
-                  echo "downloading $name"
+                  echo "downloading $name from $url"
                   curl -fsSL -H "Authorization: token $FORGEJO_TOKEN" \
                        -o "artifacts/$name" \
-                       "$api/releases/assets/$id"
+                       "$url"
                 done
 
       - name: split artifacts by component
