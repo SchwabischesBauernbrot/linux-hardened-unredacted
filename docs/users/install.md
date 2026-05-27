@@ -53,7 +53,7 @@ Then `apt install linux-image-{version}-hardened-unredacted-amd64-dbg` will fetc
 sudo apt install linux-image-hardened-unredacted-amd64 linux-headers-hardened-unredacted-amd64
 ```
 
-This pulls the highest-version kernel currently in `main` for `trixie`. To pin a specific version, install the explicit name (e.g. `linux-image-6.12.8-hardened-unredacted-amd64`).
+This pulls the highest-version kernel currently in `main` for `trixie`. To pin a specific version, install the explicit name (e.g. `linux-image-7.0.10-hardened-unredacted-amd64`).
 
 The install regenerates the initramfs and updates GRUB. On Secure Boot machines it also queues a MOK enrollment request; follow [secure-boot.md](secure-boot.md) before rebooting.
 

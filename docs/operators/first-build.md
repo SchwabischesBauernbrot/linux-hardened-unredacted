@@ -14,8 +14,8 @@ Have these ready before you start:
 
 - A Linux machine with Docker, registered as a Forgejo runner with label `linux-hardened`.
 - A Forgejo instance at `git.unredacted.org` with the repo at `unredacted/linux-hardened`.
-- A Fastly account (OSS-program application optional but in progress) with a service pointing at `repo.unredacted.org`.
-- Pangolin in front of the Forgejo origin.
+- A Fastly account (on the OSS program) with a service pointing at `repo.unredacted.org`.
+- Pangolin in front of the Forgejo origin (ordinary reverse proxy; no Debian-path rules — see [reverse-proxy.md](reverse-proxy.md)).
 - A clean Debian 13 amd64 VM for the install test (UEFI firmware, Secure Boot enabled).
 
 ## 1. Pin the container digest
@@ -34,16 +34,21 @@ sed -i 's/sha256:REPLACE_WITH_CONCRETE_DIGEST/sha256:abc123.../' \
 
 Commit and push the change. The `no-placeholder-digests` validator job will pass on push to main.
 
-## 2. Generate the apt-repo signing key
+## 2. Retrieve the apt-repo signing key fingerprint
 
-In Forgejo's settings for the `unredacted/linux-hardened` package registry, generate the repo signing key. Forgejo handles the GPG generation and key storage internally. Note the fingerprint that's displayed.
+Forgejo's Debian registry manages its own GPG key per owner — there is nothing to generate by hand (unlike the kernel key in step 3). The key is minted lazily; fetching the public key both creates and returns it:
 
-Insert the fingerprint into:
-- `README.md` (the "TODO: insert apt repo key fingerprint" placeholder)
-- `SECURITY.md` (two TODOs about the security PGP key and the canonical fingerprint sources)
-- `docs/users/verifying-packages.md` (the TODO about canonical fingerprint sources)
+```
+curl -fsS https://git.unredacted.org/api/packages/unredacted/debian/repository.key -o unredacted-apt.asc
+gpg --show-keys unredacted-apt.asc
+```
 
-Commit. Publish the fingerprint at https://unredacted.org as well, so users have two out-of-band sources to verify against.
+Record the displayed fingerprint and insert it into:
+- `README.md` (the apt-repo key fingerprint line)
+- `SECURITY.md` (out-of-band verification section)
+- `docs/users/verifying-packages.md` (canonical fingerprint sources)
+
+Commit. Publish the same fingerprint at https://unredacted.org and a Keyoxide profile, so users have at least two independent sources to verify against. Re-check the fingerprint after the first publish; the lazily-minted key persists (Forgejo's get-or-create), but confirming it matches the `InRelease` signer before announcing to users costs nothing.
 
 ## 3. Generate the kernel + module signing key
 
@@ -83,7 +88,7 @@ Scope each to the workflows that need it (see the table in [runner-setup.md](run
 
 ## 5. Configure Fastly
 
-Apply the VCL from [fastly-config.md](fastly-config.md) to the service that serves `repo.unredacted.org`. Coin the `X-Origin-Auth` shared secret (32 bytes of randomness, e.g. `openssl rand -hex 32`), install it in a Fastly Edge Dictionary, and reference it from the VCL's `set req.http.X-Origin-Auth = ...` line.
+Apply the VCL from [fastly-config.md](fastly-config.md) to the service serving `repo.unredacted.org`: the `/debian/` → `/api/packages/unredacted/debian/` path rewrite, the cache-policy TTLs, and the surrogate-key tagging that `publish.py` purges against. There is no `X-Origin-Auth` header — the apt repo is public and served both via Fastly and directly from the origin.
 
 Add Fastly secrets to Forgejo:
 
@@ -94,26 +99,19 @@ Add Fastly secrets to Forgejo:
 
 ## 6. Configure Pangolin
 
-In Pangolin's resource config for `git.unredacted.org`:
+Pangolin needs only the ordinary Forgejo reverse-proxy setup for `git.unredacted.org`: forward to the Forgejo backend, terminate TLS, no Debian-path-specific rules. The apt repo is public, and uploads authenticate with the `REGISTRY_TOKEN`, so there is no read gate and no upload exception. See [reverse-proxy.md](reverse-proxy.md) for the verification curls.
 
-1. Add a Header Match auth rule on `/api/packages/unredacted/debian/` paths requiring `X-Origin-Auth` to equal the secret from step 5.
-2. Add a higher-priority allow rule for PUT/POST on `**/upload` from the runner's egress IP. See [reverse-proxy.md](reverse-proxy.md).
+## 7. Reconcile the hardening overlay against upstream
 
-Verify with curl per the verification section of that doc.
-
-## 7. Diff the hardening overlay against upstream
-
-Before building any real kernel, sanity-check the overlay:
+Per kernel-version bump, confirm `configs/hardened-overlay.config` still matches what linux-hardened recommends for the version you're shipping. linux-hardened ships no standalone defconfig, so the check is: enumerate the hardening kconfig symbols the patch adds or defaults on for that release, and confirm each is either declared in our overlay or consciously excluded with a `configs/POLICY.md` note.
 
 ```
 git clone https://github.com/anthraxx/linux-hardened.git /tmp/lh
-cd /tmp/lh
-git checkout v6.12.8-hardened1   # or whatever recent tag
-# Look at the recommended hardening kconfig fragment in the upstream repo
-diff -u /tmp/lh/path/to/recommended-config configs/hardened-overlay.config
+cd /tmp/lh && git checkout v7.0.10-hardened1   # the tag you're shipping
+# Inspect the patch's Kconfig.hardening additions, compare to our overlay.
 ```
 
-Reconcile any drift. Upstream occasionally adds or removes hardening symbols across kernel versions.
+Reconcile drift in `configs/hardened-overlay.config` + `configs/POLICY.md`; the `config-diff-sanity` CI check enforces overlay↔POLICY parity, and `build/configure-kernel.sh` aborts on any new symbol not classified in either file. The overlay was last reconciled against v7.0.9/v7.0.10-hardened1.
 
 ## 8. Push a stub test tag
 

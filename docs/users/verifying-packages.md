@@ -12,13 +12,19 @@ These two layers (apt-repo signature plus kernel + module signature) are the int
 gpg --show-keys /etc/apt/keyrings/unredacted-hardened.asc
 ```
 
+The fingerprint must be:
+
+```
+6E229B1A2E3594F8CAE32393A2907910E8020EB0
+```
+
 Compare against the canonical sources:
 
 1. This repository's `README.md`.
 2. https://unredacted.org (the 501(c)(3) site).
 3. A third-party out-of-band channel (Keyoxide or social, to be published).
 
-<!-- TODO: list the canonical fingerprint sources here once the key exists -->
+If the fingerprint your `gpg --show-keys` prints doesn't match all reachable sources, one is stale or tampered with. Don't install packages until it's resolved; email `security@unredacted.org`.
 
 If sources disagree, one is stale or has been tampered with. Do not install packages until the discrepancy is resolved. Email `security@unredacted.org`.
 

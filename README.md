@@ -38,9 +38,15 @@ Per-symptom workarounds are in [docs/users/incompatibilities.md](https://git.unr
 
 ## Installation
 
-Once Phase 1 publishes packages, end users follow [docs/users/install.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/install.md). End-user URL: `https://repo.unredacted.org/debian` (fronted by Fastly). The apt-repo key fingerprint will be published here and at https://unredacted.org once the key is generated.
+Once Phase 1 publishes packages, end users follow [docs/users/install.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/install.md). End-user URL: `https://repo.unredacted.org/debian` (fronted by Fastly), or directly from the origin at `https://git.unredacted.org/api/packages/unredacted/debian`.
 
-<!-- TODO: insert apt repo key fingerprint once generated -->
+The apt-repo signing key (signs `InRelease`) has fingerprint:
+
+```
+6E229B1A2E3594F8CAE32393A2907910E8020EB0
+```
+
+That's the exact string `gpg --show-keys` prints for `repository.key`. Verify it against this value and the copy at https://unredacted.org before trusting the repo. This is the **apt-repo** key, distinct from the kernel + module Secure Boot signing key (whose cert fingerprint ships in each release's notes).
 
 ## License
 

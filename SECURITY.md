@@ -55,12 +55,18 @@ The reproducibility contract applies to the **unsigned** outputs: an independent
 
 ## Out-of-band verification
 
-To verify the apt repo key fingerprint independently, check at least two of:
+The apt-repo signing key (signs `InRelease`) has fingerprint:
 
-1. This repository's `README.md` once published.
+```
+6E229B1A2E3594F8CAE32393A2907910E8020EB0
+```
+
+Verify it independently against at least two of:
+
+1. This repository's `README.md`.
 2. https://unredacted.org (the 501(c)(3) website).
-3. A third-party Keyoxide profile or social account, to be published.
+3. A third-party Keyoxide profile or social account (to be published).
 
 Disagreement between sources indicates either a stale source or a compromise. Do not install packages until the discrepancy is resolved.
 
-<!-- TODO: list the canonical fingerprint sources once the key exists -->
+This is the apt-repo key, separate from the security-contact PGP key referenced under Reporting (which is for encrypting vulnerability reports, not signing packages).

@@ -5,7 +5,7 @@ If the hardened kernel hangs, panics, or fails to mount the rootfs, fall back to
 ## Boot a different kernel from GRUB
 
 1. At the GRUB menu, select **Advanced options**.
-2. Select the stock distro kernel (e.g. `Debian GNU/Linux, with Linux 6.12.0-cloud-amd64`).
+2. Select the stock distro kernel (e.g. `Debian GNU/Linux, with Linux 6.12.90+deb13-amd64`).
 3. The system boots normally.
 
 If GRUB does not show a menu, hold **Shift** (BIOS) or press **Esc** (UEFI) during boot to interrupt the timer.

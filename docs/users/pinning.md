@@ -37,7 +37,7 @@ Pin-Priority: 600
 ## Pin to a specific hardened version
 
 ```
-sudo apt-mark hold linux-image-6.12.8-hardened-unredacted-amd64
+sudo apt-mark hold linux-image-7.0.10-hardened-unredacted-amd64
 ```
 
 `apt-mark unhold` reverses it.

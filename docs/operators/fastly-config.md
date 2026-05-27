@@ -1,8 +1,8 @@
 # Fastly configuration
 
-Fastly fronts `repo.unredacted.org`, terminating TLS and serving cached apt metadata + `.deb` files. The Forgejo origin at `git.unredacted.org` sees only Fastly's requests, gated by an `X-Origin-Auth` header that Pangolin/Traefik enforces (see [reverse-proxy.md](reverse-proxy.md)).
+Fastly fronts `repo.unredacted.org`, terminating TLS and serving cached apt metadata + `.deb` files. It is a caching CDN, not an access gate. The apt repo is public and reachable two ways: through Fastly at `repo.unredacted.org/debian`, and directly from the Forgejo origin at `git.unredacted.org/api/packages/unredacted/debian/`. Both work. Integrity comes from the signed `InRelease` that apt verifies, not from restricting who may read the paths, so there's no shared-secret header between Fastly and the origin.
 
-Apply for the [Fastly Open Source program](https://www.fastly.com/open-source); kernels distributed by a 501(c)(3) for public benefit fit the program criteria.
+The build runs on the [Fastly Open Source program](https://www.fastly.com/open-source); kernels distributed by a 501(c)(3) for public benefit fit the program criteria.
 
 ## Path rewrite (origin request)
 
@@ -20,15 +20,12 @@ In Fastly VCL (vcl_recv):
 sub vcl_recv {
     if (req.url ~ "^/debian/") {
         set req.url = regsub(req.url, "^/debian/", "/api/packages/unredacted/debian/");
-        set req.http.X-Origin-Auth = "{{ ORIGIN_AUTH_SECRET }}";
     }
     #FASTLY recv
 }
 ```
 
-Replace `{{ ORIGIN_AUTH_SECRET }}` with the shared secret that Pangolin/Traefik will check on the origin side. Store it in a Fastly Secret or Edge Dictionary, not inline.
-
-If using Compute@Edge instead of VCL, do the equivalent path rewrite + header injection in your Compute service.
+If using Compute@Edge instead of VCL, do the equivalent path rewrite in your Compute service.
 
 ## Cache policy
 
@@ -77,12 +74,6 @@ sub vcl_fetch {
 ```
 
 `tools/publish.py` purges both `dist-{distribution}` and `comp-{distribution}-{component}` after each upload. The `dist-` purge is sufficient by itself for a full-distribution invalidation; the `comp-` purge is the surgical option when you want to clear one component without touching the per-distribution `Release` file.
-
-## Authentication of Fastly to origin
-
-The `X-Origin-Auth` header is the only thing distinguishing a legitimate Fastly request from a direct request to the Forgejo origin. Pangolin/Traefik rejects requests to the Debian package paths if the header is missing or wrong; see [reverse-proxy.md](reverse-proxy.md).
-
-Rotate the shared secret annually. Both Fastly and the Pangolin/Traefik config need to be updated atomically; coordinate a brief maintenance window.
 
 ## OSS program
 

@@ -17,8 +17,8 @@ If your rebuild diverges, file an issue with the per-file diff produced by `tool
 ```
 git clone https://git.unredacted.org/unredacted/linux-hardened.git
 cd linux-hardened
-git checkout v6.12.8-hardened1     # the release you want
-cat releases/v6.12.8-hardened1/manifest.json
+git checkout v7.0.10-hardened1     # the release you want
+cat releases/v7.0.10-hardened1/manifest.json
 ```
 
 The manifest's `container_image` field is the exact image digest used by the original build.
@@ -26,7 +26,7 @@ The manifest's `container_image` field is the exact image digest used by the ori
 Run the rebuild:
 
 ```
-./tools/repro-check.sh v6.12.8-hardened1
+./tools/repro-check.sh v7.0.10-hardened1
 ```
 
 The script:
@@ -43,7 +43,7 @@ Exit code 0: byte-identical (post-strip). Non-zero: divergence, and the report n
 The released `.deb`s to compare against are fetched automatically from the apt repo (`https://repo.unredacted.org/debian`, override with `REPO_BASE_URL`). To compare against a local copy instead — for an offline check, or to diff two of your own builds — point `RELEASED_DIR` at a directory of the released `.deb`s:
 
 ```
-RELEASED_DIR=/path/to/released-debs ./tools/repro-check.sh v6.12.8-hardened1
+RELEASED_DIR=/path/to/released-debs ./tools/repro-check.sh v7.0.10-hardened1
 ```
 
 The rebuild needs network access (to fetch the kernel tarball, the hardened patch, and the Debian source) and runs the compile inside the manifest's pinned container, so it takes about as long as a normal build (20–60 minutes).
