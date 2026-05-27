@@ -96,10 +96,18 @@ patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 # via KBUILD_BUILD_VERSION (uname -v) for traceability without
 # polluting the user-facing version.
 #
-# If we ever need to re-release the same upstream + same hardened
-# revision with packaging changes only, bump to "hardened1.1" — dpkg
-# accepts this and sorts it above "hardened1".
+# PACKAGING_REVISION re-ships the same upstream + hardened revision with
+# packaging-only changes. It comes from the optional trailing .N on the
+# tag (v7.0.10-hardened1.1 -> PACKAGING_REVISION=1), set by
+# build-kernel.yml's derive-version step. Appended as ".N" so the .deb
+# version sorts above the un-suffixed one and apt treats it as an
+# upgrade (dpkg: revision "hardened1.1" > "hardened1"). The kernelrelease
+# and package name are unchanged — only the .deb version moves — so the
+# rebuilt kernel upgrades in place.
 new_version="${KERNEL_VERSION}-hardened${HARDENED_REVISION}"
+if [[ -n "${PACKAGING_REVISION:-}" ]]; then
+    new_version="${new_version}.${PACKAGING_REVISION}"
+fi
 
 # Local version suffix that becomes part of the kernelrelease and
 # therefore part of the package name and the modules path:

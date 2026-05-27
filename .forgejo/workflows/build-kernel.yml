@@ -112,12 +112,22 @@ jobs:
           tag="${GITHUB_REF_NAME:-${{ github.ref_name }}}"
           # Fail loud on malformed tags. A typo'd tag would otherwise
           # silently feed garbage to wget in the next step.
-          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([0-9]+)$ ]]; then
-            echo "tag does not match vX.Y.Z-hardenedN: $tag" >&2
+          #
+          # The optional trailing .N is a packaging revision: it lets us
+          # re-ship the SAME upstream kernel + hardened revision with
+          # packaging-only changes (e.g. a fixed meta dependency or an
+          # added sidecar package). v7.0.10-hardened1.1 fetches the same
+          # 7.0.10 + hardened1 sources but stamps the .deb version
+          # 7.0.10-hardened1.1, which apt sees as an upgrade over
+          # 7.0.10-hardened1. (Bash ERE has no non-capturing groups, so
+          # group 4 holds the packaging number.)
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([0-9]+)(\.([0-9]+))?$ ]]; then
+            echo "tag does not match vX.Y.Z-hardenedN[.P]: $tag" >&2
             exit 1
           fi
           kernel="${BASH_REMATCH[1]}"
           hardened="${BASH_REMATCH[2]}"
+          packaging="${BASH_REMATCH[4]:-}"
           # Tagger date is stable across rebase/amend; commit timestamp
           # is not. Lightweight tags have no tagger date, in which case
           # taggerdate:unix yields empty and we fall back, with a log
@@ -129,6 +139,7 @@ jobs:
           fi
           echo "kernel=$kernel"             >> "$GITHUB_OUTPUT"
           echo "hardened=$hardened"         >> "$GITHUB_OUTPUT"
+          echo "packaging=$packaging"       >> "$GITHUB_OUTPUT"
           echo "source_date_epoch=$sde"     >> "$GITHUB_OUTPUT"
 
       - name: fetch sources
@@ -192,6 +203,7 @@ jobs:
         env:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          PACKAGING_REVISION: ${{ steps.ver.outputs.packaging }}
           DISTRO: ${{ matrix.target.distro }}
           RELEASE: ${{ matrix.target.release }}
           ARCH: ${{ matrix.target.arch }}
