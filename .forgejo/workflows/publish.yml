@@ -1,13 +1,19 @@
 name: publish
 on:
+  # Publishing to the public apt repo is gated on a human publishing the
+  # release. build-kernel.yml attaches the signed .debs to a DRAFT
+  # release; an operator reviews it (and ideally boot-tests the kernel),
+  # then clicks "Publish" in Forgejo, which fires this workflow. The
+  # human checkpoint matters because the kernel is a boot trust root.
+  #
+  # workflow_dispatch stays as a manual fallback: to re-publish, or if
+  # the release event doesn't fire on this Forgejo version.
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
-        description: "Release tag (e.g. v6.12.8-hardened1)"
-        required: true
-      component:
-        description: "Component: main | debug | archive"
-        default: main
+        description: "Release tag (e.g. v7.0.10-hardened1)"
         required: true
       distribution:
         description: "Distribution / codename (trixie, bookworm, noble, jammy)"
@@ -17,26 +23,48 @@ on:
 # Per spec §6.1: this stage holds publish credentials and does NOT have
 # source-fetch credentials. The build artifacts arrive as release assets
 # attached to the tag by build-kernel.yml; we fetch them via the Forgejo
-# release API rather than the actions/download-artifact action so the
-# pipeline works on every Forgejo version that supports releases.
+# release API rather than actions/download-artifact so the pipeline works
+# on every Forgejo version that supports releases.
 
 jobs:
   publish:
     runs-on: linux-hardened
     steps:
+      # Check out main, not the triggering tag. The manifest commit-back
+      # at the end pushes to main; a release event would otherwise leave
+      # us on a detached commit at the tag. Nothing here needs the repo
+      # at the tag (assets come from the release API; tools/ is stable).
       - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: resolve target
+        id: target
+        run: |
+          set -euo pipefail
+          # Resolve the tag + distribution from whichever trigger fired.
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+            # The build is single-target (trixie) today; revisit when the
+            # matrix grows to multiple distributions.
+            dist="trixie"
+          else
+            tag="${{ inputs.version }}"
+            dist="${{ inputs.distribution }}"
+          fi
+          [[ -n $tag ]] || { echo "could not resolve release tag" >&2; exit 1; }
+          echo "tag=$tag"   >> "$GITHUB_OUTPUT"
+          echo "dist=$dist" >> "$GITHUB_OUTPUT"
+          echo "publishing tag=$tag dist=$dist (event=${{ github.event_name }})"
 
       - name: download release assets
         env:
           FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          TAG: ${{ inputs.version }}
+          TAG: ${{ steps.target.outputs.tag }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
           api="https://git.unredacted.org/api/v1/repos/${GITHUB_REPOSITORY}"
-          # Resolve the release by tag, then download each asset attached
-          # to it. The build-kernel workflow uploads .debs as assets named
-          # after the .deb file, so we save them under that name.
           rel=$(curl -fsS -H "Authorization: token $FORGEJO_TOKEN" \
                    "$api/releases/tags/$TAG")
           count=$(jq '.assets | length' <<<"$rel")
@@ -56,49 +84,84 @@ jobs:
                        "$api/releases/assets/$id"
                 done
 
-      - name: publish to Debian registry + purge Fastly
+      - name: split artifacts by component
+        # main:  kernel image, headers, libc-dev, the two meta-packages.
+        # debug: the -dbg package only.
+        # Without this split, every .deb would land in whichever single
+        # component was passed, so the 1 GB -dbg would pollute main (or
+        # the kernel would land in debug). final.config stays in
+        # artifacts/ for the commit step.
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/main artifacts/debug
+          shopt -s nullglob
+          for deb in artifacts/*.deb; do
+            case "$deb" in
+              *-dbg_*) mv "$deb" artifacts/debug/ ;;
+              *)       mv "$deb" artifacts/main/ ;;
+            esac
+          done
+          echo "main component:";  ls -1 artifacts/main  2>/dev/null || true
+          echo "debug component:"; ls -1 artifacts/debug 2>/dev/null || true
+
+      - name: publish main + debug, purge Fastly
         env:
           FORGEJO_USER: ${{ secrets.REGISTRY_USER }}
           FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           FASTLY_SERVICE_ID: ${{ secrets.FASTLY_SERVICE_ID }}
           FASTLY_PURGE_TOKEN: ${{ secrets.FASTLY_PURGE_TOKEN }}
+          DIST: ${{ steps.target.outputs.dist }}
+          VER: ${{ steps.target.outputs.tag }}
         run: |
+          set -euo pipefail
+          manifest="releases/${VER}/manifest.json"
+          mkdir -p "releases/${VER}"
+
+          # main always has content.
           python3 tools/publish.py \
-            --debs-dir artifacts \
-            --distribution "${{ inputs.distribution }}" \
-            --component "${{ inputs.component }}" \
-            --manifest "releases/${{ inputs.version }}/manifest.json"
+            --debs-dir artifacts/main \
+            --distribution "$DIST" \
+            --component main \
+            --manifest "$manifest"
+
+          # debug only if the build produced a -dbg package (depends on
+          # CONFIG_DEBUG_INFO; see OPERATOR_TODO.md).
+          shopt -s nullglob
+          debug_debs=(artifacts/debug/*.deb)
+          if (( ${#debug_debs[@]} > 0 )); then
+            python3 tools/publish.py \
+              --debs-dir artifacts/debug \
+              --distribution "$DIST" \
+              --component debug \
+              --manifest "$manifest"
+          else
+            echo "no -dbg package; skipping debug component"
+          fi
 
       - name: commit manifest + final.config
         # publish.py records each upload into the per-release manifest.
-        # We commit it back, along with the final .config captured at
-        # build time, so the public history shows what shipped and the
-        # next build's new-symbol guard has something to diff against.
-        # MANIFEST_COMMIT_TOKEN is scoped narrowly to push to main
-        # (contents:write).
+        # Commit it back, with the build's final.config, so the public
+        # history shows what shipped and the next build's new-symbol
+        # guard has something to diff against. MANIFEST_COMMIT_TOKEN is
+        # scoped to push to main.
         env:
           MANIFEST_COMMIT_TOKEN: ${{ secrets.MANIFEST_COMMIT_TOKEN }}
+          VER: ${{ steps.target.outputs.tag }}
         run: |
           set -euo pipefail
-          release_dir="releases/${{ inputs.version }}"
+          release_dir="releases/${VER}"
           mkdir -p "$release_dir"
 
-          # Stage the manifest if publish.py wrote one.
           touched=0
           if [[ -f $release_dir/manifest.json ]]; then
             git add "$release_dir/manifest.json"
             touched=1
           fi
-
-          # Stage final.config if the build produced one. It's only
-          # downloaded with component=main runs; debug runs don't carry
-          # it (it'd be a duplicate of main's).
           if [[ -f artifacts/final.config && ! -f $release_dir/final.config ]]; then
             cp artifacts/final.config "$release_dir/final.config"
             git add "$release_dir/final.config"
             touched=1
           fi
-
           if [[ $touched -eq 0 ]]; then
             echo "nothing to commit"
             exit 0
@@ -110,6 +173,6 @@ jobs:
             echo "no changes; nothing to commit"
             exit 0
           fi
-          git commit -m "publish: ${{ inputs.version }} -> ${{ inputs.component }}"
+          git commit -m "publish: ${VER}"
           remote="https://oauth2:${MANIFEST_COMMIT_TOKEN}@git.unredacted.org/${GITHUB_REPOSITORY}.git"
-          git push "$remote" "HEAD:${GITHUB_REF_NAME:-main}"
+          git push "$remote" "HEAD:main"
