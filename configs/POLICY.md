@@ -178,10 +178,18 @@ User impact: covered in [docs/users/incompatibilities.md](../docs/users/incompat
 
 | Distro    | Override file                          | Notes |
 | --------- | -------------------------------------- | ----- |
-| Debian 13 | `configs/debian-trixie-amd64.config`   | Empty as of Phase 1. Any divergence from `hardened-overlay.config` lands here with a corresponding entry above. |
+| Debian 13 | `configs/debian-trixie-amd64.config`   | Container NAT (`NETFILTER_XT_TARGET_MASQUERADE`, `NETFILTER_XT_NAT`) restored for Docker/containerd on trixie's nft backend; see below. |
+
+### `CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m`, `CONFIG_NETFILTER_XT_NAT=m` (Debian 13)
+
+Container runtimes (Docker, Podman, containerd) program their bridge NAT through Debian trixie's nftables backend (`iptables-nft`), which resolves the `MASQUERADE` and `SNAT`/`DNAT` rule targets to the generic xtables modules `xt_MASQUERADE` and `xt_nat`. We build a newer upstream kernel (7.0.x) than the Debian source whose config fragments we seed from (6.12.x); upstream removed the old `IP_NF_TARGET_MASQUERADE` symbol that used to `select` the xt MASQUERADE target, so `olddefconfig` left it off even though its dependency (`NF_NAT`) is met. Result: `dockerd` aborted at startup — `Extension MASQUERADE revision 0 not supported, missing kernel module`. Set both generic xt targets explicitly so they no longer hinge on a distro symbol that disappeared upstream. These are loadable modules and add no attack surface until loaded; this is a Debian-parity fix, not a hardening choice.
+
+The broader legacy xtables stacks (`ip_tables` / `ip6_tables` / `ebtables` / `arptables` and their mangle/raw/security tables) deliberately stay off: trixie routes everything through nftables, so they are vestigial for our targets, and omitting them keeps the attack surface smaller. Re-enable a specific legacy module here only when a concrete workload is shown to need `iptables-legacy`.
 
 ## Review process
 
 Each new symbol introduced by a kernel-version bump that is not classified by either `hardened-overlay.config` or a distro override is flagged by `build/configure-kernel.sh` and aborts the build. The human reviewer decides the value, adds the entry to the appropriate config file, adds the rationale here, and re-runs the build.
 
 Without this gate, a kernel-version bump can silently inherit defaults chosen for a different threat model.
+
+One blind spot remains: the guard catches symbols that *appear* (drift toward more features), but not features that silently *disappear* when an upstream Kconfig reshuffle removes a `select`/dependency — which is exactly how the container-NAT modules above got dropped. Catching that class would need a complementary diff against the distro stock config with an allowlist of intentionally-hardened-off symbols. Tracked as a follow-up; not yet implemented.
