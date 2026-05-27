@@ -63,6 +63,14 @@ case "$ARCH" in
     *) echo "unsupported ARCH: $ARCH" >&2; exit 2 ;;
 esac
 
+# Absolute path to the repo root, captured now while the CWD is still the
+# repo root (the workflow invokes ./build/build-debs.sh from there). We cd
+# into the kernel source tree below to run make, after which any path
+# computed relative to $0 would resolve under the kernel tree, not the
+# repo. The defaults-package step near the end reads configs/sysctl.d/ via
+# this, so it must be an absolute path fixed before the cd.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 [[ -d $patched_dir ]] || {
     echo "patched tree missing at $patched_dir" >&2
@@ -317,7 +325,7 @@ emit_meta() {
 # The image meta-package Depends on this, so installing the kernel pulls
 # the documented sysctl policy. Admins override individual values with a
 # higher-numbered file in /etc/sysctl.d/ (which wins over /usr/lib).
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+# repo_root is captured near the top, before the cd into the kernel tree.
 sysctl_src="$repo_root/configs/sysctl.d/99-hardened.conf"
 [[ -f $sysctl_src ]] || { echo "missing $sysctl_src" >&2; exit 1; }
 
