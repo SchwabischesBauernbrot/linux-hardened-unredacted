@@ -28,6 +28,14 @@ Zero-initialize on-stack variables at function entry. Closes the same class of d
 
 Mitigates slab-overflow exploitation patterns. Negligible runtime overhead. Matches linux-hardened upstream.
 
+### `CONFIG_SLAB_CANARY=y`
+
+Places a canary value at the end of each slab allocation and checks it on free, detecting linear slab overflows that overran into the canary. A linux-hardened patch-added symbol (`default y`); we pin it explicitly so the protection is declared rather than inherited from the patch default. Matches linux-hardened upstream.
+
+### `CONFIG_PAGE_SANITIZE_VERIFY=y`, `CONFIG_SLAB_SANITIZE_VERIFY=y`
+
+With init-on-free enabled (above), re-verify on allocation that the freed page or slab object was actually zeroed, catching write-after-free that scribbled on memory between free and reuse. linux-hardened patch-added symbols (`default y`); pinned explicitly here. Matches linux-hardened upstream.
+
 ### `CONFIG_SHUFFLE_PAGE_ALLOCATOR=y`
 
 Randomizes the order pages are placed into the page allocator's free lists. Modest probabilistic mitigation, near-zero overhead. Matches linux-hardened upstream.
@@ -39,6 +47,10 @@ KASLR for the kernel image and the direct-mapping region. Matches linux-hardened
 ### `CONFIG_KFENCE=y`
 
 Low-overhead sampling-based detector for use-after-free, out-of-bounds, and invalid-free bugs in kernel allocators. Reports go to dmesg. Matches linux-hardened upstream.
+
+### `CONFIG_KFENCE_BUG_ON_DATA_CORRUPTION=y`
+
+Promotes a KFENCE-detected corruption from a dmesg report to a kernel BUG, mirroring the `CONFIG_BUG_ON_DATA_CORRUPTION` stance for KFENCE's canary checks. Active only because we enable `CONFIG_KFENCE`. linux-hardened patch default `y`; pinned explicitly. Matches linux-hardened upstream.
 
 ## Control-flow integrity
 
@@ -53,6 +65,10 @@ Virtually-mapped kernel stacks with guard pages. Catches stack overflow with a f
 ### `CONFIG_REFCOUNT_FULL=y`
 
 Refcount overflow and use-after-free detection on the `refcount_t` API. Matches linux-hardened upstream.
+
+### `CONFIG_RANDOMIZE_KSTACK_OFFSET_DEFAULT=y`
+
+Randomizes the kernel stack offset on each syscall entry, so a stack address leaked from one syscall doesn't predict the layout on the next. Small per-syscall cost. Recommended by KSPP and enabled by Arch's linux-hardened. If the distro stock config already sets this, pinning it is a documented no-op.
 
 ### `CONFIG_BUG_ON_DATA_CORRUPTION=y`
 
@@ -87,6 +103,10 @@ Convert a kernel oops into a panic. An oops in a critical path is already a sign
 ### `CONFIG_DEBUG_LIST=y`, `CONFIG_DEBUG_SG=y`, `CONFIG_DEBUG_CREDENTIALS=y`, `CONFIG_DEBUG_NOTIFIERS=y`
 
 Runtime sanity checks on linked lists, scatter-gather chains, credential struct integrity, and notifier-chain calls. Each catches a class of kernel memory-corruption bugs at modest cost. Matches linux-hardened upstream.
+
+### `CONFIG_LIST_HARDENED=y`
+
+The modern linked-list integrity check (kernel 6.x+). `CONFIG_DEBUG_LIST` now `select`s `CONFIG_LIST_HARDENED` and adds debug-only verbosity on top; we pin `LIST_HARDENED` explicitly so the hardening half is declared independently of the debug symbol and the overlay records the modern name. Matches linux-hardened upstream.
 
 ## Attack-surface reduction (disabled features)
 
@@ -127,6 +147,16 @@ The pre-Unix98 PTY allocation scheme. Replaced by `/dev/pts/` two decades ago. R
 ### `CONFIG_SECURITY_DMESG_RESTRICT=y`
 
 Default `kernel.dmesg_restrict=1`, which limits unprivileged reads of `dmesg` to root. Kernel logs frequently contain pointer values and slab addresses that an attacker can use to defeat KASLR. Matches linux-hardened upstream.
+
+### `CONFIG_LEGACY_TIOCSTI=n`
+
+The `TIOCSTI` ioctl lets a process push characters into a terminal's input queue. A process that shares a controlling terminal with a more-privileged shell can use it to inject commands, a classic sandbox-escape and privilege-escalation primitive. Mainline gates the legacy behavior behind this symbol (default `y` for compatibility); we set it off. This is the modern replacement for linux-hardened's old `SECURITY_TIOCSTI_RESTRICT`, which no longer exists.
+
+User impact: negligible. TIOCSTI has been deprecated for years; the few tools that used it (some `ttyecho`-style utilities) have alternatives. Not cataloged in incompatibilities.md as no current workflow depends on it.
+
+### `CONFIG_SECURITY_PERF_EVENTS_RESTRICT=y`
+
+Compile-time equivalent of `kernel.perf_event_paranoid=3`: restricts the `perf_event_open` syscall to root by default. Backstops the sysctl of the same effect (see Sysctls below) so the restriction holds even if the `99-hardened.conf` drop-in is absent or overridden. linux-hardened patch default `y`. Matches linux-hardened upstream.
 
 ## Sysctls
 
