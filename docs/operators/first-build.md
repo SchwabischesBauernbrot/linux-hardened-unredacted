@@ -101,21 +101,23 @@ Add Fastly secrets to Forgejo:
 
 Pangolin needs only the ordinary Forgejo reverse-proxy setup for `git.unredacted.org`: forward to the Forgejo backend, terminate TLS, no Debian-path-specific rules. The apt repo is public, and uploads authenticate with the `REGISTRY_TOKEN`, so there is no read gate and no upload exception. See [reverse-proxy.md](reverse-proxy.md) for the verification curls.
 
-## 7. Reconcile the authoritative config against upstream
+## 7. Reconcile our seed + intent against upstream
 
-Per kernel-version bump, `build/configure-kernel.sh`'s drift check aborts at configure time if `olddefconfig` changes the authoritative config (`configs/config.debian-trixie-amd64`) — meaning upstream added new symbols, flipped defaults, or removed something. The fix workflow is:
+The build composes `.config` from anthraxx's pinned `config.x86_64` seed plus `configs/intent.config`. Per kernel bump, two failure modes are possible at configure time:
+
+- **Fidelity miss:** a line in `configs/intent.config` didn't land in the final `.config` after merge+olddefconfig. The configure step aborts naming the symbol. Usually means the seed's dependency graph shifted (e.g. a parent symbol flipped off, masking our child pin) or the symbol was renamed upstream. Fix: pin the parent in `intent.config`, or update `intent.config`+`POLICY.md` to the new name.
+- **Anthraxx changed config.x86_64 in a way we want to adopt:** not detected by the build (the pin is static). Run `tools/reconcile-vs-anthraxx.sh` to see hardening-relevant deltas; `tools/bump-seed.sh <commit-or-tag>` to update the pin if you want to adopt them.
 
 ```
-# Inspect linux-hardened's defaults for the version you're shipping.
-git clone https://github.com/anthraxx/linux-hardened.git /tmp/lh
-cd /tmp/lh && git checkout v7.0.10-hardened1
-# Either: let the build abort, then promote this run's final.config
-# (tools/promote-config.sh <tag>), inspect the diff, commit, re-tag.
-# Or: pin the affected symbols explicitly in configs/config.debian-trixie-amd64
-# first so olddefconfig can't move them.
+# Diff our pinned seed against anthraxx HEAD (read-only)
+tools/reconcile-vs-anthraxx.sh
+
+# If you want to adopt their changes, bump the pin (signature + sha256
+# verified; prints the hardening-relevant delta for the commit message)
+tools/bump-seed.sh 7.0.10.hardened1-1
 ```
 
-The `policy-matches-config` CI check (`.forgejo/workflows/validate.yml`) enforces that every kconfig assertion in `configs/POLICY.md` holds in the authoritative — update both together when changing one. The authoritative was last refreshed from `v7.0.10-hardened1.3`'s final.config.
+The `intent-matches-policy` CI check (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between `configs/intent.config` and `configs/POLICY.md` — update both together when changing one. Full design in [config-architecture.md](config-architecture.md).
 
 ## 8. Push a stub test tag
 
@@ -131,7 +133,7 @@ git push origin v6.6.0-hardened1
 **What will probably fail the first time:**
 
 - Some package missing from `containers/Dockerfile.debian-trixie-amd64`. Add it, rebuild the image.
-- The configure step's drift check aborts because `olddefconfig` changed something — inspect the diff in the step log, run `tools/promote-config.sh <tag>` once you're satisfied with the new authoritative, commit, re-tag.
+- The configure step's fidelity assertion aborts because an intent line didn't land — inspect the symbol named in the error, decide whether to pin a parent symbol in `configs/intent.config`, update the intent value to match what landed, or (rarely) bump the seed pin via `tools/bump-seed.sh` to inherit anthraxx's choice.
 - Pangolin's allow rule for the runner IP isn't quite right; CI uploads 403. Re-check step 6.
 - The signing step fails because the secret was loaded with stray whitespace. Re-add the secret without the trailing newline.
 - `debian/patches/` was already empty in this kernel version, so the truncate is a no-op. Fine.

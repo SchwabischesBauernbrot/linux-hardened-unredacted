@@ -1,6 +1,6 @@
 # Kernel configuration policy
 
-The audit trail for every hardening choice we take a position on in the authoritative kernel config (`configs/config.{distro}-{release}-{arch}`). The CI `policy-matches-config` job (`.forgejo/workflows/validate.yml`) enforces that every kconfig assertion below holds in the authoritative; the build's `cp authoritative → olddefconfig → diff` flow (`build/configure-kernel.sh`) catches any upstream default that drifts after a kernel-version or hardened-patch-revision bump.
+The audit trail for every hardening choice we take a position on. The build seeds the kernel config from anthraxx's Arch linux-hardened `config.x86_64` (pinned by sha256 + signed-commit-verified in `configs/upstream-seed.toml`) and layers `configs/intent.config` on top — the symbols below. The CI `intent-matches-policy` job (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between this file and `configs/intent.config` (every kconfig assertion here has a matching pin there, and vice versa); the build's fidelity assertion (`build/configure-kernel.sh`) confirms every intent line lands in the final `.config` after `olddefconfig`. Symbols anthraxx already sets the way we want flow through from the seed automatically — defense-in-depth pins below catch any future seed regression that would lose one.
 
 **Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
 
@@ -110,7 +110,19 @@ Boot-time warning if any W^X violation slips through the static enforcement. Mat
 
 ### `CONFIG_MODULE_SIG=y`, `CONFIG_MODULE_SIG_FORCE=y`, `CONFIG_MODULE_SIG_ALL=y`, `CONFIG_MODULE_SIG_SHA256=y`
 
-Build module-signing into the kernel (`CONFIG_MODULE_SIG`), refuse unsigned modules at load (`MODULE_SIG_FORCE`), sign every module in the build (`MODULE_SIG_ALL`), use SHA-256 (`MODULE_SIG_SHA256`). The signing key is the project's Forgejo-resident key, except for DKMS-built out-of-tree modules which are signed with the user's machine-local MOK key. Matches linux-hardened upstream.
+Build module-signing into the kernel (`CONFIG_MODULE_SIG`), refuse unsigned modules at load (`MODULE_SIG_FORCE`), sign every module in the build (`MODULE_SIG_ALL`), use SHA-256 (`MODULE_SIG_SHA256`). The signing key is the project's Forgejo-resident key, except for DKMS-built out-of-tree modules which are signed with the user's machine-local MOK key. anthraxx ships `MODULE_SIG=y` but does not `FORCE`; ours is stricter. Matches linux-hardened upstream on the rest.
+
+### `CONFIG_MODULE_SIG_KEY_TYPE_RSA=y`, `# CONFIG_MODULE_SIG_KEY_TYPE_ECDSA is not set`
+
+Module-signing key algorithm: RSA, not ECDSA. anthraxx uses ECDSA; we deliberately diverge. RSA is more broadly compatible with downstream verifiers — older shim chains, embedded MOK utilities, distros that haven't refreshed their host-side tooling. Cryptographically sufficient for the threat model (the matching `MODULE_SIG_SHA256` paired hash gives us SHA-256 + RSA, a standard combination). A future migration to ECDSA is possible once the ecosystem catches up.
+
+### `CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"`
+
+Placeholder path: the kernel build's stock default. The actual signing key is materialized at CI-runtime into a tmpfs file from the project's Forgejo-resident `KERNEL_SIGNING_KEY` secret, and `build/configure-kernel.sh` `sed`-replaces this line with the runtime path *after* the fidelity assertion runs — so the ephemeral path never appears in any drift check. The placeholder exists in `intent.config` only to give the fidelity assertion a stable value to look for.
+
+### `CONFIG_MODULE_COMPRESS_XZ=y`, `# CONFIG_MODULE_COMPRESS_ZSTD is not set`
+
+Module compression: XZ, not ZSTD. anthraxx ships ZSTD; we use XZ. Both compress; neither affects security posture. The choice matters for `tools/strip-signatures.sh`: a compressed module's signature lives *inside* the compressed stream and can't be stripped by the rfind-trailer approach the helper uses today. That's a known caveat (tracked separately as the strip-signatures fix); the compression algorithm choice doesn't make it better or worse, but pinning *some* explicit choice means future repro-check diffs are deterministic on the compression boundary.
 
 ### `CONFIG_SECURITY_LOCKDOWN_LSM=y`, `CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y`, `CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y`
 
@@ -181,6 +193,10 @@ User impact: negligible. TIOCSTI has been deprecated for years; the few tools th
 ### `CONFIG_SECURITY_PERF_EVENTS_RESTRICT=y`
 
 Compile-time equivalent of `kernel.perf_event_paranoid=3`: restricts the `perf_event_open` syscall to root by default. Backstops the sysctl of the same effect (see Sysctls below) so the restriction holds even if the `99-hardened.conf` drop-in is absent or overridden. linux-hardened patch default `y`. Matches linux-hardened upstream.
+
+### `CONFIG_USERFAULTFD=y`
+
+Kept on with the sysctl restriction `vm.unprivileged_userfaultfd=0` (see Sysctls below). anthraxx compiles `userfaultfd` out entirely (`=n`) — a stricter stance. We retain the syscall for root-only use because some live-migration tools (CRIU is already off, but container runtimes like CRI-O and certain Kubernetes deployments use it occasionally) depend on it being available to privileged callers. Defense-in-depth via the sysctl gives us most of the protection (unprivileged userspace can't use it as a use-after-free exploit primitive) without breaking those tools. Potential future adoption of anthraxx's compile-out posture, pending an audit of user-infra dependencies.
 
 ## Sysctls
 

@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Fetch + verify the upstream kernel-config seed pinned in
+# configs/upstream-seed.toml.
+#
+# Runs in the network-ON phase of the workflow, before the
+# network-isolated configure/build step. Writes:
+#   $WORKDIR/upstream-seed.config   the verified config.x86_64 bytes
+#   $WORKDIR/seed-info.json         provenance for tools/build-manifest.py
+#
+# Verification is belt-and-suspenders:
+#   1. git verify-commit against the pinned signer fingerprint
+#      (anthraxx's key, already in keys/anthraxx.gpg).
+#   2. sha256sum of the extracted config.x86_64 against the pin.
+# Both must pass or the script aborts with a clear error.
+#
+# Required env:
+#   WORKDIR    absolute writable directory
+#
+# Optional env:
+#   SEED_PIN_PATH        default: <repo>/configs/upstream-seed.toml
+#   ANTHRAXX_KEYRING     default: <repo>/keys/anthraxx.gpg
+
+set -euo pipefail
+umask 022
+
+: "${WORKDIR:?WORKDIR required}"
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+pin_file="${SEED_PIN_PATH:-$repo_root/configs/upstream-seed.toml}"
+anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
+
+[[ -f $pin_file ]]         || { echo "missing seed pin: $pin_file" >&2; exit 1; }
+[[ -s $anthraxx_keyring ]] || { echo "missing anthraxx keyring: $anthraxx_keyring (see keys/README.md)" >&2; exit 1; }
+[[ -d $WORKDIR ]]          || { echo "WORKDIR $WORKDIR does not exist" >&2; exit 1; }
+
+# Parse a simple key="value" line from the TOML pin file. The pin is
+# hand-written + reviewed (not adversarial), so a grep+sed suffices --
+# we don't need a full TOML parser.
+toml_get() {
+    local key=$1
+    local raw
+    raw=$(grep -E "^${key}[[:space:]]*=" "$pin_file" | head -n1) || true
+    [[ -n $raw ]] || { echo "seed pin missing key: $key" >&2; exit 1; }
+    # Strip up to the = and surrounding whitespace, then the surrounding quotes.
+    printf '%s' "$raw" | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/'
+}
+
+# For normal builds, the pin comes from configs/upstream-seed.toml.
+# tools/repro-check.sh overrides via env vars to pin to a HISTORICAL seed
+# (the values stored in releases/<tag>/manifest.json's upstream_seed
+# block), which may differ from the current TOML.
+seed_url=${FETCH_SEED_URL:-$(toml_get url)}
+seed_commit=${FETCH_SEED_COMMIT:-$(toml_get commit)}
+seed_config_path=${FETCH_SEED_CONFIG_PATH:-$(toml_get config_path)}
+seed_sha256=${FETCH_SEED_SHA256:-$(toml_get sha256)}
+seed_signer=${FETCH_SEED_SIGNER_FPR:-$(toml_get signer_fpr)}
+
+echo "seed pin:"
+echo "  url        : $seed_url"
+echo "  commit     : $seed_commit"
+echo "  config_path: $seed_config_path"
+echo "  sha256     : $seed_sha256"
+echo "  signer_fpr : $seed_signer"
+
+# --- Clone the pinned commit -------------------------------------------
+# Prefer a shallow fetch-by-commit so the clone is fast (the linux-hardened
+# packaging repo is small, but principle: fetch only what we need).
+# GitLab supports uploadpack.allowAnySHA1InWant by default for public repos.
+# If a future server disables it, fall back to a full clone.
+clone_dir="$WORKDIR/upstream-seed.git"
+rm -rf "$clone_dir"
+mkdir -p "$clone_dir"
+(
+    cd "$clone_dir"
+    git init --quiet
+    git remote add origin "$seed_url"
+    if git fetch --depth 1 --quiet --no-tags origin "$seed_commit" 2>/dev/null; then
+        git -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+    else
+        echo "  shallow fetch-by-commit failed; falling back to full clone" >&2
+        cd ..
+        rm -rf "$clone_dir"
+        git clone --quiet "$seed_url" "$clone_dir"
+        git -C "$clone_dir" -c advice.detachedHead=false checkout --quiet "$seed_commit"
+    fi
+)
+
+# --- Verify the commit signature ---------------------------------------
+# git verify-commit consults the gpg keyring at $GNUPGHOME. Stage the
+# anthraxx pubkey into a temp homedir so this verification is isolated
+# from any system-wide keyring (the runner is shared infrastructure).
+gnupgdir=$(mktemp -d)
+chmod 700 "$gnupgdir"
+trap 'rm -rf "$gnupgdir"' EXIT
+GNUPGHOME="$gnupgdir" gpg --no-default-keyring --keyring "$anthraxx_keyring" \
+    --export 2>/dev/null | GNUPGHOME="$gnupgdir" gpg --import --quiet 2>&1 \
+    | grep -v 'gpg: WARNING' || true
+
+verify_log="$WORKDIR/seed-verify.log"
+if ! GNUPGHOME="$gnupgdir" git -C "$clone_dir" verify-commit "$seed_commit" \
+        > "$verify_log" 2>&1; then
+    echo "git verify-commit failed for $seed_commit" >&2
+    cat "$verify_log" >&2
+    exit 2
+fi
+
+# Confirm the signing key actually matches the pinned fingerprint. gpg
+# reports the primary key id; allow either the full fpr or the last-16-hex
+# long key id (signing subkeys show the long-id form).
+short_id=${seed_signer: -16}
+if ! grep -qE "(Primary key fingerprint:[[:space:]]+(([A-F0-9]{4} ?){10}|${seed_signer})|using RSA key ${seed_signer}|using RSA key ${short_id})" "$verify_log"; then
+    echo "commit signature did not match pinned signer $seed_signer" >&2
+    cat "$verify_log" >&2
+    exit 2
+fi
+# Best-effort: strip the prefix-spaces version of the fpr and re-check
+# against the canonical no-space form (different gpg versions format
+# 'Primary key fingerprint:' lines differently).
+canonical_fpr=$(grep -oE '(([A-F0-9]{4} ?){10})' "$verify_log" | tr -d ' ' | head -n1)
+if [[ -n $canonical_fpr && $canonical_fpr != "$seed_signer" ]]; then
+    echo "git verify-commit reports fingerprint $canonical_fpr, expected $seed_signer" >&2
+    exit 2
+fi
+echo "  signature: OK (signed by $seed_signer)"
+
+# --- Verify the config bytes -------------------------------------------
+src="$clone_dir/$seed_config_path"
+[[ -f $src ]] || { echo "config_path not found in cloned repo: $seed_config_path" >&2; exit 2; }
+
+actual_sha=$(sha256sum "$src" | awk '{print $1}')
+if [[ $actual_sha != "$seed_sha256" ]]; then
+    echo "seed sha256 mismatch:" >&2
+    echo "  pin:    $seed_sha256" >&2
+    echo "  actual: $actual_sha" >&2
+    echo "Either the pinned commit was force-pushed (impossible in normal git, but check)," >&2
+    echo "or the config_path under that commit differs from what was pinned. Investigate" >&2
+    echo "before bumping the pin." >&2
+    exit 2
+fi
+echo "  config sha256: OK ($actual_sha)"
+
+# --- Stage outputs -----------------------------------------------------
+cp "$src" "$WORKDIR/upstream-seed.config"
+
+# Provenance for the manifest. build-manifest.py reads this and folds it
+# in as the top-level `upstream_seed` key.
+cat > "$WORKDIR/seed-info.json" <<EOF
+{
+  "url": "$seed_url",
+  "commit": "$seed_commit",
+  "config_path": "$seed_config_path",
+  "sha256": "$seed_sha256",
+  "signer_fpr": "$seed_signer",
+  "signature_verified": true
+}
+EOF
+
+# Drop the cloned repo now that we have the bytes + provenance.
+rm -rf "$clone_dir"
+
+echo "fetch-seed.sh: OK"

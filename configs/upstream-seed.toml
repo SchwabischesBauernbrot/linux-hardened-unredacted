@@ -1,0 +1,30 @@
+# Upstream kernel config seed pin.
+#
+# We seed our build's .config from anthraxx's (Levente Polyak's) own
+# Arch Linux packaging repo for linux-hardened. He maintains that repo
+# personally and signs every commit with the same key we already pin
+# for the linux-hardened patch (E240B57E…). config.x86_64 is a full
+# kconfig snapshot tracking the upstream linux-hardened patch's intent.
+#
+# Pinning model:
+#   - `commit`  is the immutable git SHA of the pinned packaging revision.
+#   - `sha256`  is the integrity hash of config.x86_64 at that commit
+#               (matches anthraxx's own .SRCINFO sha256sums_x86_64).
+#   - `signer_fpr` is the OpenPGP fingerprint we require git verify-commit
+#               to find — pin is rejected if a different signer made the
+#               commit.
+#
+# Bump procedure: see tools/bump-seed.sh and
+# docs/operators/config-architecture.md. The build's drift behaviour is
+# governed by the fidelity assertion in build/configure-kernel.sh, which
+# enforces every line in configs/intent.config lands in the final .config
+# after merge + olddefconfig. So updating this pin is safe — the
+# fidelity assertion catches anything in intent that fails to materialize
+# under the new seed.
+
+url        = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
+commit     = "05f37148910214f3f5241abb9850f32e5bc0e4c9"
+tag        = "7.0.9.hardened1-1"
+config_path = "config.x86_64"
+sha256     = "cdc76d4e3b3b4eb396c18827c0981b1de27118a992f84cadb1464d5707fa43c9"
+signer_fpr = "E240B57E2C4630BA768E2F26FC1B547C8D8172C8"

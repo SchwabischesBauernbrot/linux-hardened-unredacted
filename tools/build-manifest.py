@@ -45,6 +45,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="signing cert PEM contents; recorded as a sha256")
     ap.add_argument("--sbom", type=Path,
                     help="optional JSON file merged in as the `sbom` key")
+    ap.add_argument("--upstream-seed-info", type=Path,
+                    help="JSON file (seed-info.json from fetch-seed.sh) "
+                         "merged in as the top-level `upstream_seed` key. "
+                         "Records the pinned kernel-config seed's url, "
+                         "commit, sha256, and signer fingerprint so "
+                         "repro-check can fetch + re-verify the same seed.")
     ap.add_argument("--output", type=Path,
                     help="manifest path (default: <workdir>/manifest.json)")
     args = ap.parse_args(argv)
@@ -87,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
             args.signing_cert.encode()).hexdigest()
     if args.sbom:
         manifest["sbom"] = json.loads(args.sbom.read_text())
+    if args.upstream_seed_info:
+        manifest["upstream_seed"] = json.loads(args.upstream_seed_info.read_text())
 
     out = args.output or (args.workdir / "manifest.json")
     out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")

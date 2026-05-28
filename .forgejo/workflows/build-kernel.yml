@@ -160,6 +160,15 @@ jobs:
           mkdir -p "$WORKDIR"
           ./build/fetch-sources.sh
 
+      - name: fetch + verify upstream config seed
+        # Pulls anthraxx's pinned config.x86_64 from the Arch packaging
+        # repo, runs `git verify-commit` against his pinned key fpr, and
+        # sha256-verifies the bytes. Network-ON; results land in $WORKDIR
+        # for the network-isolated configure step below.
+        env:
+          WORKDIR: ${{ runner.temp }}/work
+        run: ./build/fetch-seed.sh
+
       - name: apply patches
         env:
           WORKDIR: ${{ runner.temp }}/work
@@ -305,7 +314,8 @@ jobs:
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --distro "$DISTRO" --release "$RELEASE" --arch "$ARCH" \
             --signing-cert "$SIGNING_CERT" \
-            --sbom "$WORKDIR/sbom.json"
+            --sbom "$WORKDIR/sbom.json" \
+            --upstream-seed-info "$WORKDIR/seed-info.json"
 
       - name: attach .debs to release
         # Forgejo's actions/upload-artifact support varies by version,

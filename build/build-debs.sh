@@ -197,12 +197,13 @@ under UEFI / not sbsign-able / wrong arch — and the failure would
 only surface 30+ minutes from now in the sign step.
 
 Most likely causes:
-  - The authoritative configs/config.<distro>-<release>-${ARCH} doesn't
-    pin them =y (or pins them off). Fix the authoritative + commit.
+  - configs/intent.config doesn't pin them =y (or pins them off), and
+    the upstream seed (anthraxx config.x86_64) doesn't either. Pin them
+    in configs/intent.config + add POLICY entries.
   - olddefconfig defaulted them off because a transitive dependency is
-    missing. configure-kernel.sh's drift check should have caught this
-    earlier; if it didn't, the authoritative is stale -- regenerate via
-    tools/promote-config.sh against a successful build.
+    missing. configure-kernel.sh's fidelity assertion should have caught
+    this earlier; if it didn't, the symbol isn't in intent.config -- add
+    it so it can't get lost again.
 
 EOF
     exit 5

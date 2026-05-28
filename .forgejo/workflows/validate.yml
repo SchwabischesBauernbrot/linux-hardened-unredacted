@@ -27,70 +27,89 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 -m py_compile tools/*.py
 
-  policy-matches-config:
-    # POLICY.md is the trust narrative; configs/config.${target} is the
-    # authoritative operational truth (the full ~9.5k-line .config the
-    # build cp's in). Every explicit assertion POLICY makes about a symbol
-    # must hold in the authoritative -- otherwise the docs are lying about
-    # what the kernel actually ships with. The reverse direction is not
-    # checked: the authoritative has thousands of symbols POLICY does not
-    # (and need not) document; POLICY covers the curated set of choices
-    # where we take an intentional position.
+  intent-matches-policy:
+    # Bidirectional parity between configs/intent.config (the project's
+    # pinned kconfig overrides layered over anthraxx's seed) and
+    # configs/POLICY.md (the prose audit trail). Every kconfig assertion
+    # in POLICY must appear as a setting line in intent.config with the
+    # declared value; every setting line in intent.config must have its
+    # symbol mentioned (as a CONFIG_ token) in POLICY. A mismatch means
+    # the docs and the operational intent drifted -- one or the other
+    # needs updating before merge.
+    #
+    # The seed itself is never checked here (the seed is what it is; the
+    # build's fidelity assertion handles "did our intent actually land"
+    # at configure time).
     runs-on: linux-hardened
     steps:
       - uses: actions/checkout@v4
-      - name: every POLICY assertion holds in the authoritative config
+      - name: intent.config and POLICY.md agree
         run: |
           set -euo pipefail
-          AUTH=configs/config.debian-trixie-amd64
-          [[ -f $AUTH ]] || { echo "missing authoritative config: $AUTH" >&2; exit 1; }
+          INTENT=configs/intent.config
+          POLICY=configs/POLICY.md
+          [[ -f $INTENT ]] || { echo "missing $INTENT" >&2; exit 1; }
+          [[ -f $POLICY ]] || { echo "missing $POLICY" >&2; exit 1; }
 
-          # POLICY documents intent via backtick-wrapped kconfig assertions
-          # in headings and prose:
-          #   `CONFIG_X=value`         -> expect that exact line in $AUTH
-          #   `# CONFIG_X is not set`  -> expect symbol off (absent or
-          #                               literally "is not set") in $AUTH
-          # A mismatch means POLICY drifted from the config (or vice
-          # versa); one or the other is wrong.
           fails=0
-          check_set() {
+
+          # --- Direction 1: every POLICY assertion exists in intent.config ---
+          # POLICY uses backtick-wrapped kconfig assertions:
+          #   `CONFIG_X=value`         -> expect that exact line in intent
+          #   `# CONFIG_X is not set`  -> expect symbol off in intent
+          #   `CONFIG_X=n`             -> POLICY prose shorthand for "off"
+          check_intent_set() {
               local sym=$1 want=$2
-              # `CONFIG_X=n` in POLICY prose is shorthand for "off"; the
-              # kconfig wire format is "# CONFIG_X is not set" (or absent).
-              # Treat them equivalently.
-              if [[ $want == n ]]; then check_off "$sym"; return; fi
+              if [[ $want == n ]]; then check_intent_off "$sym"; return; fi
               local have
-              have=$(grep -E "^${sym}=" "$AUTH" | head -n1)
+              have=$(grep -E "^${sym}=" "$INTENT" | head -n1)
               if [[ "$have" != "${sym}=${want}" ]]; then
-                  printf '  MISMATCH: POLICY asserts %s=%s, authoritative has: %s\n' \
+                  printf '  MISMATCH (POLICY->intent): POLICY asserts %s=%s, intent has: %s\n' \
                       "$sym" "$want" "${have:-<absent>}" >&2
                   fails=$((fails+1))
               fi
           }
-          check_off() {
+          check_intent_off() {
               local sym=$1
-              if grep -qE "^${sym}=" "$AUTH"; then
-                  printf '  MISMATCH: POLICY asserts %s off, authoritative has: %s\n' \
-                      "$sym" "$(grep "^${sym}=" "$AUTH" | head -n1)" >&2
+              if grep -qE "^${sym}=" "$INTENT"; then
+                  printf '  MISMATCH (POLICY->intent): POLICY asserts %s off, intent has: %s\n' \
+                      "$sym" "$(grep "^${sym}=" "$INTENT" | head -n1)" >&2
                   fails=$((fails+1))
               fi
+              # Absent or "# X is not set" both satisfy "off" — both fine.
           }
 
           while IFS= read -r raw; do
               spec=${raw#\`}; spec=${spec%\`}
-              check_set "${spec%%=*}" "${spec#*=}"
-          done < <(grep -oE '`CONFIG_[A-Z0-9_]+=[^`]*`' configs/POLICY.md | sort -u)
+              check_intent_set "${spec%%=*}" "${spec#*=}"
+          done < <(grep -oE '`CONFIG_[A-Z0-9_]+=[^`]*`' "$POLICY" | sort -u)
 
           while IFS= read -r raw; do
               sym=$(printf '%s' "$raw" | sed -E 's/^`# (CONFIG_[A-Z0-9_]+) is not set`$/\1/')
-              check_off "$sym"
-          done < <(grep -oE '`# CONFIG_[A-Z0-9_]+ is not set`' configs/POLICY.md | sort -u)
+              check_intent_off "$sym"
+          done < <(grep -oE '`# CONFIG_[A-Z0-9_]+ is not set`' "$POLICY" | sort -u)
+
+          # --- Direction 2: every intent.config symbol mentioned in POLICY ---
+          # Catches the converse: we pinned a symbol in intent without a
+          # POLICY rationale entry. Tolerates POLICY mentioning the symbol
+          # ANYWHERE (heading or prose) since we only need the rationale
+          # to exist; the exact value comes from intent itself.
+          intent_syms=$(sed -nE \
+              -e 's/^(CONFIG_[A-Z0-9_]+)=.*/\1/p' \
+              -e 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1/p' "$INTENT" | sort -u)
+          policy_syms=$(grep -oE 'CONFIG_[A-Z0-9_]+' "$POLICY" | sort -u)
+          orphans=$(comm -23 <(echo "$intent_syms") <(echo "$policy_syms"))
+          if [[ -n $orphans ]]; then
+              echo "  intent.config symbols with no POLICY mention:" >&2
+              echo "$orphans" | sed 's/^/    /' >&2
+              fails=$((fails+1))
+          fi
 
           if (( fails > 0 )); then
-              echo "$fails POLICY assertion(s) do not match $AUTH" >&2
+              echo "$fails parity check(s) failed between $INTENT and $POLICY" >&2
               exit 1
           fi
-          echo "all POLICY assertions match $AUTH"
+          echo "intent.config and POLICY.md agree"
 
   no-placeholder-digests:
     # Pin placeholders must be replaced with concrete digests before a
