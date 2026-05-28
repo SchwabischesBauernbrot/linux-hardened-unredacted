@@ -36,6 +36,11 @@ source_date_epoch=$(jq -r '.source_date_epoch // empty' "$manifest")
 export SOURCE_DATE_EPOCH="$source_date_epoch"
 
 command -v docker >/dev/null || { echo "docker required for the rebuild stage" >&2; exit 1; }
+# strip-signatures.sh removes the released vmlinuz's Authenticode signature
+# with sbattach (from sbsigntool). Without it that strip is a SILENT no-op,
+# so the released image .deb keeps its signature while the rebuilt one never
+# had one -> a guaranteed false mismatch. Require it up front.
+command -v sbattach >/dev/null || { echo "sbattach (from sbsigntool) required for the vmlinuz signature strip; install sbsigntool" >&2; exit 1; }
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # Where to fetch the released .debs from for the comparison. Default to
@@ -141,6 +146,14 @@ docker run --rm \
         fi
         apt-get update -q
         apt-get build-dep -y --no-install-recommends linux
+        # gcc plugin headers. build-dep does NOT pull these in; without them
+        # kconfig hides the whole GCC_PLUGINS subtree, so configure-kernel.sh
+        # fidelity-asserts a MISS on CONFIG_GCC_PLUGINS (pinned in
+        # intent.config) and aborts -> the rebuild produces no .debs and the
+        # repro check fails before it can compare anything. Mirrors
+        # build-kernel.yml exactly; keep the two in sync.
+        apt-get install -y --no-install-recommends \
+            "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev"
         /repo/build/fetch-sources.sh
         /repo/build/apply-patches.sh
         /repo/build/fetch-seed.sh
@@ -156,10 +169,24 @@ shopt -u nullglob
 mv "$rebuild_work"/*.deb "$work/"
 
 # --- Fetch the released .debs --------------------------------------------
-# The harness strips signatures from both sides, so we need the actual
-# released (signed) .debs to strip and compare. Pull them from the apt
-# repo by canonical_path, or copy from RELEASED_DIR if set.
+# Signatures are stripped from BOTH sides only to produce a diffoscope DIFF
+# on mismatch; the pass/fail verdict itself compares the rebuilt .deb's
+# stripped hash against the manifest's recorded unsigned hash and does NOT
+# need the released .debs. Source order: RELEASED_DIR (a local copy), else
+# the manifest's canonical_path fetched from the apt repo. If neither is
+# available we still run the verdict but warn loudly that diff reports are
+# unavailable — previously this was a silent skip that left a mismatch
+# impossible to diagnose.
 mkdir -p "$work/released"
+if [[ -z ${RELEASED_DIR:-} ]] \
+   && ! jq -e '[.outputs[].deb_files[].canonical_path // empty] | length > 0' \
+        "$manifest" >/dev/null; then
+    echo "WARN: no RELEASED_DIR set and the manifest carries no canonical_path —" >&2
+    echo "WARN: released .debs will not be fetched. The reproducibility verdict" >&2
+    echo "WARN: (rebuilt hash vs manifest) still runs, but diffoscope diff reports" >&2
+    echo "WARN: will be unavailable on mismatch. Set RELEASED_DIR=<dir> to a local" >&2
+    echo "WARN: copy of the released .debs for a full diff." >&2
+fi
 while IFS=$'\t' read -r name canonical_path; do
     [[ -n $name ]] || continue
     if [[ -n ${RELEASED_DIR:-} ]]; then
@@ -171,7 +198,7 @@ while IFS=$'\t' read -r name canonical_path; do
     elif [[ -n $canonical_path ]]; then
         wget --no-verbose -O "$work/released/$name" \
             "$repo_base_url/$canonical_path" \
-            || echo "  WARN: could not fetch released $name" >&2
+            || { rm -f "$work/released/$name"; echo "  WARN: could not fetch released $name from $repo_base_url/$canonical_path" >&2; }
     fi
 done < <(jq -r '.outputs[].deb_files[] | "\(.name)\t\(.canonical_path // "")"' "$manifest")
 
@@ -210,6 +237,10 @@ while IFS=$'\t' read -r expected_stripped name _canonical_path; do
             strip_signatures "$released_path" "$released_stripped"
             diffoscope --html "repro-diff/${name}.html" \
                        "$released_stripped" "$rebuild_stripped" || true
+        elif [[ ! -f $released_path ]]; then
+            echo "  (no diff report for $name: released .deb unavailable — set RELEASED_DIR for a diffoscope diff)" >&2
+        else
+            echo "  (no diff report for $name: diffoscope not installed)" >&2
         fi
         mismatches=$((mismatches + 1))
     fi
