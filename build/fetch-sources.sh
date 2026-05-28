@@ -35,6 +35,31 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 kernel_org_keyring="${KERNEL_ORG_KEYRING:-$repo_root/keys/kernel-org.gpg}"
 anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
 
+# Pinned signer fingerprints. The keyring already constrains who can sign,
+# but we additionally assert the *specific* expected key in the gpg status
+# output so a polluted keyring can't slip a different signer past us — the
+# same identities the anthraxx PKGBUILD pins in validpgpkeys.
+KERNEL_ORG_FPRS=(
+    ABAF11C65A2970B130ABE3C479BE3E4300411886  # Linus Torvalds
+    647F28654894E3BD457199BE38DBBDC86092693E  # Greg Kroah-Hartman
+)
+ANTHRAXX_FPR=E240B57E2C4630BA768E2F26FC1B547C8D8172C8  # Levente Polyak
+
+# True if the gpg --status-fd log in $1 shows the signature came from one of
+# the pinned primary fingerprints in $2.. — matched either as the full
+# fingerprint on a VALIDSIG/KEY_CONSIDERED line, or as the trailing 16-hex
+# long key id on the GOODSIG/EXPKEYSIG line (covers signing subkeys and the
+# expired-key EXPKEYSIG case).
+signer_is_pinned() {
+    local log=$1; shift
+    local fpr
+    for fpr in "$@"; do
+        grep -qE "^\[GNUPG:\] (VALIDSIG|KEY_CONSIDERED) ${fpr} " "$log" && return 0
+        grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG) ${fpr: -16} " "$log" && return 0
+    done
+    return 1
+}
+
 [[ -d $WORKDIR ]] || { echo "WORKDIR $WORKDIR does not exist" >&2; exit 1; }
 
 major="${KERNEL_VERSION%%.*}"
@@ -73,6 +98,11 @@ fi
 if ! grep -q '^\[GNUPG:\] GOODSIG' "$tarball.verify.log"; then
     cat "$tarball.verify.log" >&2
     echo "kernel.org signature verify ran but no GOODSIG status" >&2
+    exit 2
+fi
+if ! signer_is_pinned "$tarball.verify.log" "${KERNEL_ORG_FPRS[@]}"; then
+    cat "$tarball.verify.log" >&2
+    echo "kernel.org signature is valid but not from a pinned release key" >&2
     exit 2
 fi
 
@@ -118,6 +148,11 @@ else
     echo "linux-hardened verify ran but neither GOODSIG nor EXPKEYSIG present" >&2
     exit 4
 fi
+if ! signer_is_pinned "$hardened_patch.verify.log" "$ANTHRAXX_FPR"; then
+    cat "$hardened_patch.verify.log" >&2
+    echo "linux-hardened patch signature is valid but not from the pinned key $ANTHRAXX_FPR" >&2
+    exit 4
+fi
 
 # --- Distro packaging marker ---------------------------------------------
 # The actual `apt-get source linux` happens inside the build container,
@@ -134,5 +169,20 @@ EOF
 # --- Input hashes --------------------------------------------------------
 sha256sum "$tarball" "$signature" "$hardened_patch" "$hardened_sig" \
     > input-hashes.txt
+
+# --- Provenance inputs (consumed by tools/build-manifest.py) -------------
+# url + sha256 for the two verified inputs, in the schema repro-check.sh
+# reads back from manifest.json. Emitted with a heredoc (not jq) because
+# this script also runs inside repro-check's minimal rebuild container,
+# which does not install jq. URLs/hashes are values we control, so the
+# heredoc cannot produce malformed JSON.
+tarball_sha=$(sha256sum "$tarball" | awk '{print $1}')
+patch_sha=$(sha256sum "$hardened_patch" | awk '{print $1}')
+cat > inputs.json <<EOF
+{
+  "kernel_tarball": { "url": "$tarball_url", "sha256": "$tarball_sha" },
+  "hardened_patch": { "url": "${hardened_base}/${hardened_patch}", "sha256": "$patch_sha" }
+}
+EOF
 
 echo "fetch-sources.sh: OK"

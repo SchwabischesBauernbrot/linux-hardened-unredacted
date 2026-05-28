@@ -101,7 +101,7 @@ jobs:
           jq -r '.assets[] | "\(.name)\t\(.browser_download_url)"' <<<"$rel" \
               | while IFS=$'\t' read -r name url; do
                   case "$name" in
-                    *.deb|final.config) ;;
+                    *.deb|final.config|manifest.json) ;;
                     *) continue ;;
                   esac
                   echo "downloading $name from $url"
@@ -142,6 +142,20 @@ jobs:
           set -euo pipefail
           manifest="releases/${VER}/manifest.json"
           mkdir -p "releases/${VER}"
+
+          # Seed the per-release manifest from the build's provenance
+          # manifest (attached as a release asset by build-kernel.yml).
+          # publish.py appends the publishes[] records to it below. Without
+          # this seed the manifest would carry only the publish log and
+          # tools/repro-check.sh could not run (it needs container_image,
+          # source_date_epoch, inputs, and unsigned_deb_sha256).
+          if [[ -f artifacts/manifest.json ]]; then
+            cp artifacts/manifest.json "$manifest"
+          else
+            echo "WARNING: no provenance manifest.json among release assets;" >&2
+            echo "committed manifest will lack provenance and repro-check" >&2
+            echo "will not be runnable for this release." >&2
+          fi
 
           # main always has content.
           python3 tools/publish.py \

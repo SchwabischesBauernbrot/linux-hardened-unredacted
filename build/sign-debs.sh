@@ -41,6 +41,7 @@ shopt -s nullglob
 # meta-package (linux-image-hardened-unredacted-amd64, starts with "h"),
 # which carries no vmlinuz. Requiring "-hardened-unredacted-" also means
 # stray upstream .debs (anthraxx's, Arch's) never match.
+images_processed=0
 for deb in linux-image-[0-9]*-hardened-unredacted-*_*.deb; do
     [[ -f $deb ]] || continue
     case "$deb" in *-dbg_*) continue;; esac
@@ -51,6 +52,7 @@ for deb in linux-image-[0-9]*-hardened-unredacted-*_*.deb; do
 
     # Sign every vmlinuz-* under /boot. There should be exactly one per
     # linux-image deb; loop anyway for safety.
+    signed_here=0
     while read -r vmlinuz; do
         [[ -n $vmlinuz ]] || continue
         sbsign --key "$SIGNING_KEY_PATH" --cert "$SIGNING_CERT_PATH" \
@@ -58,12 +60,31 @@ for deb in linux-image-[0-9]*-hardened-unredacted-*_*.deb; do
         mv "$vmlinuz.signed" "$vmlinuz"
         sbverify --cert "$SIGNING_CERT_PATH" "$vmlinuz" >/dev/null
         echo "  signed: $(basename "$vmlinuz")"
+        signed_here=$((signed_here + 1))
     done < <(find "$extracted/boot" -maxdepth 1 -name 'vmlinuz-*' -type f 2>/dev/null || true)
+
+    # Never silently repack an unsigned kernel: a linux-image deb that
+    # matched the glob but yielded no vmlinuz is a packaging change we must
+    # catch before it ships.
+    if (( signed_here == 0 )); then
+        echo "no vmlinuz found in $deb; refusing to ship an unsigned kernel image" >&2
+        rm -rf "$extracted"
+        exit 1
+    fi
 
     repacked="${deb%.deb}.tmp.deb"
     dpkg-deb -b "$extracted" "$repacked"
     mv "$repacked" "$deb"
     rm -rf "$extracted"
+    images_processed=$((images_processed + 1))
 done
+
+# A zero match means the naming convention drifted and the whole signing
+# step silently no-op'd — which would publish an entirely unsigned kernel.
+if (( images_processed == 0 )); then
+    echo "no concrete linux-image .deb matched the signing glob in $WORKDIR;" >&2
+    echo "nothing was signed -- check package naming before publishing" >&2
+    exit 1
+fi
 
 echo "sign-debs.sh: OK"

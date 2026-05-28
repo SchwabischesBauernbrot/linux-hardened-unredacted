@@ -31,6 +31,9 @@ container_image=$(jq -r '.container_image // empty' "$manifest")
 source_date_epoch=$(jq -r '.source_date_epoch // empty' "$manifest")
 [[ -n $container_image ]] || { echo "manifest missing container_image" >&2; exit 1; }
 [[ -n $source_date_epoch ]] || { echo "manifest missing source_date_epoch" >&2; exit 1; }
+# Used by strip-signatures.sh's repack (below) so the stripped bytes are
+# reproducible run to run; also passed into the rebuild container.
+export SOURCE_DATE_EPOCH="$source_date_epoch"
 
 command -v docker >/dev/null || { echo "docker required for the rebuild stage" >&2; exit 1; }
 
@@ -152,68 +155,13 @@ while IFS=$'\t' read -r name canonical_path; do
     fi
 done < <(jq -r '.outputs[].deb_files[] | "\(.name)\t\(.canonical_path // "")"' "$manifest")
 
-# When the stub is implemented, the strip + compare pipeline below
-# runs. It's split into a function so each .deb is processed
-# independently and a single bad file doesn't poison the whole run.
-
+# Strip the signing layer from a .deb. Delegates to the shared
+# implementation so this verifier and the recording side
+# (tools/build-manifest.py, via build-kernel.yml) strip IDENTICALLY —
+# otherwise the post-strip hashes could never match. SOURCE_DATE_EPOCH was
+# exported above so the repack inside the helper is deterministic.
 strip_signatures() {
-    # Take a .deb (signed kernel-image or signed modules) and produce a
-    # stripped copy at $2 with the signing layer removed.
-    #
-    # vmlinuz: sbsign appends an Authenticode signature inside the PE
-    # binary's certificate table. Remove it by truncating to the size
-    # reported by `sbverify --no-verify`.
-    #
-    # modules: sign-file appends a fixed-format trailer ending with the
-    # magic string "~Module signature appended~\n". We slice it off.
-    #
-    # This function is conservative: anything it can't unambiguously
-    # strip stays in the output, so a downstream diff still surfaces
-    # the divergence.
-    local src=$1 dst=$2
-    cp "$src" "$dst"
-
-    local extracted; extracted=$(mktemp -d)
-    dpkg-deb -R "$dst" "$extracted"
-
-    # Strip vmlinuz Authenticode signatures.
-    find "$extracted/boot" -maxdepth 1 -name 'vmlinuz-*' -type f 2>/dev/null \
-        | while read -r vmlinuz; do
-            if command -v sbattach >/dev/null; then
-                sbattach --remove "$vmlinuz" 2>/dev/null || true
-            fi
-          done
-
-    # Strip module-signature trailers. The trailer ends with the magic
-    # string and a fixed 12-byte module_signature struct + length.
-    find "$extracted/lib/modules" -name '*.ko*' -type f 2>/dev/null \
-        | while read -r ko; do
-            python3 - "$ko" <<'PY'
-import os, sys
-MAGIC = b"~Module signature appended~\n"
-path = sys.argv[1]
-with open(path, "rb") as f:
-    data = f.read()
-idx = data.rfind(MAGIC)
-if idx < 0:
-    sys.exit(0)
-# Truncate at the start of the module_signature struct (12 bytes
-# before the magic, holding sig_len + algorithm fields).
-truncate_to = idx - 12
-if truncate_to < 0:
-    sys.exit(0)
-tmp = path + ".unsigned"
-with open(tmp, "wb") as f:
-    f.write(data[:truncate_to])
-os.replace(tmp, path)
-PY
-          done
-
-    # Repack into the destination path.
-    local repacked=$dst.tmp
-    dpkg-deb -b "$extracted" "$repacked" >/dev/null
-    mv "$repacked" "$dst"
-    rm -rf "$extracted"
+    "$repo_root/tools/strip-signatures.sh" "$1" "$2"
 }
 
 # Compare expected vs actual stripped hashes. The caller must have

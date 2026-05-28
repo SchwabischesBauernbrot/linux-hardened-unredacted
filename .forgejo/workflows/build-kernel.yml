@@ -252,8 +252,29 @@ jobs:
           if [[ -f "$WORKDIR/previous.config" ]]; then
               export PREVIOUS_CONFIG_PATH="$WORKDIR/previous.config"
           fi
-          ./build/configure-kernel.sh
-          ./build/build-debs.sh
+
+          # Run the compile with NO network. All sources are fetched and
+          # build-deps installed in earlier steps; the kernel build itself
+          # must not reach out. Defense-in-depth: a malicious build/Kbuild
+          # step can't exfiltrate the signing material in tmpfs nor pull
+          # bytes mid-build. unshare -n needs CAP_SYS_ADMIN; if the runner
+          # doesn't grant it, fall back to building without isolation (rather
+          # than failing) and log loudly so the operator can enable it.
+          run_build() {
+              ./build/configure-kernel.sh
+              ./build/build-debs.sh
+          }
+          export -f run_build
+          if unshare -n true 2>/dev/null; then
+              echo "isolating compile in a network namespace (unshare -n)"
+              unshare -n bash -euo pipefail -c \
+                  'ip link set lo up 2>/dev/null || true; run_build'
+          else
+              echo "WARNING: unshare -n not permitted; building WITHOUT network" >&2
+              echo "WARNING: isolation. Grant CAP_SYS_ADMIN to the build" >&2
+              echo "WARNING: container to enable it (see OPERATOR_TODO.md)." >&2
+              run_build
+          fi
 
       - name: sign kernel + modules
         env:
@@ -282,6 +303,56 @@ jobs:
           SIGNING_KEY_PATH="$keydir/signing.key" \
           SIGNING_CERT_PATH="$keydir/signing.crt" \
             ./build/sign-debs.sh
+
+      - name: record build provenance
+        # Runs AFTER signing. For each signed .deb, strip the signing layer
+        # back off (the same transform tools/repro-check.sh applies to an
+        # independent rebuild) and record sha256 of the result as
+        # unsigned_deb_sha256 — so the two sides are comparable. Also captures
+        # a cheap SBOM (installed packages + toolchain). Assembles
+        # WORKDIR/manifest.json in the schema repro-check.sh consumes;
+        # publish.py appends publishes[] at publish time.
+        env:
+          KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
+          HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          DISTRO: ${{ matrix.target.distro }}
+          RELEASE: ${{ matrix.target.release }}
+          ARCH: ${{ matrix.target.arch }}
+          SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
+          SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
+          WORKDIR: ${{ runner.temp }}/work
+          # Keep this digest in sync with the job container image above.
+          CONTAINER_IMAGE: debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
+        run: |
+          set -euo pipefail
+          repo="$(pwd)"
+          export SOURCE_DATE_EPOCH
+          cd "$WORKDIR"
+
+          # Per-.deb unsigned (post-strip) hashes.
+          : > unsigned-deb-sha256.txt
+          for deb in *.deb; do
+            [[ -f $deb ]] || continue
+            stripped=$(mktemp --suffix=.deb)
+            "$repo/tools/strip-signatures.sh" "$deb" "$stripped"
+            sha=$(sha256sum "$stripped" | awk '{print $1}')
+            rm -f "$stripped"
+            printf '%s\t%s\n' "$deb" "$sha" >> unsigned-deb-sha256.txt
+          done
+
+          # Cheap SBOM: build-container packages + toolchain versions.
+          python3 "$repo/tools/sbom.py" "$WORKDIR/sbom.json"
+
+          python3 "$repo/tools/build-manifest.py" \
+            --workdir "$WORKDIR" \
+            --deb-hashes "$WORKDIR/unsigned-deb-sha256.txt" \
+            --kernel-version "$KERNEL_VERSION" \
+            --hardened-revision "$HARDENED_REVISION" \
+            --container-image "$CONTAINER_IMAGE" \
+            --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --distro "$DISTRO" --release "$RELEASE" --arch "$ARCH" \
+            --signing-cert "$SIGNING_CERT" \
+            --sbom "$WORKDIR/sbom.json"
 
       - name: attach .debs to release
         # Forgejo's actions/upload-artifact support varies by version,
@@ -338,4 +409,11 @@ jobs:
           # new-symbol guard.
           if [[ -f $WORKDIR/final.config ]]; then
             upload_asset "$WORKDIR/final.config" "final.config"
+          fi
+
+          # Attach the provenance manifest. publish.yml downloads it, lets
+          # publish.py append the publishes[] records, and commits it into
+          # releases/{tag}/manifest.json — the input to tools/repro-check.sh.
+          if [[ -f $WORKDIR/manifest.json ]]; then
+            upload_asset "$WORKDIR/manifest.json" "manifest.json"
           fi
