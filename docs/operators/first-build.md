@@ -13,7 +13,7 @@ If any of the above doesn't work, fix what broke before pushing the first real t
 Have these ready before you start:
 
 - A Linux machine with Docker, registered as a Forgejo runner with label `linux-hardened`.
-- A Forgejo instance at `git.unredacted.org` with the repo at `unredacted/linux-hardened`.
+- A Forgejo instance at `git.unredacted.org` with the repo at `unredacted/linux-hardened-unredacted`.
 - A Fastly account (on the OSS program) with a service pointing at `repo.unredacted.org`.
 - Pangolin in front of the Forgejo origin (ordinary reverse proxy; no Debian-path rules — see [reverse-proxy.md](reverse-proxy.md)).
 - A clean Debian 13 amd64 VM for the install test (UEFI firmware, Secure Boot enabled).
@@ -78,9 +78,9 @@ In the same Forgejo repo settings, add:
 | ------ | ----- |
 | `REGISTRY_USER` | The bot account that will own uploads (e.g. `unredacted-bot`) |
 | `REGISTRY_TOKEN` | Personal access token with `write:package` on owner `unredacted` |
-| `RELEASE_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened` |
-| `MANIFEST_COMMIT_TOKEN` | Token with `write:repository` (push to main) on `unredacted/linux-hardened` |
-| `ISSUE_TOKEN` | Token with `write:issue` on `unredacted/linux-hardened` |
+| `RELEASE_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened-unredacted` |
+| `MANIFEST_COMMIT_TOKEN` | Token with `write:repository` (push to main) on `unredacted/linux-hardened-unredacted` |
+| `ISSUE_TOKEN` | Token with `write:issue` on `unredacted/linux-hardened-unredacted` |
 
 Forgejo reserves secret names starting with `FORGEJO_`, `GITEA_`, and `GITHUB_`, so the secrets above use neutral prefixes. The workflow YAML maps each one to whatever env var name the script expects internally.
 
@@ -147,7 +147,7 @@ When the build completes:
 
 ```
 curl -fsS -H "Authorization: token $RELEASE_TOKEN" \
-    https://git.unredacted.org/api/v1/repos/unredacted/linux-hardened/releases/tags/v6.6.0-hardened1 \
+    https://git.unredacted.org/api/v1/repos/unredacted/linux-hardened-unredacted/releases/tags/v6.6.0-hardened1 \
     | jq '.assets[].name'
 ```
 

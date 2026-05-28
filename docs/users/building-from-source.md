@@ -15,7 +15,7 @@ If your rebuild diverges, file an issue with the per-file diff produced by `tool
 ## Steps
 
 ```
-git clone https://git.unredacted.org/unredacted/linux-hardened.git
+git clone https://git.unredacted.org/unredacted/linux-hardened-unredacted.git
 cd linux-hardened
 git checkout v7.0.10-hardened1     # the release you want
 cat releases/v7.0.10-hardened1/manifest.json

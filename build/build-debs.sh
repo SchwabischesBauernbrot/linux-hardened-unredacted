@@ -296,7 +296,7 @@ emit_meta() {
     mkdir -p "$metadir/DEBIAN"
     {
         echo "Package: ${meta_pkg}"
-        echo "Source: linux-hardened"
+        echo "Source: linux-hardened-unredacted"
         echo "Version: ${new_version}"
         echo "Architecture: ${ARCH}"
         echo "Maintainer: Unredacted <security@unredacted.org>"
@@ -336,7 +336,7 @@ mkdir -p "$ddir/DEBIAN" "$ddir/usr/lib/sysctl.d"
 cp "$sysctl_src" "$ddir/usr/lib/sysctl.d/99-hardened.conf"
 {
     echo "Package: ${defaults_pkg}"
-    echo "Source: linux-hardened"
+    echo "Source: linux-hardened-unredacted"
     echo "Version: ${new_version}"
     echo "Architecture: all"
     echo "Maintainer: Unredacted <security@unredacted.org>"
