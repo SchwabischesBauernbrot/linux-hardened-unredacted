@@ -27,15 +27,25 @@ jobs:
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
+      # Runner runs as root; no sudo (same pattern as cve-watch.yml /
+      # publish.yml / validate.yml).
       - name: install diff tools
-        run: sudo apt-get update && sudo apt-get install -y jq diffoscope
+        if: steps.rel.outputs.version != ''
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends jq diffoscope
 
       - name: run repro check
+        id: repro
         if: steps.rel.outputs.version != ''
         run: ./tools/repro-check.sh "${{ steps.rel.outputs.version }}"
 
+      # Only upload when the repro step itself produced a diff. If an
+      # earlier step (install, checkout) failed there is no diff to
+      # upload, and `failure()` alone would fire a misleading
+      # "no files found" warning.
       - name: upload diff report on failure
-        if: failure() && steps.rel.outputs.version != ''
+        if: steps.repro.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: repro-diff-${{ steps.rel.outputs.version }}
