@@ -246,11 +246,20 @@ if (( ${#image_debs[@]} == 0 )); then
     exit 1
 fi
 
-# Capture the final .config so the next build's new-symbol guard can
-# diff against it. bindeb-pkg doesn't move .config; it stays in the
-# patched tree.
-cp "$patched_dir/.config" "$WORKDIR/final.config"
-echo "captured final.config from $patched_dir/.config"
+# Capture the final .config so the hardening-drift guard (and any future
+# diffing) can use it as a baseline. bindeb-pkg doesn't move .config; it
+# stays in the patched tree.
+#
+# Normalize CONFIG_MODULE_SIG_KEY back to the intent placeholder first:
+# configure-kernel.sh's post-fidelity override repoints it at a per-build
+# tmpfs path ($keydir/signing.pem) so `make` can sign modules. Left in,
+# that random path makes final.config non-reproducible (a spurious one-line
+# diff every build) and commits a runner-internal path into public git when
+# publish.yml commits releases/<tag>/final.config. The placeholder is what
+# intent.config declares; the real path is pure build-runtime state.
+sed 's|^CONFIG_MODULE_SIG_KEY=.*|CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"|' \
+    "$patched_dir/.config" > "$WORKDIR/final.config"
+echo "captured final.config from $patched_dir/.config (MODULE_SIG_KEY normalized to placeholder)"
 
 # --- Meta-packages -------------------------------------------------------
 # bindeb-pkg names its packages after the kernelrelease

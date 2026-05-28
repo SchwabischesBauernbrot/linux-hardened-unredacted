@@ -74,10 +74,21 @@ if ! GNUPGHOME="$gnupgdir" git -C "$clone_dir" verify-commit "$new_commit" \
     rm -rf "$gnupgdir"
     exit 2
 fi
-# Confirm the signing key matches the pinned signer fingerprint.
-if ! grep -qE "(${signer}|${signer: -16})" "$work/verify.log"; then
-    echo "commit signed, but NOT by pinned signer $signer:" >&2
+# Confirm the signing key matches the pinned signer fingerprint, using the
+# same anchored parse as build/fetch-seed.sh — NOT a bare substring grep,
+# which a committer UID, email, or key-comment string in the verify output
+# could incidentally satisfy. Anchor to the "Primary key fingerprint:" /
+# "using RSA key" lines, then cross-check the de-spaced fingerprint exactly.
+short_id=${signer: -16}
+if ! grep -qE "(Primary key fingerprint:[[:space:]]+(([A-F0-9]{4} ?){10}|${signer})|using RSA key ${signer}|using RSA key ${short_id})" "$work/verify.log"; then
+    echo "commit signed, but signer line not found / not pinned $signer:" >&2
     cat "$work/verify.log" >&2
+    rm -rf "$gnupgdir"
+    exit 2
+fi
+canonical_fpr=$(grep -oE '(([A-F0-9]{4} ?){10})' "$work/verify.log" | tr -d ' ' | head -n1)
+if [[ -n $canonical_fpr && $canonical_fpr != "$signer" ]]; then
+    echo "git verify-commit reports fingerprint $canonical_fpr, expected $signer" >&2
     rm -rf "$gnupgdir"
     exit 2
 fi

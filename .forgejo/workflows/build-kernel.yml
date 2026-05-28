@@ -238,6 +238,32 @@ jobs:
               run_build
           fi
 
+      - name: hardening drift guard
+        # configure-kernel.sh's fidelity assertion only covers the symbols
+        # pinned in configs/intent.config. The hardening symbols we inherit
+        # from anthraxx's seed (the LSMs, BPF_UNPRIV_DEFAULT_OFF, the
+        # kstack/slab family, ...) are unchecked and could silently regress
+        # across a kernel bump against a lagging seed. Diff this build's
+        # final.config against the most recent committed release baseline
+        # and fail on any enabled hardening symbol that dropped. Runs here,
+        # in the workflow, NOT inside build-debs.sh — so repro-check.sh's
+        # rebuild (which calls build-debs.sh directly) isn't coupled to a
+        # policy gate it shouldn't enforce. First-ever build: no baseline.
+        env:
+          WORKDIR: ${{ runner.temp }}/work
+        run: |
+          set -euo pipefail
+          new="$WORKDIR/final.config"
+          [[ -f $new ]] || { echo "no $new — did the build step run?" >&2; exit 1; }
+          baseline_dir=$(find releases -mindepth 2 -maxdepth 2 -name final.config \
+              -printf '%h\n' 2>/dev/null | sort -V | tail -n1 || true)
+          if [[ -n $baseline_dir && -f "$baseline_dir/final.config" ]]; then
+            echo "hardening-drift baseline: $baseline_dir/final.config"
+            ./tools/check-hardening-drift.sh "$baseline_dir/final.config" "$new"
+          else
+            echo "hardening-drift: no prior release baseline in releases/; skipping"
+          fi
+
       - name: sign kernel + modules
         env:
           WORKDIR: ${{ runner.temp }}/work
