@@ -6,7 +6,7 @@ Distributed by [Unredacted](https://unredacted.org) a 501(c)(3) nonprofit.
 
 ## Status
 
-Phase 0: repository scaffold. No published packages yet.
+Phase 1: building and publishing for Debian 13 (trixie) on amd64. Install via the apt repo — see [docs/users/install.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/install.md). Multi-flavor and multi-distro are Phase 2.
 
 ## What this kernel changes
 
@@ -64,7 +64,7 @@ Sustained by the [unredacted.org](https://unredacted.org) 501(c)(3). Donations f
 
 ## Reproducibility
 
-Each release ships a `manifest.json` recording every input hash and the container image digest used to build it. The byte-identical rebuild contract applies to the unsigned `.deb`s; the signing layer is attested separately by the cert fingerprint in the manifest. Independent rebuild instructions live in [docs/users/building-from-source.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/building-from-source.md).
+Each release ships a `manifest.json` recording the container image digest, `SOURCE_DATE_EPOCH`, the input URLs and SHA-256s, the unsigned SHA-256 of every `.deb`, the signing-cert fingerprint, and a build-environment SBOM. The byte-identical contract is on the *unsigned* `.deb`s — the signing layer embeds per-invocation state and the private key, so it can't reproduce, and is attested separately by the cert fingerprint. `tools/repro-check.sh <tag>` re-verifies the recorded input hashes against upstream, rebuilds in the recorded container, and compares. A byte-identical match also depends on a pinned toolchain; the SBOM records the exact build environment as the next step toward that. Independent rebuild instructions live in [docs/users/building-from-source.md](https://git.unredacted.org/unredacted/linux-hardened/src/branch/main/docs/users/building-from-source.md).
 
 ## Authorship and review
 

@@ -49,9 +49,9 @@ There is no per-`.deb` signing key. That layer was tied to the now-dropped HSM t
 
 ## Build provenance
 
-Each released `.deb` has a corresponding `releases/{version}/manifest.json` listing the SHA-256 of each input (kernel tarball, hardened patch, distro packaging skeleton, project scripts) and the container image digest used to build it.
+Each released `.deb` has a corresponding `releases/{version}/manifest.json` recording the container image digest, `SOURCE_DATE_EPOCH`, the kernel-tarball and hardened-patch URLs + SHA-256s, the unsigned SHA-256 of every output `.deb`, the signing-cert fingerprint, and a build-environment SBOM (installed packages + toolchain versions).
 
-The reproducibility contract applies to the **unsigned** outputs: an independent rebuilder produces byte-identical pre-signing `.deb`s. The signing layer is attested separately by the signing-cert fingerprint recorded in the manifest. `tools/repro-check.sh` strips signatures from both sides before comparing. See [docs/users/building-from-source.md](docs/users/building-from-source.md) for the independent rebuild flow.
+The reproducibility contract applies to the **unsigned** outputs: an independent rebuilder produces byte-identical pre-signing `.deb`s. The signing layer is attested separately by the signing-cert fingerprint recorded in the manifest. `tools/repro-check.sh <tag>` re-verifies the recorded input hashes against upstream, rebuilds in the recorded container, and compares against the manifest's unsigned hashes — stripping the signing layer with the same helper (`tools/strip-signatures.sh`) the build uses to record them, so both sides match. A byte-identical result additionally depends on a pinned toolchain; the recorded SBOM is the first step toward pinning it. See [docs/users/building-from-source.md](docs/users/building-from-source.md) for the independent rebuild flow.
 
 ## Out-of-band verification
 

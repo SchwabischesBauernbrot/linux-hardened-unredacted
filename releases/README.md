@@ -9,7 +9,7 @@ Manifests are committed back to this repository after a successful publish (`pub
 
 ## Reproducibility scope
 
-The byte-identical rebuild guarantee applies to the **unsigned** `.deb`s. An independent rebuilder, who does not have the project's private signing key, reproduces the kernel image and modules before they're signed. `tools/repro-check.sh` strips signatures from both the released and the locally-built `.deb`s before comparing.
+The byte-identical rebuild contract applies to the **unsigned** `.deb`s. An independent rebuilder, who does not have the project's private signing key, reproduces the kernel image and modules before they're signed. `tools/repro-check.sh` strips signatures from both the released and the locally-built `.deb`s (via `tools/strip-signatures.sh`) before comparing. Achieving the match also requires a matching toolchain; the manifest's `sbom` field records the build environment, and full toolchain pinning is in progress.
 
 The signing layer is attested separately by `signing_cert_sha256` in the manifest. Anyone with a released `.deb` can verify that `sbverify` against the manifest's `signing_cert_sha256` succeeds; that's the proof the signing key is the one we say it is.
 

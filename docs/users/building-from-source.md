@@ -1,6 +1,6 @@
 # Building from source
 
-An independent rebuild from the same inputs produces byte-identical **unsigned** `.deb`s. The signing layer (kernel image signed by `sbsign`, modules signed by `sign-file`) is *not* reproducible by anyone without the project's private signing key, which is by design. `tools/repro-check.sh` strips signatures from both the released and the locally-built artifacts before comparing, so the byte-equality check applies to the pre-signing outputs only.
+An independent rebuild from the same inputs — and a matching toolchain — produces byte-identical **unsigned** `.deb`s. The signing layer (kernel image signed by `sbsign`, modules signed by `sign-file`) is *not* reproducible by anyone without the project's private signing key, which is by design. `tools/repro-check.sh` strips signatures with the same helper the build uses (`tools/strip-signatures.sh`) before comparing, so the byte-equality check applies to the pre-signing outputs only. The manifest records the build environment as an SBOM (installed packages + toolchain versions); a fully pinned toolchain is in progress, so a divergence today may reflect a toolchain difference rather than a tampered build — the `diffoscope` report tells which.
 
 The signing attestation lives separately, in the release manifest's `signing_cert_sha256` field. A verifier confirms two things: (1) the unsigned bytes match independently, and (2) the released `.deb`s are signed by the certificate whose fingerprint matches the manifest.
 
