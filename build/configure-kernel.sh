@@ -81,6 +81,60 @@ esac
 echo "running olddefconfig"
 make ARCH="$kernel_arch" olddefconfig
 
+# Config fidelity assertion.
+#
+# Every value we explicitly declare in the overlay or the per-target
+# override must survive olddefconfig. A declared `CONFIG_X=v` must appear
+# verbatim in the final .config; a declared `# CONFIG_X is not set` is
+# satisfied by the symbol being off OR absent (absent == off). This turns a
+# silently dropped hardening option — a symbol hidden because a dependency
+# the distro seed didn't satisfy, or removed upstream — into a loud,
+# pre-compile failure instead of a quietly weaker kernel. (The new-symbol
+# guard below is the complement: it catches symbols that appear; this
+# catches symbols we asked for that fail to.)
+#
+# fidelity_allow: symbol names we knowingly tolerate diverging. Empty by
+# default; add an entry only with a documented upstream reason in POLICY.md.
+echo "running config fidelity assertion"
+fidelity_allow=()
+fidelity_miss=0
+while IFS= read -r line; do
+    case $line in
+        CONFIG_*=*)
+            sym=${line%%=*}; want=${line#*=}
+            have=$(sed -nE "s/^${sym}=(.*)$/\1/p" .config)
+            [[ $have == "$want" ]] && continue
+            if [[ -z $have ]]; then got="<absent>"; else got="=$have"; fi
+            report="$sym: want =$want, got $got"
+            ;;
+        "# CONFIG_"*" is not set")
+            sym=${line#"# "}; sym=${sym%" is not set"}
+            grep -q "^${sym}=" .config || continue
+            report="$sym: want off, got $(grep -m1 "^${sym}=" .config)"
+            ;;
+        *) continue ;;
+    esac
+    if [[ ${#fidelity_allow[@]} -gt 0 ]] \
+        && printf '%s\n' "${fidelity_allow[@]}" | grep -qxF "$sym"; then
+        echo "  (allowlisted) $report" >&2
+        continue
+    fi
+    echo "  MISS $report" >&2
+    fidelity_miss=1
+done < <(grep -hE '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' \
+             "$overlay" "$target_override")
+if [[ $fidelity_miss -ne 0 ]]; then
+    cat >&2 <<'EOF'
+
+A symbol declared in the overlay/override did not land in the built config.
+This is the silent-drift failure the audit caught: fix the dependency, drop
+the dead symbol from the fragment, or (rarely) add it to fidelity_allow with
+a documented upstream reason in configs/POLICY.md.
+EOF
+    exit 2
+fi
+echo "config fidelity assertion: OK"
+
 # New-symbol guard.
 #
 # Catches the real risk: a kernel-version bump (or a patch change) that

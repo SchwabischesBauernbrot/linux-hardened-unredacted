@@ -56,16 +56,21 @@ Low-overhead sampling-based detector for use-after-free, out-of-bounds, and inva
 
 Promotes a KFENCE-detected corruption from a dmesg report to a kernel BUG, mirroring the `CONFIG_BUG_ON_DATA_CORRUPTION` stance for KFENCE's canary checks. Active only because we enable `CONFIG_KFENCE`. linux-hardened patch default `y`; pinned explicitly. Matches linux-hardened upstream.
 
-### `CONFIG_GCC_PLUGINS=y`, `CONFIG_GCC_PLUGIN_STACKLEAK=y` / `CONFIG_KSTACK_ERASE=y`, `CONFIG_GCC_PLUGIN_LATENT_ENTROPY=y`
+### `CONFIG_GCC_PLUGINS=y`, `CONFIG_GCC_PLUGIN_STACKLEAK=y` / `CONFIG_KSTACK_ERASE=y`
 
-GCC plugin–based hardening, all enabled by upstream linux-hardened / Arch:
+GCC plugin–based stack hardening. STACKLEAK / KSTACK_ERASE erases the used portion of the kernel stack on return to userspace, shrinking the window in which leaked stack contents or a stale stack address are useful and closing a class of uninitialized-stack disclosures (small per-syscall cost). Matches upstream linux-hardened. These require the `gcc-<ver>-plugin-dev` package at config/build time; the build container installs it (matched to the default gcc major version) in `.forgejo/workflows/build-kernel.yml`. Without it, kconfig hides the entire plugin subtree and the options are silently dropped — which is what happened before this was wired up; the post-`olddefconfig` fidelity assertion in `build/configure-kernel.sh` now turns that class of silent drop into a loud build failure.
 
-- **STACKLEAK / KSTACK_ERASE** erases the used portion of the kernel stack on return to userspace, shrinking the window in which leaked stack contents or a stale stack address are useful and closing a class of uninitialized-stack disclosures. Small per-syscall cost.
-- **LATENT_ENTROPY** mixes compiler-inserted entropy into the kernel RNG during early boot, improving seeding before other sources are available.
+### `# CONFIG_KSTACK_ERASE_METRICS is not set`, `# CONFIG_KSTACK_ERASE_RUNTIME_DISABLE is not set`
 
-These require the `gcc-<ver>-plugin-dev` package at config/build time; the build container installs it (matched to the default gcc major version) in `.forgejo/workflows/build-kernel.yml`. Without it, kconfig hides the entire plugin subtree and these options are silently dropped — which is what happened in builds before this was wired up. The older `CONFIG_GCC_PLUGIN_STRUCTLEAK` plugin is deliberately left off (superseded by `INIT_STACK_ALL_ZERO`), and `RANDSTRUCT` stays off (kernel default) to avoid a rebuild-fragile struct ABI, matching upstream.
+Stack-erase runtime knobs, pinned off (the upstream-hardened default; they only become visible once the stackleak plugin is built). `METRICS` is debug instrumentation. `RUNTIME_DISABLE` would expose a `stack_erasing=off` boot flag that lets the protection be turned off at runtime — undesirable for an always-on posture.
 
-**Reproducibility caveat:** the latent_entropy plugin perturbs codegen, so bit-for-bit rebuild verification must pin/derive the plugin seed deterministically rather than assume identical output across toolchains. Tracked alongside the broader reproducible-build work; not yet wired into `tools/repro-check.sh`.
+### `# CONFIG_GCC_PLUGIN_LATENT_ENTROPY is not set`
+
+Deliberately off — a small, reasoned divergence from upstream linux-hardened (which enables it). The plugin mixes compiler-inserted entropy into the RNG during early boot, but the benefit is marginal on our target (x86_64 with RDRAND/RDSEED and modern early-boot seeding), while it injects build-time randomness that breaks bit-for-bit reproducibility. Reproducibility is this project's primary defense against its online-signing-key weakness (an independent rebuilder detecting a tampered build), so we keep clean reproducibility over the marginal entropy gain.
+
+### `# CONFIG_GCC_PLUGIN_STRUCTLEAK is not set`
+
+Left off: superseded by `INIT_STACK_ALL_ZERO` (the compiler builtin that zero-initialises stack variables). `RANDSTRUCT` likewise stays at the kernel default (off) to avoid a rebuild-fragile struct ABI, matching upstream.
 
 ## Control-flow integrity
 
@@ -76,10 +81,6 @@ GCC/Clang stack canary on functions that store local arrays or address-taken loc
 ### `CONFIG_VMAP_STACK=y`
 
 Virtually-mapped kernel stacks with guard pages. Catches stack overflow with a fault instead of corrupting adjacent memory. Matches linux-hardened upstream.
-
-### `CONFIG_REFCOUNT_FULL=y`
-
-Refcount overflow and use-after-free detection on the `refcount_t` API. Matches linux-hardened upstream.
 
 ### `CONFIG_RANDOMIZE_KSTACK_OFFSET_DEFAULT=y`
 
@@ -115,9 +116,9 @@ Force integrity-mode lockdown when Secure Boot is on, with the LSM initialized e
 
 Convert a kernel oops into a panic. An oops in a critical path is already a sign the kernel state may be corrupted; continuing risks exploitation of the corrupt state. Matches linux-hardened upstream.
 
-### `CONFIG_DEBUG_LIST=y`, `CONFIG_DEBUG_SG=y`, `CONFIG_DEBUG_CREDENTIALS=y`, `CONFIG_DEBUG_NOTIFIERS=y`
+### `CONFIG_DEBUG_LIST=y`, `CONFIG_DEBUG_SG=y`, `CONFIG_DEBUG_NOTIFIERS=y`
 
-Runtime sanity checks on linked lists, scatter-gather chains, credential struct integrity, and notifier-chain calls. Each catches a class of kernel memory-corruption bugs at modest cost. Matches linux-hardened upstream.
+Runtime sanity checks on linked lists, scatter-gather chains, and notifier-chain calls. Each catches a class of kernel memory-corruption bugs at modest cost. Matches linux-hardened upstream. (`DEBUG_CREDENTIALS`, previously pinned here, was removed upstream in 6.x — credential-struct checking is now unconditional.)
 
 ### `CONFIG_LIST_HARDENED=y`
 
@@ -125,19 +126,15 @@ The modern linked-list integrity check (kernel 6.x+). `CONFIG_DEBUG_LIST` now `s
 
 ## Attack-surface reduction (disabled features)
 
-### `CONFIG_DEVMEM=n`, `CONFIG_DEVKMEM=n`, `CONFIG_DEVPORT=n`
+### `CONFIG_DEVMEM=n`, `CONFIG_DEVPORT=n`
 
-`/dev/mem`, `/dev/kmem`, `/dev/port` allow direct physical-memory or port I/O from root. Removing them eliminates a primitive useful to local-root attackers.
+`/dev/mem` and `/dev/port` allow direct physical-memory or port I/O from root. Removing them eliminates a primitive useful to local-root attackers. (`/dev/kmem` support — DEVKMEM — was removed upstream in 5.13, and IO_STRICT_DEVMEM is mooted with DEVMEM off, so neither needs an explicit pin any more.)
 
 User impact: legacy tools that read `/dev/mem` (some firmware utilities, old X.org configurations) will fail. None have a modern use case on a sealed kernel. Matches linux-hardened upstream.
 
-### `CONFIG_IO_STRICT_DEVMEM=y`
+### `CONFIG_PROC_KCORE=n`
 
-Hardens the reduced surface that remains by refusing `/dev/mem` access to memory regions claimed by drivers. Has no effect when the previous three options are off, but provides defense in depth if a future kernel reintroduces a `/dev/mem`-like interface. Matches linux-hardened upstream.
-
-### `CONFIG_PROC_KCORE=n`, `CONFIG_PROC_VMCORE=n`
-
-`/proc/kcore` and `/proc/vmcore` are kernel-memory dumps. Disabling removes a leak surface.
+`/proc/kcore` is a kernel-memory dump. Disabling removes a leak surface. (`/proc/vmcore` — PROC_VMCORE — is unavailable regardless: it requires the crash-dump/kexec path, which we disable below.)
 
 User impact: live-system crash analysis via `crash` is unavailable. Coredump-based userspace debugging is unaffected. Matches linux-hardened upstream.
 
@@ -147,13 +144,21 @@ kexec loads a new kernel image directly without going through the firmware. That
 
 User impact: kdump's crash-collection mechanism cannot run. `systemctl kexec` falls back to firmware reboot. Matches linux-hardened upstream. [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) catalogues this.
 
+### `# CONFIG_HIBERNATION is not set`
+
+Hibernation (suspend-to-disk) writes a full, unverified kernel memory image to swap and reloads it on resume — an unauthenticated kernel-state injection path. Integrity-mode lockdown already blocks it at runtime, and upstream linux-hardened compiles it out; the Debian stock seed turns it on, so we override it back off. Suspend-to-RAM (plain `SUSPEND`) is unaffected. User impact: no suspend-to-disk. Matches linux-hardened upstream.
+
+### `# CONFIG_CHECKPOINT_RESTORE is not set`
+
+Checkpoint/restore (CRIU) exposes additional process-introspection and state-manipulation interfaces (e.g. `/proc/<pid>/map_files`, `kcmp`). Upstream linux-hardened disables it; the Debian seed enables it, so we override off. User impact: CRIU-based live migration and `docker checkpoint` (experimental) do not work; ordinary container runtimes are unaffected. Matches linux-hardened upstream.
+
 ### `CONFIG_LEGACY_VSYSCALL_NONE=y`
 
-Disables the legacy `vsyscall` page entirely. Modern glibc has used `vDSO` for over a decade; only very old static binaries need vsyscall. Matches linux-hardened upstream.
+Disables the legacy `vsyscall` page entirely. Modern glibc has used `vDSO` for over a decade; only very old static binaries need vsyscall. (The `X86_VSYSCALL_EMULATION` machinery stays compiled in, matching upstream/Arch, but is inactive with the mode set to none.) Matches linux-hardened upstream.
 
-### `CONFIG_USELIB=n`, `CONFIG_MODIFY_LDT_SYSCALL=n`
+### `CONFIG_MODIFY_LDT_SYSCALL=n`
 
-Ancient syscalls (`uselib`, `modify_ldt`) with security history and no modern use. Matches linux-hardened upstream.
+The `modify_ldt` syscall has security history and no modern use; disable it. (The even older `uselib` syscall — USELIB — is already absent/unreachable in our config and no longer needs an explicit pin.) Matches linux-hardened upstream.
 
 ### `CONFIG_LEGACY_PTYS=n`
 
