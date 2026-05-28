@@ -80,6 +80,12 @@ def http_delete(url: str, user: str, token: str) -> int:
         with urllib.request.urlopen(req) as resp:
             return resp.status
     except urllib.error.HTTPError as e:
+        # A resumed/retried rotation may re-delete a file already gone from
+        # main; treat 404 as already-done so the run stays idempotent rather
+        # than aborting partway through.
+        if e.code == 404:
+            print(f"DELETE {url}: 404 (already removed) — continuing", file=sys.stderr)
+            return 404
         raise SystemExit(f"DELETE {url}: {_safe_error(e)}") from e
 
 
@@ -158,8 +164,12 @@ def archive_package(
         with tempfile.TemporaryDirectory() as td:
             local = Path(td) / fname
             download_file(src, user, token, local)
+            # conflict_ok: a resumed rotation may re-upload a file already
+            # archived by an earlier interrupted run; treat 409 as
+            # already-moved and proceed to delete from main.
             upload_deb(
                 local, owner, distribution, ARCHIVE_COMPONENT, user, token, False,
+                conflict_ok=True,
             )
         del_url = f"{FORGEJO_BASE}/api/packages/{quote(owner)}/debian/" + coord.format(
             component=SOURCE_COMPONENT
@@ -217,9 +227,12 @@ def parse_version(v: str) -> tuple[int, ...]:
     The earlier scheme (`6.12.8.hardened1-deb13.1~hardened1`) is gone;
     if you change build-debs.sh's new_version, change this regex too.
 
-    Strings that don't match the format sort to (0,) so they're treated
-    as oldest. This is intentional — anything outside our naming
-    convention probably shouldn't live in `main` anyway.
+    Strings that don't match the format return the empty tuple (). As a
+    sort key () sorts before any non-empty tuple (oldest), and as a
+    truthiness test `not ()` is True — so select_versions_to_archive can
+    detect and skip-with-a-log them rather than silently bucketing them.
+    (The previous sentinel (0,) was truthy, so unparseable versions slipped
+    past the `if not parts` guard into a bogus "major 0" bucket.)
 
     Examples:
         >>> parse_version("7.0.9-hardened1")
@@ -231,11 +244,11 @@ def parse_version(v: str) -> tuple[int, ...]:
         >>> parse_version("7.0.10-hardened1")
         (7, 0, 10, 1, 0)
         >>> parse_version("not-a-hardened-version")
-        (0,)
+        ()
     """
     m = _VERSION_RE.match(v)
     if not m:
-        return (0,)
+        return ()
     k = tuple(int(p) for p in m["kernel"].split("."))
     rebuild = int(m["rebuild"]) if m["rebuild"] else 0
     return (*k, int(m["hardened"]), rebuild)
@@ -245,18 +258,41 @@ def select_versions_to_archive(
     versions_in_main: list[str],
     keep_per_major: int = KEEP_IN_MAIN_PER_MAJOR,
 ) -> list[str]:
-    """Given the versions currently in `main`, return those that should
-    move to `archive` (oldest first)."""
-    by_major: dict[int, list[str]] = {}
+    """Given the versions currently in `main`, return those to archive.
+
+    Retention keeps the newest `keep_per_major` distinct kernel-version
+    CORES (major.minor.patch-hardenedN) per major series. The packaging
+    rebuild tail (the optional `.P`) does NOT count as a separate version:
+    within a kept core only the newest rebuild stays in `main` and older
+    `.P` rebuilds archive. So a burst of packaging rebuilds on the current
+    kernel (7.0.10-hardened1, .1, .2, .3) can no longer evict an older but
+    still-supported kernel (7.0.9-hardened1) from `main` — the bug when
+    this grouped by major alone and counted every build toward the quota.
+
+    Cores beyond the newest `keep_per_major` archive in full. Versions that
+    don't parse are left in `main` and logged for operator review (prune
+    does not auto-archive a version it can't interpret).
+    """
+    # major -> core(tuple of 4 ints) -> [(version, parsed_key), ...]
+    by_major: dict[int, dict[tuple, list[tuple[str, tuple]]]] = {}
     for v in versions_in_main:
         parts = parse_version(v)
         if not parts:
+            print(f"prune: unparseable version left in main (not archived): {v!r}",
+                  file=sys.stderr)
             continue
-        by_major.setdefault(parts[0], []).append(v)
+        core = parts[:4]  # (major, minor, patch, hardened); drop the .P rebuild
+        by_major.setdefault(parts[0], {}).setdefault(core, []).append((v, parts))
+
     archive_candidates: list[str] = []
-    for _major, vs in by_major.items():
-        vs.sort(key=parse_version, reverse=True)
-        archive_candidates.extend(vs[keep_per_major:])
+    for _major, cores in by_major.items():
+        # Newest cores first; keep the first keep_per_major, archive the rest.
+        for idx, core in enumerate(sorted(cores, reverse=True)):
+            builds = sorted(cores[core], key=lambda vp: vp[1], reverse=True)
+            # Kept core: archive every rebuild except the newest. Dropped
+            # core: archive all of its builds.
+            stale = builds[1:] if idx < keep_per_major else builds
+            archive_candidates.extend(v for v, _ in stale)
     return archive_candidates
 
 
@@ -346,6 +382,21 @@ def main(argv: list[str]) -> int:
         for component in (SOURCE_COMPONENT, ARCHIVE_COMPONENT)
     }
     print(json.dumps({"archived": results, "purges": purges}, indent=2, sort_keys=True))
+
+    # Same rationale as publish.py: a rotation that deleted from main but
+    # failed to purge can leave a Packages index referencing now-deleted
+    # pool files (apt 404s on download). An attempted-but-failed purge is
+    # fatal; absent creds is a loud warning (direct-origin deploys exist).
+    failed = {c: r for c, r in purges.items() if not r.get("purged")}
+    errored = {c: r for c, r in failed.items()
+               if "missing" not in str(r.get("reason", ""))}
+    if errored:
+        print("ERROR: Fastly purge failed after rotation; stale apt metadata may "
+              "reference archived/deleted pool files until TTL.", file=sys.stderr)
+        return 1
+    if failed:
+        print("WARNING: Fastly creds unset — apt metadata NOT purged after "
+              "rotation.", file=sys.stderr)
     return 0
 
 

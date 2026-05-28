@@ -20,7 +20,13 @@
 # enforces every line in configs/intent.config lands in the final .config
 # after merge + olddefconfig. So updating this pin is safe — the
 # fidelity assertion catches anything in intent that fails to materialize
-# under the new seed.
+# under the new seed. Symbols we INHERIT from the seed (not pinned in
+# intent) are guarded separately by tools/check-hardening-drift.sh, which
+# fails the build if an enabled hardening symbol regresses vs the most
+# recent released final.config. Note the seed routinely LAGS the kernel
+# version (anthraxx packages on their own cadence; sometimes the matching
+# tag does not exist yet) — that is expected, handled by olddefconfig +
+# the drift guard, not by a version-match gate.
 
 url        = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
 commit     = "05f37148910214f3f5241abb9850f32e5bc0e4c9"

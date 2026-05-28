@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -30,6 +31,7 @@ from urllib.parse import quote, urlparse
 FORGEJO_BASE = "https://git.unredacted.org"
 DEFAULT_TIMEOUT_SECONDS = 600
 UPLOAD_CHUNK = 1 << 20  # 1 MiB
+MAX_UPLOAD_RETRIES = 3  # bounded retry on transient 5xx / network errors only
 
 
 def _redact(text: str) -> str:
@@ -51,6 +53,17 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(UPLOAD_CHUNK), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON to `path` atomically (temp file + os.replace), trailing
+    newline included. publish.yml runs publish.py twice against the same
+    --manifest (main, then debug); an in-place write interrupted mid-way
+    could truncate the manifest, and os.replace makes the swap all-or-nothing.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
 
 
 def _stream_put(
@@ -89,12 +102,21 @@ def upload_deb(
     token: str,
     dry_run: bool,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    conflict_ok: bool = False,
+    max_retries: int = MAX_UPLOAD_RETRIES,
 ) -> dict:
     """Upload one .deb to Forgejo.
 
-    PUT is idempotent only when the target doesn't exist. Forgejo
-    returns 409 if it does, which we treat as a versioning bug per spec
-    §7.2 (do not retry; bump REVISION in build-debs.sh and rebuild).
+    PUT is idempotent only when the target doesn't exist. Forgejo returns
+    409 if it does, which we treat as a versioning bug per spec §7.2 (do
+    not retry; bump REVISION in build-debs.sh and rebuild) — UNLESS
+    conflict_ok is set, which prune.py uses for the archive-side upload so
+    a resumed rotation reads "already there" as success rather than aborting.
+
+    Transient failures (network errors, HTTP 5xx) are retried with
+    exponential backoff up to max_retries. 4xx (including 409) is never
+    retried: it's a client/versioning error, not a blip, and re-PUTting
+    a 200 MB .deb on a deterministic 4xx just wastes time.
     """
     url = (
         f"{FORGEJO_BASE}/api/packages/{quote(owner)}/debian/pool/"
@@ -122,27 +144,41 @@ def upload_deb(
         "Content-Type": "application/vnd.debian.binary-package",
         "Content-Length": str(size),
     }
-    try:
-        status, body = _stream_put(url, path, headers, timeout)
-    except (TimeoutError, OSError) as e:
-        raise SystemExit(
-            f"upload failed for {path.name}: {type(e).__name__}: {e}"
-        ) from e
 
-    if status == 409:
-        raise SystemExit(
-            f"CONFLICT: {path.name} already exists at {url}.\n"
-            "Per spec §7.2 step 3, this is a versioning bug, not a "
-            "retry condition. Bump REVISION in build-debs.sh and "
-            "rebuild."
-        )
-    if status >= 400:
-        raise SystemExit(
-            f"upload failed for {path.name}: HTTP {status}\n"
-            f"{_redact(body)[:512]}"
-        )
-    record["status"] = status
-    return record
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            status, body = _stream_put(url, path, headers, timeout)
+        except (TimeoutError, OSError) as e:
+            if attempt <= max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            raise SystemExit(
+                f"upload failed for {path.name} after {attempt} attempts: "
+                f"{type(e).__name__}: {e}"
+            ) from e
+
+        if status == 409:
+            if conflict_ok:
+                record["status"] = 409
+                return record
+            raise SystemExit(
+                f"CONFLICT: {path.name} already exists at {url}.\n"
+                "Per spec §7.2 step 3, this is a versioning bug, not a "
+                "retry condition. Bump REVISION in build-debs.sh and "
+                "rebuild."
+            )
+        if 500 <= status < 600 and attempt <= max_retries:
+            time.sleep(2 ** attempt)
+            continue
+        if status >= 400:
+            raise SystemExit(
+                f"upload failed for {path.name}: HTTP {status}\n"
+                f"{_redact(body)[:512]}"
+            )
+        record["status"] = status
+        return record
 
 
 FASTLY_API = "https://api.fastly.com"
@@ -301,10 +337,33 @@ def main(argv: list[str]) -> int:
             "uploads": plan["uploads"],
             "purge": plan["purge"],
         })
-        args.manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        _atomic_write_json(args.manifest, manifest)
 
     json.dump(plan, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
+
+    # A publish that uploaded .debs but failed to purge leaves apt clients
+    # served stale InRelease/Packages from Fastly until TTL — a silent
+    # rollout failure for a security kernel. Surface it: a purge that was
+    # ATTEMPTED and failed is fatal; absent creds (a direct-origin / no-CDN
+    # deploy is explicitly supported, see SECURITY.md) is a loud warning.
+    purge = plan["purge"]
+    if not args.dry_run and not purge.get("purged"):
+        if "missing" in str(purge.get("reason", "")):
+            print(
+                "WARNING: Fastly creds unset — apt metadata NOT purged. If this "
+                "repo is fronted by Fastly, clients serve stale metadata until "
+                "TTL. (Expected for a direct-origin deploy.)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "ERROR: Fastly purge failed after a successful upload; the new "
+                "packages may be shadowed by stale cached apt metadata. See the "
+                "purge results above.",
+                file=sys.stderr,
+            )
+            return 1
     return 0
 
 

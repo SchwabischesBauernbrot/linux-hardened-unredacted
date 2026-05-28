@@ -94,7 +94,10 @@ The next build's fidelity assertion confirms the change actually lands in `.conf
 
 The original `configure-kernel.sh` fetched Debian's `linux` source package every build, extracted its stock `.config` (for Debian's kernel version, not ours), and merged a fragment (`configs/hardened-overlay.config`) on top. The audit's `SLAB_CANARY` finding came from this: the Debian seed was for 6.12, our tree was 7.0.x; symbols whose dependencies shifted between versions silently disappeared.
 
-This model eliminates that class: the seed is version-matched to the patched tree (both target the linux-hardened patch for the same kernel), and the fidelity assertion catches anything that fails to land.
+This model eliminates that class *for the symbols we pin*: the seed targets the same linux-hardened patch family, and the fidelity assertion (`build/configure-kernel.sh`) catches any `intent.config` symbol that fails to land. Two caveats the original framing glossed over:
+
+- **The seed may lag the kernel version.** anthraxx packages on their own cadence, so the pinned seed is often a point release behind the tree (e.g. a `7.0.9` seed under a `7.0.10` build), and sometimes the matching seed does not exist yet at all. `olddefconfig` reconciles the gap — but only the pinned symbols are *asserted*.
+- **Inherited symbols need a separate guard.** Symbols we inherit from the seed rather than pin (the LSMs, `BPF_UNPRIV_DEFAULT_OFF`, etc.) sit outside the fidelity assertion. `tools/check-hardening-drift.sh` (run in `build-kernel.yml`) closes that gap: it fails the build if an enabled hardening symbol regresses versus the most recent released `final.config`. There is deliberately **no** "seed version must equal kernel version" gate — that would fail every build during the normal lag.
 
 ### vs. the "committed authoritative config" model (the immediately prior architecture)
 

@@ -80,7 +80,7 @@ In the same Forgejo repo settings, add:
 | `REGISTRY_TOKEN` | Personal access token with `write:package` on owner `unredacted` |
 | `RELEASE_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened-unredacted` |
 | `MANIFEST_COMMIT_TOKEN` | Token with `write:repository` (push to main) on `unredacted/linux-hardened-unredacted` |
-| `ISSUE_TOKEN` | Token with `write:issue` on `unredacted/linux-hardened-unredacted` |
+| `ISSUE_TOKEN` | Token with `write:issue` + `read:repository` on `unredacted/linux-hardened-unredacted` |
 
 Forgejo reserves secret names starting with `FORGEJO_`, `GITEA_`, and `GITHUB_`, so the secrets above use neutral prefixes. The workflow YAML maps each one to whatever env var name the script expects internally.
 
