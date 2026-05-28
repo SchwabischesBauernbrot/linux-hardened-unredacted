@@ -1,4 +1,4 @@
-# linux-hardened
+# linux-hardened-unredacted
 
 Hardened Linux kernel builds packaged as `.deb` for Debian (and later Ubuntu). Tracks [`anthraxx/linux-hardened`](https://github.com/anthraxx/linux-hardened) upstream and publishes through a Forgejo Debian registry fronted by Fastly.
 
@@ -60,7 +60,7 @@ GPLv2. See [LICENSE](https://git.unredacted.org/unredacted/linux-hardened-unreda
 
 ## Funding
 
-Sustained by the [unredacted.org](https://unredacted.org) 501(c)(3). Donations fund the engineering hours behind the CVE SLA; details and how to give in [docs/users/donate.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/donate.md).
+Sustained by [Unredacted](https://unredacted.org) a 501(c)(3) nonprofit. Donations fund the engineering effort behind the project; details and how to give in [docs/users/donate.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/donate.md).
 
 ## Reproducibility
 
