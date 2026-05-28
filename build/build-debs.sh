@@ -189,7 +189,7 @@ done
 if (( ${#missing[@]} > 0 )); then
     cat >&2 <<EOF
 
-ABORT: required kconfig symbols are not =y in the merged .config:
+ABORT: required kconfig symbols are not =y in the .config:
   ${missing[*]}
 
 Without these the build would produce a kernel that's not bootable
@@ -197,13 +197,12 @@ under UEFI / not sbsign-able / wrong arch — and the failure would
 only surface 30+ minutes from now in the sign step.
 
 Most likely causes:
-  - fetch-distro-source.sh is missing a config fragment (we previously
-    missed debian/config/kernelarch-x86/config; check it's now in the
-    stock.config sources list).
-  - configure-kernel.sh's merge dropped these symbols (check the
-    "redefined" warnings in the configure step's log).
-  - olddefconfig defaulted them off because a transitive dependency
-    is missing.
+  - The authoritative configs/config.<distro>-<release>-${ARCH} doesn't
+    pin them =y (or pins them off). Fix the authoritative + commit.
+  - olddefconfig defaulted them off because a transitive dependency is
+    missing. configure-kernel.sh's drift check should have caught this
+    earlier; if it didn't, the authoritative is stale -- regenerate via
+    tools/promote-config.sh against a successful build.
 
 EOF
     exit 5

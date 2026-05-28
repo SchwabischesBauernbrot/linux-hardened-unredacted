@@ -101,17 +101,21 @@ Add Fastly secrets to Forgejo:
 
 Pangolin needs only the ordinary Forgejo reverse-proxy setup for `git.unredacted.org`: forward to the Forgejo backend, terminate TLS, no Debian-path-specific rules. The apt repo is public, and uploads authenticate with the `REGISTRY_TOKEN`, so there is no read gate and no upload exception. See [reverse-proxy.md](reverse-proxy.md) for the verification curls.
 
-## 7. Reconcile the hardening overlay against upstream
+## 7. Reconcile the authoritative config against upstream
 
-Per kernel-version bump, confirm `configs/hardened-overlay.config` still matches what linux-hardened recommends for the version you're shipping. linux-hardened ships no standalone defconfig, so the check is: enumerate the hardening kconfig symbols the patch adds or defaults on for that release, and confirm each is either declared in our overlay or consciously excluded with a `configs/POLICY.md` note.
+Per kernel-version bump, `build/configure-kernel.sh`'s drift check aborts at configure time if `olddefconfig` changes the authoritative config (`configs/config.debian-trixie-amd64`) — meaning upstream added new symbols, flipped defaults, or removed something. The fix workflow is:
 
 ```
+# Inspect linux-hardened's defaults for the version you're shipping.
 git clone https://github.com/anthraxx/linux-hardened.git /tmp/lh
-cd /tmp/lh && git checkout v7.0.10-hardened1   # the tag you're shipping
-# Inspect the patch's Kconfig.hardening additions, compare to our overlay.
+cd /tmp/lh && git checkout v7.0.10-hardened1
+# Either: let the build abort, then promote this run's final.config
+# (tools/promote-config.sh <tag>), inspect the diff, commit, re-tag.
+# Or: pin the affected symbols explicitly in configs/config.debian-trixie-amd64
+# first so olddefconfig can't move them.
 ```
 
-Reconcile drift in `configs/hardened-overlay.config` + `configs/POLICY.md`; the `config-diff-sanity` CI check enforces overlay↔POLICY parity, and `build/configure-kernel.sh` aborts on any new symbol not classified in either file. The overlay was last reconciled against v7.0.9/v7.0.10-hardened1.
+The `policy-matches-config` CI check (`.forgejo/workflows/validate.yml`) enforces that every kconfig assertion in `configs/POLICY.md` holds in the authoritative — update both together when changing one. The authoritative was last refreshed from `v7.0.10-hardened1.3`'s final.config.
 
 ## 8. Push a stub test tag
 
@@ -127,7 +131,7 @@ git push origin v6.6.0-hardened1
 **What will probably fail the first time:**
 
 - Some package missing from `containers/Dockerfile.debian-trixie-amd64`. Add it, rebuild the image.
-- The Debian source dir name doesn't match what `fetch-distro-source.sh` expects. Look at the error, adjust the version-string parser if needed.
+- The configure step's drift check aborts because `olddefconfig` changed something — inspect the diff in the step log, run `tools/promote-config.sh <tag>` once you're satisfied with the new authoritative, commit, re-tag.
 - Pangolin's allow rule for the runner IP isn't quite right; CI uploads 403. Re-check step 6.
 - The signing step fails because the secret was loaded with stray whitespace. Re-add the secret without the trailing newline.
 - `debian/patches/` was already empty in this kernel version, so the truncate is a no-op. Fine.

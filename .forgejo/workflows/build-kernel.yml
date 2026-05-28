@@ -167,44 +167,6 @@ jobs:
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
         run: ./build/apply-patches.sh
 
-      - name: locate prior release's final.config
-        id: prior
-        run: |
-          set -euo pipefail
-          mkdir -p "${{ runner.temp }}/work"
-          # Find the most recent committed release that isn't the current
-          # tag. Its final.config feeds configure-kernel.sh's new-symbol
-          # guard. If none exists (first build, or releases/ is empty),
-          # leave PREVIOUS_CONFIG_PATH unset and the guard skips with a
-          # warning.
-          tag="${{ github.ref_name }}"
-          prior=""
-          if [[ -d releases ]]; then
-            while IFS= read -r d; do
-              [[ -d $d ]] || continue
-              name=$(basename "$d")
-              [[ $name == "$tag" ]] && continue
-              if [[ -f $d/final.config ]]; then prior=$name; fi
-            done < <(find releases -maxdepth 1 -mindepth 1 -type d | sort -V)
-          fi
-          if [[ -n $prior ]]; then
-            cp "releases/$prior/final.config" "${{ runner.temp }}/work/previous.config"
-            echo "previous=releases/$prior/final.config" >> "$GITHUB_OUTPUT"
-            echo "found prior release final.config: $prior"
-          else
-            echo "previous=" >> "$GITHUB_OUTPUT"
-            echo "no prior release final.config found; new-symbol guard will skip"
-          fi
-
-      - name: fetch distro source + stock config
-        env:
-          KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
-          DISTRO: ${{ matrix.target.distro }}
-          RELEASE: ${{ matrix.target.release }}
-          ARCH: ${{ matrix.target.arch }}
-          WORKDIR: ${{ runner.temp }}/work
-        run: ./build/fetch-distro-source.sh
-
       - name: configure + build
         env:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
@@ -216,7 +178,6 @@ jobs:
           REVISION: ${{ github.run_number }}
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
           WORKDIR: ${{ runner.temp }}/work
-          STOCK_CONFIG_PATH: ${{ runner.temp }}/work/stock.config
           SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
           SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
         run: |
@@ -244,14 +205,6 @@ jobs:
           # later in this same job, after this trap fires) re-materializes
           # them from the same secrets — the trap rm -rf cleans this dir
           # at the end of THIS step.
-
-          # PREVIOUS_CONFIG_PATH is set only if the prior step found a
-          # committed final.config for an earlier release. The scripts
-          # treat it as optional and skip the new-symbol guard if it's
-          # unset or the file is missing.
-          if [[ -f "$WORKDIR/previous.config" ]]; then
-              export PREVIOUS_CONFIG_PATH="$WORKDIR/previous.config"
-          fi
 
           # Run the compile with NO network. All sources are fetched and
           # build-deps installed in earlier steps; the kernel build itself

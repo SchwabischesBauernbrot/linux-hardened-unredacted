@@ -107,7 +107,6 @@ docker run --rm \
     -e DISTRO="$distro" -e RELEASE="$release" -e ARCH="$arch" \
     -e REVISION=1 \
     -e SOURCE_DATE_EPOCH="$source_date_epoch" \
-    -e STOCK_CONFIG_PATH=/work/stock.config \
     "$container_image" \
     bash -euo pipefail -c '
         apt-get update -q
@@ -123,7 +122,6 @@ docker run --rm \
         apt-get build-dep -y --no-install-recommends linux
         /repo/build/fetch-sources.sh
         /repo/build/apply-patches.sh
-        /repo/build/fetch-distro-source.sh
         /repo/build/configure-kernel.sh
         /repo/build/build-debs.sh
     '

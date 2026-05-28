@@ -1,6 +1,6 @@
 # Kernel configuration policy
 
-The audit trail for every hardening choice that diverges from the distro stock config. Every change to `hardened-overlay.config` or a `{distro}-{release}-{arch}.config` requires a matching entry here.
+The audit trail for every hardening choice we take a position on in the authoritative kernel config (`configs/config.{distro}-{release}-{arch}`). The CI `policy-matches-config` job (`.forgejo/workflows/validate.yml`) enforces that every kconfig assertion below holds in the authoritative; the build's `cp authoritative → olddefconfig → diff` flow (`build/configure-kernel.sh`) catches any upstream default that drifts after a kernel-version or hardened-patch-revision bump.
 
 **Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
 
