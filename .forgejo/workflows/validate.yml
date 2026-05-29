@@ -98,6 +98,15 @@ jobs:
               -e 's/^(CONFIG_[A-Z0-9_]+)=.*/\1/p' \
               -e 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1/p' "$INTENT" | sort -u)
           policy_syms=$(grep -oE 'CONFIG_[A-Z0-9_]+' "$POLICY" | sort -u)
+          # Guard against a vacuous pass: an empty intent_syms (malformed or
+          # empty intent.config) would make `comm` find no orphans and this
+          # direction pass silently. (The comparison itself is exact — comm
+          # matches whole symbols, so CONFIG_X is never "covered" by a
+          # longer CONFIG_X_Y.)
+          if [[ -z $intent_syms ]]; then
+              echo "  no CONFIG_ symbols parsed from $INTENT (malformed/empty?)" >&2
+              fails=$((fails+1))
+          fi
           orphans=$(comm -23 <(echo "$intent_syms") <(echo "$policy_syms"))
           if [[ -n $orphans ]]; then
               echo "  intent.config symbols with no POLICY mention:" >&2

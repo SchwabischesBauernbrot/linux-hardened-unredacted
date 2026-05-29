@@ -52,7 +52,7 @@ def _safe_error(e: urllib.error.HTTPError) -> str:
     """
     body = e.read().decode(errors="replace") if e.fp else ""
     redacted = re.sub(
-        r"(?im)^(authorization|cookie|set-cookie):.*$",
+        r'(?im)^[ \t]*"?(authorization|cookie|set-cookie)"?[ \t]*:.*$',
         r"\1: <redacted>",
         body,
     )

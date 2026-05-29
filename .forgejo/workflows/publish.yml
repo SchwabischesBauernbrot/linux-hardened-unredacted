@@ -8,7 +8,8 @@ on:
   #
   # NOTE on the release trigger: Forgejo's `release: published` fires
   # only when a release is *created* as published, NOT when a draft is
-  # later un-drafted (verified on Forgejo v12.10.1). Since we create
+  # later un-drafted (verified on Forgejo v12.10.1; instance now runs
+  # 15.0.2). Since we create
   # drafts for review, un-drafting emits no event — so the release
   # trigger below never fires in the normal flow. It's kept only for the
   # case of a release created already-published (or a future Forgejo that

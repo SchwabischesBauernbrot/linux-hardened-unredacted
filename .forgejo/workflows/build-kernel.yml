@@ -127,8 +127,14 @@ jobs:
           # 7.0.10-hardened1.1, which apt sees as an upgrade over
           # 7.0.10-hardened1. (Bash ERE has no non-capturing groups, so
           # group 4 holds the packaging number.)
-          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([0-9]+)(\.([0-9]+))?$ ]]; then
-            echo "tag does not match vX.Y.Z-hardenedN[.P]: $tag" >&2
+          #
+          # hardenedN and the optional .P are [1-9][0-9]* — no leading
+          # zeros, and .P must be >=1: a ".0" packaging tag would stamp a
+          # .deb version that dpkg sorts ABOVE the bare -hardenedN (a
+          # non-empty revision beats an absent one), which is never
+          # intended. X.Y.Z stays [0-9]+ (the "0" in 7.0.10 is legitimate).
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
+            echo "tag does not match vX.Y.Z-hardenedN[.P] (N,P >=1, no leading zeros): $tag" >&2
             exit 1
           fi
           kernel="${BASH_REMATCH[1]}"
@@ -189,6 +195,10 @@ jobs:
           WORKDIR: ${{ runner.temp }}/work
           SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
           SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
+          # Optional gate: set the repo variable REQUIRE_NET_ISOLATION=1 to
+          # HARD-FAIL when unshare -n isn't available, instead of silently
+          # compiling without network isolation (see the fallback below).
+          REQUIRE_NET_ISOLATION: ${{ vars.REQUIRE_NET_ISOLATION }}
         run: |
           set -euo pipefail
           # Materialize the project signing key + cert into a tmpfs file
@@ -232,9 +242,17 @@ jobs:
               unshare -n bash -euo pipefail -c \
                   'ip link set lo up 2>/dev/null || true; run_build'
           else
+              if [[ "${REQUIRE_NET_ISOLATION:-}" == "1" ]]; then
+                  echo "ERROR: unshare -n not permitted and REQUIRE_NET_ISOLATION=1;" >&2
+                  echo "ERROR: refusing to compile without network isolation while the" >&2
+                  echo "ERROR: signing key is materialized in tmpfs. Grant the build" >&2
+                  echo "ERROR: container CAP_SYS_ADMIN (see OPERATOR_TODO.md)." >&2
+                  exit 1
+              fi
               echo "WARNING: unshare -n not permitted; building WITHOUT network" >&2
-              echo "WARNING: isolation. Grant CAP_SYS_ADMIN to the build" >&2
-              echo "WARNING: container to enable it (see OPERATOR_TODO.md)." >&2
+              echo "WARNING: isolation. Grant CAP_SYS_ADMIN to the build container," >&2
+              echo "WARNING: or set REQUIRE_NET_ISOLATION=1 to make this a hard fail" >&2
+              echo "WARNING: (see OPERATOR_TODO.md)." >&2
               run_build
           fi
 
@@ -370,9 +388,15 @@ jobs:
           case "$rel" in
             201) ;;
             409|422)
-              # Already exists; fetch.
+              # Already exists (e.g. a same-tag rebuild). Resolve the id
+              # from the releases LIST, which reliably includes our DRAFT
+              # releases for a write-scoped token; GET /releases/tags/{tag}
+              # has filtered drafts on some Forgejo versions, yielding a
+              # null id that would fail an otherwise-valid rebuild.
               curl -fsS -H "Authorization: token $FORGEJO_TOKEN" \
-                   "$api/releases/tags/$TAG" > /tmp/rel.json ;;
+                   "$api/releases?limit=50" \
+                | jq --arg t "$TAG" 'map(select(.tag_name==$t)) | .[0]' \
+                > /tmp/rel.json ;;
             *) echo "create release failed: HTTP $rel" >&2; cat /tmp/rel.json >&2; exit 1 ;;
           esac
           rel_id=$(jq -r '.id' /tmp/rel.json)

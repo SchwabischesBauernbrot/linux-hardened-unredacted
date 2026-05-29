@@ -19,7 +19,9 @@ def _first_line(cmd: list[str]) -> str:
         return subprocess.run(
             cmd, capture_output=True, text=True).stdout.splitlines()[0]
     except Exception:
-        return ""
+        # Record a sentinel rather than "" so a missing/failed toolchain
+        # probe is visible in the provenance SBOM, not silently blank.
+        return "<unavailable>"
 
 
 def main(argv: list[str] | None = None) -> int:
