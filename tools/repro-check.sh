@@ -59,12 +59,23 @@ verify_input() {
     local url=$1 want=$2 label=$3
     [[ -n $url && -n $want ]] || return 0
     local tmp; tmp=$(mktemp)
-    if ! wget --no-verbose -O "$tmp" "$url" 2>/dev/null; then
-        echo "  FAIL: $label unreachable ($url)" >&2; rm -f "$tmp"; return 1
+    # Retry transient network blips before concluding the input is gone.
+    # "Unreachable" is NOT the same finding as a hash mismatch: only a
+    # mismatch (below) means the recorded bytes changed under us, which is
+    # the security-relevant signal. A transient blip or upstream removal
+    # should read differently.
+    local attempt fetched=0
+    for attempt in 1 2 3; do
+        if wget --no-verbose -O "$tmp" "$url" 2>/dev/null; then fetched=1; break; fi
+        sleep $(( attempt * 2 ))
+    done
+    if (( ! fetched )); then
+        echo "  WARN: $label unreachable after retries ($url) — transient network or upstream removal, not necessarily input drift" >&2
+        rm -f "$tmp"; return 1
     fi
     local got; got=$(sha256sum "$tmp" | awk '{print $1}'); rm -f "$tmp"
     if [[ $got != "$want" ]]; then
-        echo "  FAIL: $label hash drift (want $want, got $got)" >&2; return 1
+        echo "  FAIL: $label HASH DRIFT (want $want, got $got) — recorded input changed upstream" >&2; return 1
     fi
     echo "  ok: $label"
 }

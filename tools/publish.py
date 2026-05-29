@@ -41,7 +41,7 @@ def _redact(text: str) -> str:
     the Basic-auth token landing in a public CI log.
     """
     return re.sub(
-        r"(?im)^(authorization|cookie|set-cookie):.*$",
+        r'(?im)^[ \t]*"?(authorization|cookie|set-cookie)"?[ \t]*:.*$',
         r"\1: <redacted>",
         text,
     )
