@@ -2,9 +2,13 @@ name: repro-check
 on:
   schedule:
     - cron: '0 3 * * *'  # nightly 03:00 UTC
-  workflow_run:
-    workflows: ["publish"]
-    types: [completed]
+  # Forgejo Actions does NOT support `workflow_run` (a GitHub-only event),
+  # so chaining this off publish's completion silently never fired — only
+  # the nightly cron ran. Use manual dispatch instead: an operator runs it
+  # right after publish.yml to verify a fresh release, and the cron still
+  # catches everything within 24h. Supported Forgejo events:
+  # https://forgejo.org/docs/latest/user/actions/reference/
+  workflow_dispatch:
 
 jobs:
   repro:
