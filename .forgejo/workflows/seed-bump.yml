@@ -1,0 +1,126 @@
+name: seed-bump
+on:
+  schedule:
+    - cron: '0 4 * * 1'   # weekly, Monday 04:00 UTC
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "anthraxx packaging ref to evaluate (tag/commit; default origin/HEAD = their latest)"
+        required: false
+        default: origin/HEAD
+        type: string
+
+# Proposes a kernel-config seed bump as a PULL REQUEST for human review,
+# when anthraxx changes config.x86_64. Deliberately scoped:
+#   - It opens a PR; it never auto-merges.
+#   - It never cuts a kernel tag. Building+signing a kernel from a new
+#     upstream stays a human-gated, signature-verified step (cve-watch.yml
+#     files the issue; a human pushes the tag). This workflow only touches
+#     the seed *config file*, which is exactly the kind of change a PR is
+#     for.
+#   - bump-seed.sh verifies the anthraxx commit's GPG signature against
+#     keys/anthraxx.gpg, so an unsigned or mis-signed seed FAILS the job
+#     rather than opening a PR.
+#   - It proposes only when config.x86_64's sha256 actually changes — a
+#     commit-only bump (same config) is not worth a PR.
+
+jobs:
+  propose:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Check out with the seed-bump token so the `git push origin`
+          # below is authorized via the credential actions/checkout
+          # configures — no token in a remote URL (which could leak to a
+          # log). SEED_BUMP_TOKEN is a Forgejo PAT scoped write:repository
+          # (push a branch + open a PR). See docs/operators/runner-setup.md.
+          token: ${{ secrets.SEED_BUMP_TOKEN }}
+
+      # node:22-bookworm (the runner default image) ships git + curl but
+      # not gnupg (bump-seed.sh verifies the commit signature) or jq (the
+      # PR-API payload). act runs as root, so no sudo.
+      - name: install deps
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends git gnupg jq curl ca-certificates
+
+      - name: evaluate + bump seed (signature-verified)
+        id: bump
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          ref="${REF:-origin/HEAD}"
+          echo "evaluating anthraxx seed at ref: $ref"
+          sha_of() { sed -nE 's/^sha256[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' configs/upstream-seed.toml; }
+          old_sha=$(sha_of)
+          # bump-seed.sh clones anthraxx, verifies the target commit's GPG
+          # signature against keys/anthraxx.gpg, recomputes config.x86_64's
+          # sha256, and rewrites configs/upstream-seed.toml in place (logging
+          # a hardening-relevant diff). A signature failure exits non-zero
+          # here and fails the job (no PR).
+          ./tools/bump-seed.sh "$ref" | tee /tmp/bump.log
+          new_sha=$(sha_of)
+          if [[ $old_sha == "$new_sha" ]]; then
+            echo "config.x86_64 unchanged vs $ref (sha256 $new_sha); nothing to propose"
+            # bump-seed may have rewritten the commit/tag pin for a commit-
+            # only move; revert so the working tree is clean and no PR opens.
+            git checkout -- configs/upstream-seed.toml
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            newcommit=$(sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' configs/upstream-seed.toml)
+            echo "config.x86_64 changed: $old_sha -> $new_sha (commit $newcommit)"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "newcommit=$newcommit" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: open PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SEED_BUMP_TOKEN }}
+          NEWCOMMIT: ${{ steps.bump.outputs.newcommit }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${FORGEJO_TOKEN:-}" ]]; then
+            echo "::error::SEED_BUMP_TOKEN is not configured; cannot push a branch or open a PR."
+            echo "::error::Add a Forgejo PAT scoped write:repository as SEED_BUMP_TOKEN."
+            exit 1
+          fi
+          api="https://git.unredacted.org/api/v1/repos/${GITHUB_REPOSITORY}"
+          branch="automated/seed-bump-${NEWCOMMIT:0:12}"
+
+          # Idempotency: if an open PR from this branch already exists (a
+          # prior run proposed the same bump), don't open a duplicate.
+          existing=$(curl -fsS -H "Authorization: token $FORGEJO_TOKEN" \
+              "$api/pulls?state=open&limit=50" \
+              | jq -r --arg h "$branch" '.[] | select(.head.ref == $h) | .number' \
+              | head -n1 || true)
+          if [[ -n $existing ]]; then
+            echo "open PR #$existing already proposes $branch; nothing to do"
+            exit 0
+          fi
+
+          git config user.name "forgejo-runner"
+          git config user.email "noreply@unredacted.org"
+          git switch -c "$branch"
+          git add configs/upstream-seed.toml
+          git commit -m "seed: bump to ${NEWCOMMIT:0:12}"
+          # Authorized by the checkout-configured credential (token above).
+          git push origin "$branch"
+
+          body=$(printf 'Automated seed-bump proposal from `tools/bump-seed.sh` — the anthraxx commit signature was verified against `keys/anthraxx.gpg`.\n\n**Review before merging:** confirm the new seed targets the kernel version we build (the seed may legitimately lag) and that the hardening delta below is acceptable. Merging only updates the pinned config seed; the next kernel tag picks it up, and `build-kernel.yml`'"'"'s fidelity assertion + hardening-drift guard run on that build.\n\n```\n%s\n```\n' "$(cat /tmp/bump.log)")
+          code=$(curl -sS -o /tmp/pr.json -w '%{http_code}' -X POST \
+              -H "Authorization: token $FORGEJO_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg t "seed: bump to ${NEWCOMMIT:0:12}" --arg b "$body" --arg h "$branch" \
+                  '{title: $t, body: $b, head: $h, base: "main"}')" \
+              "$api/pulls")
+          if [[ $code -ge 400 ]]; then
+            echo "::error::PR create failed: HTTP $code" >&2
+            cat /tmp/pr.json >&2 || true
+            exit 1
+          fi
+          echo "opened seed-bump PR: $(jq -r '.html_url // .url // empty' /tmp/pr.json)"

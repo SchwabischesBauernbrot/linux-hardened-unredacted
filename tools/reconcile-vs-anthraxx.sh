@@ -20,7 +20,14 @@
 set -euo pipefail
 umask 022
 
-ref=${1:-HEAD}
+# Default to origin/HEAD (anthraxx's latest), NOT a literal HEAD: the clone
+# below detaches to the pinned commit before checking out $ref, so "HEAD"
+# would resolve back to the pinned commit — comparing the seed to itself and
+# always reporting "no change", silently defeating this check. origin/HEAD is
+# a remote-tracking ref that points at anthraxx's default-branch tip
+# regardless of the local checkout state. (Explicit tag/commit refs were
+# always fine; only the HEAD default was broken.)
+ref=${1:-origin/HEAD}
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 pin_file="$repo_root/configs/upstream-seed.toml"

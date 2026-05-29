@@ -24,6 +24,11 @@ set -euo pipefail
 umask 022
 
 ref=${1:?usage: bump-seed.sh <commit-or-tag>}
+# A literal "HEAD" would resolve back to the pinned commit after the detached
+# baseline checkout below (bumping the seed to itself). Rewrite it to
+# origin/HEAD, which tracks anthraxx's default-branch tip. Pass an explicit
+# tag (e.g. 7.0.10.hardened1-1) or commit for a specific target.
+[[ $ref == HEAD ]] && ref=origin/HEAD
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 pin_file="$repo_root/configs/upstream-seed.toml"
