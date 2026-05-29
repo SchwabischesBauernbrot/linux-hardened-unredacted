@@ -72,11 +72,13 @@ git commit -m "seed: bump to <ref> (<commit>)"
 ### Periodic reconciliation check
 
 ```
-tools/reconcile-vs-anthraxx.sh           # diff vs anthraxx HEAD
-tools/reconcile-vs-anthraxx.sh <ref>     # diff vs a specific ref
+tools/reconcile-vs-anthraxx.sh           # diff vs anthraxx's latest (origin/HEAD)
+tools/reconcile-vs-anthraxx.sh <ref>     # diff vs a specific tag/commit
 ```
 
-READ-ONLY. Reports which hardening-relevant symbols anthraxx has changed since the pinned seed. Use to decide whether to bump.
+READ-ONLY. Reports which hardening-relevant symbols anthraxx has changed since the pinned seed. Use to decide whether to bump. (The default ref is `origin/HEAD` — anthraxx's latest — not a literal `HEAD`, which after the tool's detached baseline checkout would resolve back to the pinned commit and always report "no change".)
+
+**Automated:** `.forgejo/workflows/seed-bump.yml` runs this comparison weekly (and on manual dispatch). When anthraxx's `config.x86_64` *content* changes, it runs `tools/bump-seed.sh` (which verifies the commit's GPG signature) and opens a **PR** proposing the bump for review — it never merges, and never cuts a kernel tag (those stay human decisions). Requires the `SEED_BUMP_TOKEN` secret (see [runner-setup.md](runner-setup.md)).
 
 ### Changing our intent (rare)
 

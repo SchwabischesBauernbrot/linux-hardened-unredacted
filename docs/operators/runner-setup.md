@@ -115,6 +115,7 @@ The per-workflow secrets (defined in the Forgejo UI) follow spec §6.1's princip
 | `build-kernel.yml` | `KERNEL_SIGNING_KEY`, `KERNEL_SIGNING_CERT`, `RELEASE_TOKEN` | Signing key for `sign-debs.sh`; release token (scope: `write:repository` on this repo) to attach .debs as release assets |
 | `publish.yml` | `REGISTRY_USER`, `REGISTRY_TOKEN`, `FASTLY_SERVICE_ID`, `FASTLY_PURGE_TOKEN`, `RELEASE_TOKEN`, `MANIFEST_COMMIT_TOKEN` | Registry token (scope: `write:package` on this owner) to push to the Debian registry; release token to download .debs from the build's draft release; manifest-commit token (scope: `write:repository`) to push the updated manifest back |
 | `cve-watch.yml` | `ISSUE_TOKEN` | scope: `write:issue` + `read:repository` (the issue-list dedup call needs repository read) |
+| `seed-bump.yml` | `SEED_BUMP_TOKEN` | scope: `write:repository` (push a branch + open the seed-bump PR). It only ever opens a PR for human review — never merges, never cuts a kernel tag. |
 
 Forgejo reserves secret names starting with `FORGEJO_`, `GITEA_`, and `GITHUB_`. The names above avoid those prefixes. Inside the runtime environment, the workflow YAML still sets env vars like `FORGEJO_TOKEN` for `tools/publish.py` to read — only the Forgejo-side secret names are constrained.
 
