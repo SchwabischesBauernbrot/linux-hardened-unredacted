@@ -38,6 +38,10 @@ The kernel + module signing key is RSA-3072 or EC P-384, PEM-encoded. The matchi
 
 The project does not use an HSM. The trade-off is build automation in exchange for a weaker custody story; one consequence is that the Microsoft-signed shim track (which requires HSM-backed signing) is foreclosed.
 
+### CI token custody
+
+The automation API tokens (issue, release, manifest-commit, registry, seed-bump) are personal access tokens issued from a dedicated `unredacted-bot` service account, scoped per workflow to least privilege (see [docs/operators/runner-setup.md](docs/operators/runner-setup.md)). They are part of the trust surface: an attacker holding the bot's PATs could file issues, open PRs, push branches, push the manifest commit-back to `main`, and upload `.deb`s to the package registry — but **cannot sign a kernel** (the signing key is a separate Forgejo CI secret, not the bot's, and the apt-repo key lives in Forgejo's data directory). Using a dedicated bot rather than a maintainer's personal account bounds the blast radius of a leaked CI token and keeps automated actions attributable.
+
 ## Key rotation
 
 | Key | Cadence | Trigger |

@@ -1,14 +1,14 @@
 # Forgejo runner setup
 
-A Forgejo runner executes the CI jobs defined in `.forgejo/workflows/`: fetch, patch, configure, build, sign, publish. The kernel compile runs inside a `containers/Dockerfile.*` image on the runner host.
+A Forgejo runner executes the CI jobs defined in `.forgejo/workflows/`: fetch, patch, configure, build, sign, publish. `build-kernel.yml` runs the whole build directly inside one pinned `debian:trixie@sha256:…` job container, installing the kernel toolchain (`apt-get build-dep linux` + extras) at job start — there is no separate per-target image build today. (A pre-built runner image that bakes those deps in is a planned optimization; see the build-deps step in `build-kernel.yml`.)
 
 ## Topology
 
 ```
 ┌────────────┐   webhooks   ┌──────────────────────────────┐
 │  Forgejo   │ ───────────► │   Runner = build host        │
-│ (origin)   │              │   - per-target Docker images │
-│            │              │   - kernel compile           │
+│ (origin)   │              │   - one debian:trixie ctr    │
+│            │              │   - kernel compile + sign    │
 │            │              │   - signing via Forgejo      │
 │            │              │     secrets (no HSM)         │
 └────────────┘              └──────────────────────────────┘
@@ -95,7 +95,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now forgejo-runner
 ```
 
-The docker-socket mount lets the runner spawn the per-target build containers (`containers/Dockerfile.debian-trixie-amd64` and friends) on the host docker daemon; the "sibling container" pattern.
+The docker-socket mount lets the runner spawn each job's container (e.g. `build-kernel.yml`'s pinned `debian:trixie`) on the host docker daemon. The build runs *inside* that one container; there is no separate per-target image. Note: a job that itself needs to run `docker` — e.g. `repro-check.yml`, which rebuilds in the recorded container image — would additionally need the socket mounted into its *own* container (and the docker CLI installed), which is not configured by default; run `tools/repro-check.sh` on a docker-capable host instead.
 
 ## Hardening
 
@@ -104,6 +104,7 @@ The docker-socket mount lets the runner spawn the per-target build containers (`
 - Outbound to anything except (a) the Forgejo origin, (b) the build host SSH port, (c) Fastly's purge API, (d) Debian's apt mirror is blocked at the host firewall.
 - Automatic Debian security updates enabled.
 - Off-host log shipping with alerts on: docker image pulls outside the configured digests, unexpected outbound connections, registration changes.
+- Once the runner can grant the build container `CAP_SYS_ADMIN`, set the repo variable `REQUIRE_NET_ISOLATION=1`: `build-kernel.yml` then **hard-fails** if it can't isolate the compile in a network namespace (`unshare -n`) while the signing key is materialized in tmpfs. Today, without that capability, it logs a warning and compiles without isolation.
 
 ## Secret scoping
 
@@ -119,11 +120,13 @@ The per-workflow secrets (defined in the Forgejo UI) follow spec §6.1's princip
 
 Forgejo reserves secret names starting with `FORGEJO_`, `GITEA_`, and `GITHUB_`. The names above avoid those prefixes. Inside the runtime environment, the workflow YAML still sets env vars like `FORGEJO_TOKEN` for `tools/publish.py` to read — only the Forgejo-side secret names are constrained.
 
+All of the API tokens above are personal access tokens issued from a dedicated **`unredacted-bot`** service account, not a maintainer's personal account. That keeps automated actions (issues, PRs, manifest commits, package uploads) attributable to the bot, and bounds a leaked CI token to the bot's access. The bot must be an org member / repo collaborator holding exactly the scopes listed: `write:package` on the `unredacted` owner, and `write:repository` / `write:issue` / `read:repository` on this repo. Operational consequences: rotating CI credentials means rotating the bot's PATs; if the bot account is disabled, all CI that needs a token stops; and if `main` is branch-protected, the bot must be allowed to push so `MANIFEST_COMMIT_TOKEN`'s manifest commit-back (and any future bot push to `main`) isn't blocked. (Signing keys are PEM material, not account tokens, so they're independent of the bot account.)
+
 The signing key lives in Forgejo's secret store rather than an HSM. The runner reads the secret only for the duration of the signing step; the key is written to tmpfs and discarded when the step exits.
 
 ## Forgejo version requirements
 
-The build → publish handoff uses Forgejo's release-asset API rather than the `actions/upload-artifact` ecosystem, because that ecosystem's compatibility varies across Forgejo versions and runner images. Any Forgejo version that supports releases (essentially all modern ones, 1.18+) will work; verify with:
+The build → publish handoff uses Forgejo's release-asset API rather than the `actions/upload-artifact` ecosystem, because that ecosystem's compatibility varies across Forgejo versions and runner images. Any Forgejo version that supports releases (essentially all modern ones, 1.18+) will work; the instance currently runs **15.0.2**. Note Forgejo Actions does not implement the GitHub `workflow_run` trigger, which is why `repro-check.yml` is `workflow_dispatch` + cron rather than auto-chained off `publish`. Verify the version with:
 
 ```
 curl -fsS https://git.unredacted.org/api/v1/version
