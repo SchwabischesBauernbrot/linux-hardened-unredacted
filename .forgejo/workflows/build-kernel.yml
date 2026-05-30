@@ -306,6 +306,14 @@ jobs:
           openssl pkey -in "$keydir/signing.key" -noout
           openssl x509 -in "$keydir/signing.crt" -noout
 
+          # Publish the PUBLIC signing certificate in DER form so users can
+          # enroll it via MOK. Secure Boot enrollment is a manual step (the
+          # kernel .deb ships no auto-enroll postinst), so the cert must be
+          # downloadable; it's attached to the release below. The private
+          # key never leaves $keydir (the trap scrubs it at step end).
+          openssl x509 -in "$keydir/signing.crt" -outform DER \
+              -out "$WORKDIR/unredacted-hardened.der"
+
           SIGNING_KEY_PATH="$keydir/signing.key" \
           SIGNING_CERT_PATH="$keydir/signing.crt" \
             ./build/sign-debs.sh
@@ -429,4 +437,10 @@ jobs:
           # releases/{tag}/manifest.json — the input to tools/repro-check.sh.
           if [[ -f $WORKDIR/manifest.json ]]; then
             upload_asset "$WORKDIR/manifest.json" "manifest.json"
+          fi
+
+          # Attach the public signing certificate (DER) so users can enroll
+          # it via MOK for Secure Boot (docs/users/secure-boot.md).
+          if [[ -f $WORKDIR/unredacted-hardened.der ]]; then
+            upload_asset "$WORKDIR/unredacted-hardened.der" "unredacted-hardened.der"
           fi
