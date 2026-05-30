@@ -158,10 +158,11 @@ Expected output: `linux-image-...-hardened-unredacted-amd64_*.deb`, `linux-heade
 
 In the Forgejo Actions UI, manually dispatch `publish.yml`:
 - `version`: `v6.6.0-hardened1`
-- `component`: `main`
 - `distribution`: `trixie`
 
-Watch the workflow. It downloads the `.debs` from the draft release, uploads them to the Debian registry, purges Fastly, and commits the manifest + `final.config` back to main.
+There is **no `component` input** — one dispatch publishes both components: the workflow splits the `-dbg` package into the `debug` component and everything else into `main`, in a single run.
+
+Watch the workflow. It downloads the `.debs` from the draft release, uploads them to the Debian registry (main + debug), purges Fastly, and commits the manifest + `final.config` back to main.
 
 Verify the registry:
 
@@ -170,7 +171,7 @@ curl -fsS https://repo.unredacted.org/debian/dists/trixie/InRelease | head -20
 curl -fsS https://repo.unredacted.org/debian/dists/trixie/main/binary-amd64/Packages | head -20
 ```
 
-If you also built `-dbg`, dispatch `publish.yml` again with `component=debug`.
+Then dispatch `repro-check.yml` for this tag to verify reproducibility. It is `workflow_dispatch`-only (Forgejo has no `workflow_run` trigger, so it cannot auto-chain off publish); the nightly cron is the backstop. It needs a docker-capable runner.
 
 ## 11. Install on a clean Debian 13 VM
 
@@ -212,9 +213,9 @@ If any of these fail, that's the first real signal. Investigate, fix, re-test.
 If everything passed:
 
 ```
-# Delete the draft release and stub tag.
-gh release delete v6.6.0-hardened1 -y --cleanup-tag
-# Or via the Forgejo UI.
+# Delete the draft release and stub tag. (gh is GitHub-only and will NOT
+# work against Forgejo — use the Forgejo UI, or `tea release delete
+# v6.6.0-hardened1` followed by deleting the tag.)
 
 # Remove the manifest commit if it landed (optional; keeping it is fine).
 git revert <commit-sha>
@@ -223,7 +224,7 @@ git push origin main
 
 ## 14. You're ready for the first real tag
 
-Push the actual upstream `linux-hardened` tag you intend to ship. Run `publish.yml` twice (main, then debug). Announce in release notes.
+Push the actual upstream `linux-hardened` tag you intend to ship. Run `publish.yml` once (one dispatch publishes main + debug), then dispatch `repro-check.yml` for the tag. Announce in release notes.
 
 Subscribe to the Forgejo RSS feed yourself, so you see what users see.
 

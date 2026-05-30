@@ -214,22 +214,23 @@ Restricts perf events, BPF program loading, and ptrace to root. Together these c
 
 User impact: covered in [docs/users/incompatibilities.md](../docs/users/incompatibilities.md). Matches linux-hardened upstream.
 
-## Per-distro overrides
+## Container NAT (project pin)
 
-| Distro    | Override file                          | Notes |
-| --------- | -------------------------------------- | ----- |
-| Debian 13 | `configs/debian-trixie-amd64.config`   | Container NAT (`NETFILTER_XT_TARGET_MASQUERADE`, `NETFILTER_XT_NAT`) restored for Docker/containerd on trixie's nft backend; see below. |
+`configs/intent.config` pins `CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m` and `CONFIG_NETFILTER_XT_NAT=m`. (There is no separate per-distro override file today — per-distro config layering is Phase-2 scaffolding; these live in the single `intent.config` overlay.)
 
-### `CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m`, `CONFIG_NETFILTER_XT_NAT=m` (Debian 13)
+### `CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m`, `CONFIG_NETFILTER_XT_NAT=m`
 
-Container runtimes (Docker, Podman, containerd) program their bridge NAT through Debian trixie's nftables backend (`iptables-nft`), which resolves the `MASQUERADE` and `SNAT`/`DNAT` rule targets to the generic xtables modules `xt_MASQUERADE` and `xt_nat`. We build a newer upstream kernel (7.0.x) than the Debian source whose config fragments we seed from (6.12.x); upstream removed the old `IP_NF_TARGET_MASQUERADE` symbol that used to `select` the xt MASQUERADE target, so `olddefconfig` left it off even though its dependency (`NF_NAT`) is met. Result: `dockerd` aborted at startup — `Extension MASQUERADE revision 0 not supported, missing kernel module`. Set both generic xt targets explicitly so they no longer hinge on a distro symbol that disappeared upstream. These are loadable modules and add no attack surface until loaded; this is a Debian-parity fix, not a hardening choice.
+Container runtimes (Docker, Podman, containerd) program their bridge NAT through the `iptables-nft` backend, which resolves the `MASQUERADE` and `SNAT`/`DNAT` rule targets to the generic xtables modules `xt_MASQUERADE` and `xt_nat`. The kernel tree advances ahead of anthraxx's pinned `config.x86_64` seed (the seed routinely lags the built version); the 6.12 → 7.0 Kconfig refactor removed the old `IP_NF_TARGET_MASQUERADE` symbol that used to `select` the xt MASQUERADE target, so `olddefconfig` left it off even though its dependency (`NF_NAT`) is met. Result: `dockerd` aborted at startup — `Extension MASQUERADE revision 0 not supported, missing kernel module`. We pin both generic xt targets explicitly in `intent.config` so they no longer hinge on a symbol that disappeared upstream. These are loadable modules and add no attack surface until loaded; a container-compat fix, not a hardening choice.
 
-The broader legacy xtables stacks (`ip_tables` / `ip6_tables` / `ebtables` / `arptables` and their mangle/raw/security tables) deliberately stay off: trixie routes everything through nftables, so they are vestigial for our targets, and omitting them keeps the attack surface smaller. Re-enable a specific legacy module here only when a concrete workload is shown to need `iptables-legacy`.
+The broader legacy xtables stacks (`ip_tables` / `ip6_tables` / `ebtables` / `arptables` and their mangle/raw/security tables) deliberately stay off: traffic routes through nftables, so they are vestigial for our targets, and omitting them keeps the attack surface smaller. Re-enable a specific legacy module here only when a concrete workload is shown to need `iptables-legacy`.
 
 ## Review process
 
-Each new symbol introduced by a kernel-version bump that is not classified by either `hardened-overlay.config` or a distro override is flagged by `build/configure-kernel.sh` and aborts the build. The human reviewer decides the value, adds the entry to the appropriate config file, adds the rationale here, and re-runs the build.
+The kernel `.config` is composed from anthraxx's pinned `config.x86_64` seed plus `configs/intent.config` (full design in [config-architecture.md](../docs/operators/config-architecture.md)). Two build-time gates protect it:
 
-Without this gate, a kernel-version bump can silently inherit defaults chosen for a different threat model.
+1. **Fidelity assertion** (`build/configure-kernel.sh`): every line in `configs/intent.config` must appear verbatim in the final `.config` after merge + `olddefconfig`, or the build aborts — catching an intent pin that silently fails to land (a dependency conflict, an upstream rename like `STACKLEAK` → `KSTACK_ERASE`, or a version-skewed seed).
+2. **Hardening-drift guard** (`tools/check-hardening-drift.sh`, run as a step in `build-kernel.yml`): fails the build if a hardening symbol that was *enabled* in the most recent released `final.config` is no longer enabled. This covers the symbols we *inherit* from the seed (not pinned in `intent.config`), which the fidelity assertion does not. Set `ALLOW_HARDENING_REGRESSION=1` to override a reviewed, intentional drop; the next release's `final.config` then becomes the new baseline.
 
-One blind spot remains: the guard catches symbols that *appear* (drift toward more features), but not features that silently *disappear* when an upstream Kconfig reshuffle removes a `select`/dependency — which is exactly how the container-NAT modules above got dropped. Catching that class would need a complementary diff against the distro stock config with an allowlist of intentionally-hardened-off symbols. Tracked as a follow-up; not yet implemented.
+Every symbol pinned in `intent.config` must have a rationale entry in this file; `validate.yml`'s `intent-matches-policy` job enforces that bidirectional parity.
+
+The container-NAT case above is exactly the silent-disappearance class the drift guard now catches (a symbol that vanished when an upstream Kconfig reshuffle removed a `select`). It compares against the prior *release*, not a distro stock config — the latter no longer applies since the seed is anthraxx's curated hardened config, not a distro's.

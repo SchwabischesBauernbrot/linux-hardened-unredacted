@@ -47,6 +47,16 @@ Then `apt install linux-image-{version}-hardened-unredacted-amd64-dbg` will fetc
 
 > Phase 1 will confirm whether Forgejo's Debian registry exposes `main` and `debug` as components of one `Release` file (one sources.list line) or as separate suites (two lines, `... trixie main` and `... trixie debug`). If the single-line form errors during `apt update` with "Conflicting distribution," switch to two `deb` lines.
 
+### Older (archived) versions (opt-in)
+
+As newer kernels publish, older versions rotate out of `main` into an `archive` component — still installable and signed, just not enabled by default. To install or pin a version that has been archived, append `archive` to the sources.list line:
+
+```
+deb [signed-by=/etc/apt/keyrings/unredacted-hardened.asc] https://repo.unredacted.org/debian trixie main archive
+```
+
+(The same single-line-vs-separate-suite caveat noted for `debug` applies — switch to a separate `... trixie archive` line if `apt update` complains.)
+
 ## Install
 
 ```

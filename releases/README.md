@@ -3,7 +3,7 @@
 Each tagged release writes two files under `releases/{tag}/`:
 
 - `manifest.json`: the public record of what was built, from which inputs, in which container, with which signing keys. The reproducibility contract and the GPLv2 §3 obligation both depend on it.
-- `final.config`: the kernel `.config` actually used for the build, captured after `make olddefconfig`. The next build's new-symbol guard in `configure-kernel.sh` diffs the prior release's `final.config` against the current one and aborts on any unclassified new kconfig symbol.
+- `final.config`: the kernel `.config` actually used for the build, captured after `make olddefconfig` (with `CONFIG_MODULE_SIG_KEY` normalized back to the placeholder, so the per-build tmpfs key path never lands here). It is the baseline for the **hardening-drift guard** — `tools/check-hardening-drift.sh`, run as a step in `build-kernel.yml`, fails the next build if an enabled hardening symbol regressed versus the most recent released `final.config`. (Distinct from `build/configure-kernel.sh`'s own *fidelity assertion*, which only checks that every `configs/intent.config` line lands.)
 
 Manifests are committed back to this repository after a successful publish (`publish.yml` final step). Treat them as append-only; never edit a published manifest.
 
@@ -17,55 +17,38 @@ The signing layer is attested separately by `signing_cert_sha256` in the manifes
 
 ```json
 {
-  "version": "v6.12.8-hardened1",
-  "kernel_version": "6.12.8",
-  "hardened_revision": 1,
-  "source_date_epoch": 1737000000,
+  "kernel_version": "7.0.10",
+  "hardened_revision": "1",
+  "source_date_epoch": "1780034773",
   "container_image": "debian:trixie@sha256:<digest>",
-  "config_sha256": "<sha256 of the final .config after olddefconfig>",
-  "build_scripts_commit": "<git sha of this repository at build time>",
   "signing_cert_sha256": "<sha256 of the X.509 cert that signed this build>",
+  "upstream_seed": {
+    "url": "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git",
+    "commit": "<git sha of the pinned anthraxx packaging commit>",
+    "config_path": "config.x86_64",
+    "sha256": "<sha256 of config.x86_64 at that commit>",
+    "signer_fpr": "E240B57E2C4630BA768E2F26FC1B547C8D8172C8",
+    "signature_verified": true
+  },
   "inputs": {
     "kernel_tarball": {
-      "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.8.tar.xz",
-      "sha256": "<sha>",
-      "signature_url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.8.tar.sign",
-      "signature_sha256": "<sha>",
-      "verified_against": "kernel-org.gpg"
+      "url": "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.0.10.tar.xz",
+      "sha256": "<sha>"
     },
     "hardened_patch": {
-      "url": "https://github.com/anthraxx/linux-hardened/releases/download/v6.12.8-hardened1/linux-hardened-v6.12.8-hardened1.patch",
-      "sha256": "<sha>",
-      "signature_url": "...patch.sig",
-      "signature_sha256": "<sha>",
-      "verified_against": "anthraxx.gpg",
-      "verify_status": "GOODSIG | EXPKEYSIG"
-    },
-    "distro_source": {
-      "distro": "debian",
-      "release": "trixie",
-      "fetch_command": "apt-get source linux=<version>",
-      "version_pin": "<exact debian source version at build time>"
-    },
-    "stock_config_sources": [
-      {"path": "debian/config/config", "sha256": "<sha>"},
-      {"path": "debian/config/amd64/config", "sha256": "<sha>"},
-      {"path": "debian/config/amd64/config.cloud-amd64", "sha256": "<sha>"}
-    ]
+      "url": "https://github.com/anthraxx/linux-hardened/releases/download/v7.0.10-hardened1/linux-hardened-v7.0.10-hardened1.patch",
+      "sha256": "<sha>"
+    }
   },
   "outputs": [
     {
       "distro": "debian",
       "release": "trixie",
       "arch": "amd64",
-      "component": "main",
       "deb_files": [
         {
-          "name": "linux-image-6.12.8-hardened-unredacted-amd64_6.12.8-hardened1_amd64.deb",
-          "sha256": "<sha of the signed .deb>",
-          "unsigned_deb_sha256": "<sha of the .deb after sigs stripped>",
-          "size": 123456789,
-          "canonical_path": "pool/trixie/main/l/linux/.../<file>.deb"
+          "name": "linux-image-7.0.10-hardened-unredacted-amd64_7.0.10-hardened1.5_amd64.deb",
+          "unsigned_deb_sha256": "<sha256 of the .deb after signatures stripped>"
         }
       ]
     }
@@ -74,12 +57,27 @@ The signing layer is attested separately by `signing_cert_sha256` in the manifes
     {
       "distribution": "trixie",
       "component": "main",
-      "uploads": [{"file": "...", "sha256": "...", "status": 201}],
+      "uploads": [
+        {"file": "...", "sha256": "<sha of the uploaded signed .deb>", "size": 123456789, "status": 201}
+      ],
       "purge": {"purged": true, "surrogate_keys": ["dist-trixie", "comp-trixie-main"]}
     }
-  ]
+  ],
+  "sbom": {
+    "build_packages": [{"name": "gcc-14", "version": "14.2.0-19"}, "..."],
+    "toolchain": {
+      "gcc": "gcc (Debian 14.2.0-19) 14.2.0",
+      "ld": "GNU ld (GNU Binutils for Debian) 2.44"
+    }
+  }
 }
 ```
+
+Notes on the schema:
+- `upstream_seed` records the pinned anthraxx Arch `config.x86_64` (the kernel-config seed); `tools/repro-check.sh` reads it back to fetch + re-verify the exact same seed. Older releases (built before the seed architecture) lack this block, and repro-check refuses them.
+- `inputs` holds only the verified `url` + `sha256` for the two fetched artifacts (the kernel tarball and the hardened patch). The kernel `.config` is no longer assembled from a distro stock config, so there is no `stock_config_sources`/`distro_source` block.
+- `outputs[].deb_files[]` records `{name, unsigned_deb_sha256}` — the post-strip hash is the reproducibility contract. The signed-`.deb` `sha256`/`size` live under `publishes[].uploads[]`, added by `tools/publish.py` at publish time.
+- `sbom` records the build container's package set + toolchain versions (a step toward toolchain pinning).
 
 ## What's intentionally NOT in the manifest
 
@@ -89,9 +87,9 @@ The signing layer is attested separately by `signing_cert_sha256` in the manifes
 
 ## Verifying a manifest
 
-`tools/repro-check.sh v6.12.8-hardened1`:
+`tools/repro-check.sh v7.0.10-hardened1.5`:
 
-1. Reads `releases/v6.12.8-hardened1/manifest.json`.
+1. Reads `releases/v7.0.10-hardened1.5/manifest.json`.
 2. Verifies every input URL still resolves and hashes match.
 3. Rebuilds in the recorded container image (by digest).
 4. Strips signatures from both the released and rebuilt `.deb`s.
