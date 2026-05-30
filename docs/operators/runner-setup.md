@@ -97,6 +97,21 @@ sudo systemctl enable --now forgejo-runner
 
 The docker-socket mount lets the runner spawn each job's container (e.g. `build-kernel.yml`'s pinned `debian:trixie`) on the host docker daemon. The build runs *inside* that one container; there is no separate per-target image. Note: a job that itself needs to run `docker` — e.g. `repro-check.yml`, which rebuilds in the recorded container image — would additionally need the socket mounted into its *own* container (and the docker CLI installed), which is not configured by default; run `tools/repro-check.sh` on a docker-capable host instead.
 
+## Optional: pre-built runner image
+
+`build-kernel.yml` installs the kernel-build toolchain (`apt-get build-dep linux` + extras) at the start of every build — ~5 minutes against a 20–60 minute build. To skip that, bake the toolchain into a runner image (`containers/Dockerfile.runner-trixie-amd64`) and use it as the job container:
+
+```
+# Build + push (on the runner host, or anywhere with docker + registry creds)
+docker build -f containers/Dockerfile.runner-trixie-amd64 \
+    -t git.unredacted.org/unredacted/runner-trixie-amd64:1 .
+docker push git.unredacted.org/unredacted/runner-trixie-amd64:1
+docker inspect --format '{{index .RepoDigests 0}}' \
+    git.unredacted.org/unredacted/runner-trixie-amd64:1   # note the @sha256 digest
+```
+
+Then, in a **follow-up commit**, point `build-kernel.yml`'s `container.image` at the pushed image **by digest** and delete the "install build deps" step. Do it in that order — flipping the workflow before the image is in the registry breaks every build. Pinning by digest (not the `:1` tag) keeps builds reproducible: the toolchain is frozen at image-build time. The Dockerfile mirrors the workflow's inline dep list — keep it, the workflow, and `tools/repro-check.sh`'s inline rebuild deps in sync when any of them changes.
+
 ## Hardening
 
 - The runner host runs no other services.
