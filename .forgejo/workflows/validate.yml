@@ -21,6 +21,36 @@ jobs:
       - run: apt-get update && apt-get install -y yamllint
       - run: yamllint -d relaxed .forgejo/workflows/
 
+  workflow-expressions:
+    # Forgejo's expression preprocessor scans the ENTIRE run: script -- shell
+    # comments included -- for double-curly expression templates. An empty one,
+    # or a malformed one written illustratively inside a comment, makes the
+    # whole workflow fail to LOAD with a cryptic "unexpected end of input"
+    # schema error. yamllint can't catch it (the file is valid YAML), so guard
+    # here -- this is exactly what once broke cve-watch.yml. Reword such
+    # comments to describe the template rather than writing its literal syntax
+    # (as these very comments and messages do, to avoid tripping on this file).
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - name: no empty or commented workflow expressions
+        run: |
+          set -euo pipefail
+          fails=0
+          # Empty template: opening double-curly, only whitespace, closing.
+          if grep -RnE '\$\{\{[[:space:]]*\}\}' .forgejo/workflows/; then
+            echo "::error::empty expression template(s) above fail Forgejo's parser" >&2
+            fails=1
+          fi
+          # A live template inside a shell comment -- the preprocessor still
+          # evaluates it regardless of the leading '#'.
+          if grep -RnE '^[[:space:]]*#.*\$\{\{' .forgejo/workflows/; then
+            echo "::error::expression template inside a comment above; reword it" >&2
+            fails=1
+          fi
+          if [[ $fails -ne 0 ]]; then exit 1; fi
+          echo "workflow expressions OK"
+
   pycompile:
     runs-on: linux-hardened
     steps:
