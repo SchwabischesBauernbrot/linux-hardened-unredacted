@@ -2,7 +2,9 @@
 
 The hardened kernel and its modules are signed by the project's kernel + module signing key. UEFI Secure Boot only loads the kernel once that key is trusted by the firmware.
 
-End users on Secure Boot trust the key by enrolling it via **MOK** (Machine Owner Key) at install time. There is no Microsoft-signed shim path; the bottom of this page explains why.
+End users on Secure Boot trust the key by enrolling it via **MOK** (Machine Owner Key). There is no Microsoft-signed shim path; the bottom of this page explains why.
+
+This flow is the same on Debian and Ubuntu. Ubuntu's shim (≥ 15.4) refuses to *boot* a kernel signed by a key carrying the kernel's "module-signing only" usage OID — that's how it stops auto-generated DKMS keys from authorizing kernels — but our signing certificate is a plain code-signing cert with no such OID, so shim accepts it for boot once enrolled. (Ubuntu apt source: [install-ubuntu.md](install-ubuntu.md).)
 
 ## Detecting whether you need to do anything
 
@@ -41,7 +43,7 @@ sudo reboot
 | Symptom | Cause | Fix |
 | ------- | ----- | --- |
 | Kernel doesn't appear in GRUB | Initramfs generation failed during install | `sudo update-initramfs -k all -u && sudo update-grub` |
-| Boot fails with "bad shim signature" | Firmware doesn't trust our signing key | Re-run MOK enrollment above |
+| Boot fails with a Secure Boot error ("Security Violation" / "Access Denied" / bad signature) | Firmware doesn't trust our signing key (MOK not enrolled) | Re-run MOK enrollment above |
 | Post-boot, modules fail with `module verification failed` in `dmesg` | Kernel + module signing key not trusted | [recovery.md](recovery.md) |
 
 ## Why no Microsoft-signed shim

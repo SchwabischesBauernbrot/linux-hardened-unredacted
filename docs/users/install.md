@@ -1,6 +1,6 @@
 # Installing the hardened kernel
 
-Phase 1 ships Debian 13 (`trixie`) on amd64. Ubuntu 24.04, Debian 12, and arm64 follow in Phase 2.
+Phase 1 ships Debian 13 (`trixie`) on amd64. **Ubuntu 24.04 (noble)** is also supported, on the same packages — see [install-ubuntu.md](install-ubuntu.md). Debian 12 and arm64 follow in Phase 2.
 
 > No warranty. This software is distributed under the GNU General Public License version 2. There is no warranty. Use at your own risk.
 
