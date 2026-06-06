@@ -1,0 +1,45 @@
+# Pre-built runner image for build-kernel.yml.
+#
+# Bakes in the kernel-build toolchain so the workflow's "install build deps"
+# step (~5 min of apt every build) drops to a no-op. This image is OPTIONAL
+# and NOT yet wired in: build-kernel.yml still apt-installs these same
+# packages at job start. To activate it:
+#   1. Build + push this image to the Forgejo container registry (see
+#      docs/operators/runner-setup.md → "Optional: pre-built runner image").
+#   2. In a FOLLOW-UP commit, point build-kernel.yml's `container.image` at
+#      the pushed image *by digest*, and drop the "install build deps" step.
+# Do those in order — flipping the workflow before the image exists in the
+# registry breaks every build.
+#
+# The package set below MUST stay in sync with two other places or a build
+# done in one environment won't reproduce in another:
+#   - .forgejo/workflows/build-kernel.yml  ("install build deps" step)
+#   - tools/repro-check.sh                 (its inline rebuild deps)
+#
+# Base: the same pinned debian:trixie digest build-kernel.yml runs in today.
+FROM debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
+
+RUN set -eux; \
+    # Enable deb-src so `apt-get build-dep linux` works (deb822 trixie
+    # default; fall back to the legacy sources.list).
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources; \
+    else \
+        sed -i 's|^deb \(.*\)$|deb \1\ndeb-src \1|' /etc/apt/sources.list; \
+    fi; \
+    apt-get update; \
+    # 1. The explicit set the workflow scripts call directly (nodejs for the
+    #    JS actions; the rest for fetch/patch/sign/upload).
+    apt-get install -y --no-install-recommends \
+        nodejs \
+        git ca-certificates wget gpg xz-utils patch \
+        openssl libssl3 sbsigntool zstd lz4 bzip2 gzip jq curl \
+        dpkg-dev devscripts; \
+    # 2. Everything the Debian linux source declares as a build dependency.
+    apt-get build-dep -y --no-install-recommends linux; \
+    # 3. GCC plugin headers (CONFIG_GCC_PLUGINS / stackleak), matched to the
+    #    gcc major version build-dep just installed. Without this the plugin
+    #    subtree is hidden and the fidelity assertion fails on the pins.
+    apt-get install -y --no-install-recommends \
+        "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev"; \
+    rm -rf /var/lib/apt/lists/*
