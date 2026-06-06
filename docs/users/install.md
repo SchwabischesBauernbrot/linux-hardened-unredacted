@@ -13,7 +13,7 @@ Phase 1 ships Debian 13 (`trixie`) on amd64. **Ubuntu 24.04 (noble)** is also su
 
 ## If Secure Boot is enabled
 
-Check with `mokutil --sb-state`. If it reports `SecureBoot enabled`, read [secure-boot.md](secure-boot.md) **before** the install. The MOK enrollment step has to happen during the reboot that follows `apt install`.
+Check with `mokutil --sb-state`. If it reports `SecureBoot enabled`, read [secure-boot.md](secure-boot.md) — you must enroll the project signing certificate via MOK **yourself** (it is not enrolled automatically by the package), then reboot into the hardened kernel.
 
 ## Add the repo key
 
@@ -65,7 +65,7 @@ sudo apt install linux-image-hardened-unredacted-amd64 linux-headers-hardened-un
 
 This pulls the highest-version kernel currently in `main` for `trixie`. To pin a specific version, install the explicit name (e.g. `linux-image-7.0.10-hardened-unredacted-amd64`).
 
-The install regenerates the initramfs and updates GRUB. On Secure Boot machines it also queues a MOK enrollment request; follow [secure-boot.md](secure-boot.md) before rebooting.
+The install regenerates the initramfs and updates GRUB (via the distro's kernel hooks). On Secure Boot machines it does **not** auto-enroll a MOK — enroll the signing certificate yourself per [secure-boot.md](secure-boot.md) before rebooting into the hardened kernel.
 
 ## Reboot
 

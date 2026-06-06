@@ -188,7 +188,7 @@ sudo apt update
 sudo apt install linux-image-hardened-unredacted-amd64 linux-headers-hardened-unredacted-amd64
 ```
 
-During install, set a one-time MOK password. Reboot, enroll the MOK at the firmware prompt, boot into the hardened kernel.
+After install, enroll the signing certificate via MOK by hand — there is no auto-enroll postinst. Download `unredacted-hardened.der` from the draft release, `sudo mokutil --import unredacted-hardened.der`, set the one-time password, reboot, enroll at the firmware prompt, and boot into the hardened kernel. See [../users/secure-boot.md](../users/secure-boot.md).
 
 ## 12. Verify everything works
 
