@@ -9,19 +9,32 @@
 # Each published CVE ships a `.dyad` file whose colon-separated 3rd field is
 # the stable version the fix landed in. We select CVEs whose fix landed on
 # the SAME major.minor branch as <new_kver>, with patch level in
-# (<current patch>, <new patch>] — i.e. the cumulative-stable delta.
+# (<current patch>, <new patch>] -- i.e. the cumulative-stable delta. For each
+# selected CVE we fold in a short description (from the same vulns.git record)
+# and a best-effort severity from Red Hat's security feed -- the kernel CNA
+# itself publishes no CVSS, so severity has to come from a secondary source.
 #
 # BEST-EFFORT and NON-BLOCKING by contract: this script always exits 0 and
 # prints a one-line note instead of a list on any problem, so the caller
 # (cve-watch.yml) can fold its stdout into the issue body without risk of
-# aborting issue creation. The kernel CVE feed carries NO CVSS, so the list
-# is unscored — severity triage stays a human step (see docs/users/cve-policy.md).
+# aborting issue creation. Description/severity enrichment is likewise
+# best-effort: a missing record or unreachable network just omits that detail.
 #
 # Env:
-#   VULNS_DIR     use an already-extracted vulns.git tree instead of fetching
-#                 (must contain cve/published/<year>/*.dyad). For tests/offline.
-#   CVE_LIST_MAX  cap the number of CVEs listed (default 60); the remainder
-#                 are summarized as a count.
+#   VULNS_DIR      use an already-extracted vulns.git tree instead of fetching
+#                  (must contain cve/published/<year>/*.dyad). For tests/offline.
+#   CVE_LIST_MAX   cap the number of CVEs listed (default 60); the remainder
+#                  are summarized as a count.
+#   CVE_SEVERITY   1 (default) annotate each CVE with Red Hat's severity rating;
+#                  0 to skip the lookups (offline / deterministic tests).
+#   CVE_SEV_BUDGET wall-clock seconds to spend on severity lookups in total
+#                  (default 90); past this the remaining CVEs are left unrated.
+#   CVE_DESC_MAX   max lines of description shown per CVE (default 20).
+#
+# Network egress (best-effort; only when VULNS_DIR is unset / CVE_SEVERITY=1):
+#   - kernel.googlesource.com  (the vulns.git tarball)
+#   - access.redhat.com        (severity ratings)
+# If the runner's egress is locked down, each simply degrades to "omitted".
 
 set -uo pipefail   # deliberately NOT -e: this must never abort the caller
 
@@ -30,6 +43,9 @@ note() { printf '%s\n' "$*"; }
 cur=${1:-}
 new=${2:-}
 max=${CVE_LIST_MAX:-60}
+do_sev=${CVE_SEVERITY:-1}
+sev_budget=${CVE_SEV_BUDGET:-90}
+desc_max=${CVE_DESC_MAX:-20}
 
 [[ -n $cur && -n $new ]] || { note "_CVE list unavailable: missing version arguments._"; exit 0; }
 
@@ -102,22 +118,80 @@ if [[ -z $selected ]]; then
     exit 0
 fi
 
+# --- Enrichment helpers ---------------------------------------------------
+sev_start=$(date +%s 2>/dev/null || echo 0)
+
+rh_severity() {
+    # echo "Severity (CVSS x.y)" for CVE $1, or nothing on any miss. Best-effort
+    # and bounded by CVE_SEV_BUDGET so a slow/blocked API can't stall the job.
+    [[ $do_sev == 1 ]] || return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    local now elapsed j sev score
+    now=$(date +%s 2>/dev/null || echo 0)
+    elapsed=$(( now - sev_start ))
+    (( sev_start > 0 && elapsed > sev_budget )) && return 0
+    j=$(curl -fsSL --max-time 6 "https://access.redhat.com/hydra/rest/securitydata/cve/$1.json" 2>/dev/null) || return 0
+    sev=$(printf '%s' "$j" | jq -r '.threat_severity // empty' 2>/dev/null) || return 0
+    [[ -n $sev ]] || return 0
+    score=$(printf '%s' "$j" | jq -r '.cvss3.cvss3_base_score // empty' 2>/dev/null)
+    if [[ -n $score ]]; then printf '%s (CVSS %s)' "$sev" "$score"; else printf '%s' "$sev"; fi
+}
+
+desc_body() {
+    # Print the CVE's explanatory text -- the description with its boilerplate
+    # first line and the commit-subject line dropped -- capped at desc_max
+    # lines. Strip ``` so the text can't break out of the fenced block the
+    # issue renders it in.
+    local json=$1 full
+    [[ -f $json ]] || return 0
+    full=$(jq -r '.containers.cna.descriptions[0].value // empty' "$json" 2>/dev/null \
+             | awk -v RS='' -v ORS='\n\n' 'NR>=3' \
+             | sed 's/```/ /g')
+    [[ -n $full ]] || return 0
+    printf '%s\n' "$full" | awk -v n="$desc_max" 'NR<=n{print} END{if (NR>n) print "…"}'
+}
+
+# --- Emit -----------------------------------------------------------------
 total=$(awk 'END {print NR}' <<<"$selected")
-note "**CVEs reported fixed in \`$new\` since \`$cur\`** (source: kernel.org CVE project; _unscored_ — verify severity manually):"
+ts=$(date -u +%Y-%m-%dT%H:%MZ 2>/dev/null || echo "unknown")
+note "**CVEs reported fixed in \`$new\` since \`$cur\`** (source: kernel.org CVE project)."
 note ""
+if [[ $do_sev == 1 ]]; then
+    note "_Severity = Red Hat's rating (best-effort; the kernel CNA publishes no CVSS), not the project's own. List as of ${ts} — the feed can lag, so re-check vulns.git before building._"
+else
+    note "_List as of ${ts} — the feed can lag, so re-check vulns.git before building._"
+fi
+note ""
+
 shown=0
 while IFS= read -r f; do
     [[ -n $f ]] || continue
     (( shown >= max )) && break
     cve=$(basename "$f" .dyad)
-    title=""
     json="${f%.dyad}.json"
+    title=""
     [[ -f $json ]] && title=$(jq -r '.containers.cna.title // empty' "$json" 2>/dev/null || true)
-    if [[ -n $title ]]; then note "- $cve — $title"; else note "- $cve"; fi
+    sev=$(rh_severity "$cve")
+    # <summary> renders as HTML, so markdown there would be literal -- use tags.
+    summary="<strong>$cve</strong>"
+    [[ -n $sev ]]   && summary="$summary — $sev"
+    [[ -n $title ]] && summary="$summary — $title"
+    desc=$(desc_body "$json")
+    if [[ -n $desc ]]; then
+        note "<details><summary>$summary</summary>"
+        note ""
+        note '```text'
+        note "$desc"
+        note '```'
+        note "</details>"
+    else
+        note "- $summary"
+    fi
+    note ""
     shown=$((shown + 1))
 done <<<"$selected"
+
 if (( total > max )); then
-    note ""
     note "_…and $((total - max)) more (showing $max of $total). Full list: vulns.git._"
 fi
 exit 0
