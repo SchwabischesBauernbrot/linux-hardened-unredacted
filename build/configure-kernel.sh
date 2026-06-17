@@ -8,9 +8,9 @@
 #   - The seed is the upstream curated full .config (~12k lines), tracking
 #     the linux-hardened patch's intent for this kernel version, version-
 #     pinned by sha256 + signed-commit-verified at fetch time.
-#   - configs/intent.config (~65 setting lines) is our overlay: ~10 lines
+#   - configs/intent.config (65 setting lines) is our overlay: 13 lines
 #     where we deliberately diverge from anthraxx (MODULE_SIG_FORCE,
-#     LOCK_DOWN_KERNEL_FORCE_INTEGRITY, etc.) + ~55 defense-in-depth pins
+#     LOCK_DOWN_KERNEL_FORCE_INTEGRITY, etc.) + 52 defense-in-depth pins
 #     of every hardening symbol POLICY.md positions on.
 #   - The fidelity assertion below catches any case where olddefconfig
 #     dropped an intent line (e.g. a dependency conflict introduced by a

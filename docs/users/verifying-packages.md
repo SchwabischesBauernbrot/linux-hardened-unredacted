@@ -24,20 +24,17 @@ Compare against the canonical sources:
 2. https://unredacted.org (the 501(c)(3) site).
 3. A third-party out-of-band channel (Keyoxide or social, to be published).
 
-If the fingerprint your `gpg --show-keys` prints doesn't match all reachable sources, one is stale or tampered with. Don't install packages until it's resolved; email `security@unredacted.org`.
-
-If sources disagree, one is stale or has been tampered with. Do not install packages until the discrepancy is resolved. Email `security@unredacted.org`.
+If the fingerprint your `gpg --show-keys` prints doesn't match all reachable sources, one is stale or has been tampered with. Do not install packages until the discrepancy is resolved; email `security@unredacted.org`.
 
 ## Verify the kernel signing cert fingerprint
 
-The cert you enroll via MOK has a fingerprint that should match what we publish in each release's notes:
+Before enrolling the signing certificate via MOK, verify its SHA-256 fingerprint against the value published in each release's notes. Download `unredacted-hardened.der` from the release, then:
 
 ```
-mokutil --list-new            # shows the cert about to be enrolled
-mokutil --list-enrolled       # shows already-enrolled certs
+openssl x509 -inform DER -in unredacted-hardened.der -noout -fingerprint -sha256
 ```
 
-The SHA-256 fingerprint of the enrolled cert must match the value in the release notes for the kernel version you're installing. If it doesn't, halt enrollment and email `security@unredacted.org`.
+The printed SHA-256 fingerprint must match the value in the release notes for the kernel version you're installing. If it doesn't, do **not** enroll it and email `security@unredacted.org`. See [secure-boot.md](secure-boot.md) for the full enrollment flow. After enrollment, `mokutil --list-enrolled` confirms the cert is now trusted.
 
 ## Build provenance
 

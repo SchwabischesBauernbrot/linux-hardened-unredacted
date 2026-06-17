@@ -33,14 +33,13 @@ The script:
 
 1. Fetches all source inputs and verifies their pinned hashes and signatures.
 2. Runs the build inside the recorded container image (by digest, not tag).
-3. Strips signatures from both the released `.deb`s and the rebuilt `.deb`s.
-4. SHA-256s each stripped output.
-5. Compares against the manifest's `unsigned_deb_sha256` field.
-6. On mismatch, runs `diffoscope` per file and writes the report to `repro-diff/`.
+3. Strips the signing layer from each rebuilt `.deb` (via `tools/strip-signatures.sh`) and SHA-256s the result.
+4. Compares that hash against the manifest's `unsigned_deb_sha256` for each `.deb`. This is the pass/fail verdict — it needs only your rebuild and the committed manifest: no private key, and not even the released `.deb`s.
+5. On mismatch only, fetches the released `.deb`, strips it the same way, and runs `diffoscope` per file into `repro-diff/` so you can see exactly what differs.
 
 Exit code 0: byte-identical (post-strip). Non-zero: divergence, and the report names the offending files.
 
-The released `.deb`s to compare against are fetched automatically from the apt repo (`https://repo.unredacted.org/debian`, override with `REPO_BASE_URL`). To compare against a local copy instead — for an offline check, or to diff two of your own builds — point `RELEASED_DIR` at a directory of the released `.deb`s:
+For the `diffoscope` diff on a mismatch, the released `.deb`s are fetched automatically from the apt repo (`https://repo.unredacted.org/debian`, override with `REPO_BASE_URL`). To use a local copy instead — for an offline check, or to diff two of your own builds — point `RELEASED_DIR` at a directory of the released `.deb`s:
 
 ```
 RELEASED_DIR=/path/to/released-debs ./tools/repro-check.sh v7.0.10-hardened1

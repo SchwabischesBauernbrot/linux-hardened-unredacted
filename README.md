@@ -2,11 +2,11 @@
 
 Hardened Linux kernel builds packaged as `.deb` for Debian (and later Ubuntu). Tracks [`anthraxx/linux-hardened`](https://github.com/anthraxx/linux-hardened) upstream and publishes through a Forgejo Debian registry fronted by Fastly.
 
-Distributed by [Unredacted](https://unredacted.org) a 501(c)(3) nonprofit.
+Distributed by [Unredacted](https://unredacted.org), a 501(c)(3) nonprofit.
 
 ## Status
 
-Phase 1: building and publishing for Debian 13 (trixie) on amd64. Install via the apt repo — see [docs/users/install.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/install.md). Multi-flavor and multi-distro are Phase 2.
+**Available now** for Debian 13 (trixie) on amd64: Phase 1 builds, signs, and publishes packages through the apt repo — see [docs/users/install.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/install.md). Multi-flavor and multi-distro (Ubuntu, Debian 12, arm64) are Phase 2.
 
 ## What this kernel changes
 
@@ -38,7 +38,7 @@ Per-symptom workarounds are in [docs/users/incompatibilities.md](https://git.unr
 
 ## Installation
 
-Once Phase 1 publishes packages, end users follow [docs/users/install.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/install.md). End-user URL: `https://repo.unredacted.org/debian` (fronted by Fastly), or directly from the origin at `https://git.unredacted.org/api/packages/unredacted/debian`.
+End users follow [docs/users/install.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/install.md). End-user URL: `https://repo.unredacted.org/debian` (fronted by Fastly), or directly from the origin at `https://git.unredacted.org/api/packages/unredacted/debian`.
 
 The apt-repo signing key (signs `InRelease`) has fingerprint:
 
@@ -54,13 +54,13 @@ GPLv2. See [LICENSE](https://git.unredacted.org/unredacted/linux-hardened-unreda
 
 ## Security
 
-- Contact: `security@unredacted.org`. PGP key fingerprint will be added to [SECURITY.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/SECURITY.md) once generated.
+- Contact: `security@unredacted.org` (PGP-encrypted preferred). Security-contact key fingerprint `5FE5DA1E6A5C7289E7A5D1F26A144C6EFB11AA0D`; the full public key is in [SECURITY.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/SECURITY.md).
 - Policy: [SECURITY.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/SECURITY.md)
 - CVE response SLA: [docs/users/cve-policy.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/cve-policy.md)
 
 ## Funding
 
-Sustained by [Unredacted](https://unredacted.org) a 501(c)(3) nonprofit. Donations fund the engineering effort behind the project; details and how to give in [docs/users/donate.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/donate.md).
+Sustained by [Unredacted](https://unredacted.org), a 501(c)(3) nonprofit. Donations fund the engineering effort behind the project; details and how to give in [docs/users/donate.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/donate.md).
 
 ## Reproducibility
 

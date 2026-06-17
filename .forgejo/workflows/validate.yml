@@ -151,9 +151,9 @@ jobs:
           echo "intent.config and POLICY.md agree"
 
   no-placeholder-digests:
-    # Pin placeholders must be replaced with concrete digests before a
-    # Phase 1 build. This job runs on push to main only; Phase 0 PRs can
-    # carry the placeholder so the scaffold builds at all.
+    # Pin placeholders must be replaced with concrete digests on main.
+    # This job runs on push to main only; feature branches can carry the
+    # placeholder so the scaffold builds at all.
     #
     # Scope is narrow: only Dockerfiles under containers/ (where the
     # build actually uses the digest). The shim track is intentionally

@@ -25,9 +25,9 @@ Three iterations have produced the current model — each removed a class of fai
 
 That pattern (using `linux-source-X.Y.Z` and `make deb-pkg`) was prohibited by an earlier project spec: no ABI tracking, no postinst/postrm hooks for grub/initramfs/MOK, not distro-recognized for upgrades. `make bindeb-pkg` produces packages that satisfy those needs through `linux-base`'s shared hooks.
 
-## Ubuntu (Tier 1: reuse the Debian build)
+## Ubuntu (Phase 2: reuse the Debian build)
 
-The kernel binary is distro-agnostic for a given arch, so the simplest way to support Ubuntu is to publish the *same* trixie-built `.deb`s to an Ubuntu apt suite — no second build, no new container. The publish tooling is already parameterized for this:
+Ubuntu is a Phase 2 target — **not yet published or validated**. The kernel binary is distro-agnostic for a given arch, so the simplest way to add Ubuntu when we do is to publish the *same* trixie-built `.deb`s to an Ubuntu apt suite — no second build, no new container. The publish tooling is already parameterized for this:
 
 - `tools/publish.py` takes `--distribution`, and `publish.yml`'s dispatch accepts any suite (`trixie`, `noble`, …). To mirror a release to Ubuntu 24.04, dispatch `publish.yml` a second time for the same `version` with `distribution=noble`. The Forgejo Debian registry creates the `noble` suite on first upload; the same `.deb`s land under `pool/noble/...`, and the per-release manifest gains a second `publishes[]` entry.
 - User-facing apt setup: [../users/install-ubuntu.md](../users/install-ubuntu.md). Secure Boot: [../users/secure-boot.md](../users/secure-boot.md) (our cert is OID-free, so Ubuntu's shim boots it via MOK).
@@ -46,4 +46,4 @@ For non-x86_64 (arm64), anthraxx doesn't currently publish a per-arch config. Th
 - Bootstrap a one-off seed by running our patched tree's `make defconfig` for arm64, applying our intent, capturing the result, and pinning by sha256 (no upstream signed reference, so the bootstrapping is a trust event the operator records explicitly).
 - Wait until anthraxx ships an arm64 config and pin to that.
 
-Ubuntu noble is available today as **Tier 1** (above, reusing the Debian build); a Tier 2 Ubuntu matrix entry — distro-matched build-deps and a separate provenance manifest — is the next step if per-distro build provenance is wanted. The kernel binary is identical either way, so Tier 2 buys provenance, not a functionally different kernel.
+Ubuntu noble can reuse the Debian build (above) without a second build, but it is a Phase 2 target — not yet published or boot-tested. A separate Ubuntu matrix entry — distro-matched build-deps and its own provenance manifest — is the next step if per-distro build provenance is wanted. The kernel binary is identical either way, so that buys provenance, not a functionally different kernel.

@@ -4,7 +4,7 @@ The hardened kernel and its modules are signed by the project's kernel + module 
 
 End users on Secure Boot trust the key by enrolling it via **MOK** (Machine Owner Key). There is no Microsoft-signed shim path; the bottom of this page explains why.
 
-This flow is the same on Debian and Ubuntu. Ubuntu's shim (≥ 15.4) refuses to *boot* a kernel signed by a key carrying the kernel's "module-signing only" usage OID — that's how it stops auto-generated DKMS keys from authorizing kernels — but our signing certificate is a plain code-signing cert with no such OID, so shim accepts it for boot once enrolled. (Ubuntu apt source: [install-ubuntu.md](install-ubuntu.md).)
+This flow is for Debian today; Ubuntu is a Phase 2 target and is not yet published (see [install-ubuntu.md](install-ubuntu.md)). When Ubuntu support lands the MOK flow is expected to be identical: Ubuntu's shim (≥ 15.4) refuses to *boot* a kernel signed by a key carrying the kernel's "module-signing only" usage OID — that's how it stops auto-generated DKMS keys from authorizing kernels — but our signing certificate is a plain code-signing cert with no such OID, so shim should accept it for boot once enrolled.
 
 ## Detecting whether you need to do anything
 

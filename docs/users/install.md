@@ -1,6 +1,6 @@
 # Installing the hardened kernel
 
-Phase 1 ships Debian 13 (`trixie`) on amd64. **Ubuntu 24.04 (noble)** is also supported, on the same packages — see [install-ubuntu.md](install-ubuntu.md). Debian 12 and arm64 follow in Phase 2.
+Phase 1 ships Debian 13 (`trixie`) on amd64 only. Ubuntu (`noble`), Debian 12 (`bookworm`), and arm64 are planned for Phase 2 and are **not yet published**. The packages are distro-agnostic at the binary level, so Ubuntu is expected to work once we publish a `noble` suite — see [install-ubuntu.md](install-ubuntu.md) for the planned setup and current status.
 
 > No warranty. This software is distributed under the GNU General Public License version 2. There is no warranty. Use at your own risk.
 
@@ -45,7 +45,7 @@ deb [signed-by=/etc/apt/keyrings/unredacted-hardened.asc] https://repo.unredacte
 
 Then `apt install linux-image-{version}-hardened-unredacted-amd64-dbg` will fetch the matching debug `.deb` (typically 1–2 GB).
 
-> Phase 1 will confirm whether Forgejo's Debian registry exposes `main` and `debug` as components of one `Release` file (one sources.list line) or as separate suites (two lines, `... trixie main` and `... trixie debug`). If the single-line form errors during `apt update` with "Conflicting distribution," switch to two `deb` lines.
+> Forgejo's Debian registry exposes `main` and `debug` as components of a single `trixie` `Release`, so the one-line form above (`... trixie main debug`) is correct. If a future registry change ever splits them into separate suites and `apt update` errors with "Conflicting distribution," switch to two `deb` lines (`... trixie main` and `... trixie debug`).
 
 ### Older (archived) versions (opt-in)
 
@@ -85,7 +85,7 @@ If `dmesg` shows `module verification failed`, see [recovery.md](recovery.md) an
 
 ## Make the hardened kernel preferred
 
-`apt upgrade` ranks stock distro kernels above the hardened kernel because of the `~hardened1` version suffix. To reverse that, install the apt pin (see [pinning.md](pinning.md)).
+The hardened kernel and your distro's stock kernel are separate packages, so they coexist and `apt upgrade` won't switch you from one to the other. If you keep the stock kernel installed as a fallback and want apt to treat the hardened kernel as preferred, install the apt pin (see [pinning.md](pinning.md)).
 
 ## Removing
 

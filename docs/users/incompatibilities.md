@@ -79,9 +79,29 @@ This widens the kernel's attack surface; only do it if you need user namespaces.
 
 **Symptom:** `kexec_load` fails; `kdump` cannot capture.
 
-**Cause:** `CONFIG_KEXEC=n` in the hardened config.
+**Cause:** `CONFIG_KEXEC=n` and `CONFIG_KEXEC_FILE=n` — kexec is compiled out (not a runtime toggle), so kdump's load path is unavailable too.
 
-**Workaround:** None. kexec is disabled by design. Use an alternative crash-collection mechanism.
+**Workaround:** None. kexec is compiled out by design. Use an alternative crash-collection mechanism.
+
+**Status:** Working as designed.
+
+## Hibernation (suspend-to-disk)
+
+**Symptom:** `systemctl hibernate` fails; the machine never suspends to disk.
+
+**Cause:** `CONFIG_HIBERNATION` is not set — compiled out. Hibernation writes a full, unverified kernel image to swap and reloads it on resume, an unauthenticated kernel-state injection path.
+
+**Workaround:** None. Suspend-to-RAM (`systemctl suspend`) is unaffected.
+
+**Status:** Working as designed.
+
+## Checkpoint/restore (CRIU)
+
+**Symptom:** `criu` and `docker checkpoint` (experimental) fail.
+
+**Cause:** `CONFIG_CHECKPOINT_RESTORE` is not set — compiled out.
+
+**Workaround:** None. Ordinary container run/stop is unaffected; only checkpoint/restore and CRIU-based live migration are.
 
 **Status:** Working as designed.
 
@@ -99,11 +119,11 @@ Per-release test results:
 
 | linux-hardened version | nvidia DKMS version | Result |
 | ---------------------- | ------------------- | ------ |
-| _(not yet tested; first row appears with Phase 1)_ |  |  |
+| _(no results published in this table yet)_ |  |  |
 
 ## DKMS modules
 
-ZFS is in the Phase 1 acceptance criteria. WireGuard is in-tree as of 5.6 and should not need DKMS.
+ZFS is a tracked DKMS target. WireGuard is in-tree as of 5.6 and should not need DKMS.
 
 | Module | linux-hardened version | Module version | Result |
 | ------ | ---------------------- | -------------- | ------ |

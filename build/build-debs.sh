@@ -167,7 +167,7 @@ find . -maxdepth 1 -name 'localversion*' -print | sed 's|^|  |' \
 # Similarly, on amd64 we need CONFIG_X86_64=y; without it we'd build
 # a 32-bit kernel and the .deb naming + sign assumptions all break.
 #
-# These checks are intentionally strict for Phase 0 — we always want
+# These checks are intentionally strict — we always want
 # Secure-Boot-signable kernels. Loosen if/when we add non-EFI build
 # targets (VM appliances, embedded).
 echo "=== pre-build sanity ==="
