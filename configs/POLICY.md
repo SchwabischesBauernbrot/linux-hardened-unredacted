@@ -4,7 +4,7 @@ The audit trail for every hardening choice we take a position on. The build seed
 
 **Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
 
-The four sysctls in the "Sysctls" section below ship in the `unredacted-hardened-defaults` package (a small arch-independent `.deb` pulled in by the `linux-image-hardened-unredacted-amd64` meta-package), which installs `configs/sysctl.d/99-hardened.conf` to `/usr/lib/sysctl.d/`. They are not kernel CONFIG_ options; without that package the documented policy values are not in effect. They live in a separate package rather than the kernel `.deb` so two concurrently-installed kernel versions don't conflict over the same file path.
+The five sysctls in the "Sysctls" section below ship in the `unredacted-hardened-defaults` package (a small arch-independent `.deb` pulled in by the `linux-image-hardened-unredacted-amd64` meta-package), which installs `configs/sysctl.d/99-hardened.conf` to `/usr/lib/sysctl.d/`. They are not kernel CONFIG_ options; without that package the documented policy values are not in effect. They live in a separate package rather than the kernel `.deb` so two concurrently-installed kernel versions don't conflict over the same file path.
 
 ## Memory safety
 
@@ -213,6 +213,12 @@ User impact: rootless Docker, rootless Podman, LXC unprivileged, Chromium sandbo
 Restricts perf events, BPF program loading, and ptrace to root. Together these close a large fraction of the "local user pivots to other-process or kernel" attack patterns.
 
 User impact: covered in [docs/users/incompatibilities.md](../docs/users/incompatibilities.md). Matches linux-hardened upstream.
+
+### `vm.unprivileged_userfaultfd=0`
+
+Restricts the `userfaultfd` syscall to privileged (root) callers. We keep `CONFIG_USERFAULTFD=y` (see the attack-surface note above; anthraxx compiles it out) so root-only consumers — some container runtimes and live-migration tooling — keep working, while this sysctl removes the unprivileged use that makes userfaultfd a convenient use-after-free exploitation primitive. The value pins the mainline kernel default (`0`) explicitly, so the posture is declared rather than inherited.
+
+User impact: negligible — unprivileged `userfaultfd` is rarely depended on, and CRIU (its main consumer) is already disabled via `# CONFIG_CHECKPOINT_RESTORE is not set`. linux-hardened goes further and compiles the syscall out entirely; pinning the sysctl is our defense-in-depth equivalent while keeping it available to root.
 
 ## Container NAT (project pin)
 
