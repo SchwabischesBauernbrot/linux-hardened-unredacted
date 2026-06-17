@@ -4,7 +4,7 @@ The audit trail for every hardening choice we take a position on. The build seed
 
 **Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
 
-The five sysctls in the "Sysctls" section below ship in the `unredacted-hardened-defaults` package (a small arch-independent `.deb` pulled in by the `linux-image-hardened-unredacted-amd64` meta-package), which installs `configs/sysctl.d/99-hardened.conf` to `/usr/lib/sysctl.d/`. They are not kernel CONFIG_ options; without that package the documented policy values are not in effect. They live in a separate package rather than the kernel `.deb` so two concurrently-installed kernel versions don't conflict over the same file path.
+The seven sysctls in the "Sysctls" section below ship in the `unredacted-hardened-defaults` package (a small arch-independent `.deb` pulled in by the `linux-image-hardened-unredacted-amd64` meta-package), which installs `configs/sysctl.d/99-hardened.conf` to `/usr/lib/sysctl.d/`. They are not kernel CONFIG_ options; without that package the documented policy values are not in effect. They live in a separate package rather than the kernel `.deb` so two concurrently-installed kernel versions don't conflict over the same file path.
 
 ## Memory safety
 
@@ -194,9 +194,9 @@ User impact: negligible. TIOCSTI has been deprecated for years; the few tools th
 
 Compile-time equivalent of `kernel.perf_event_paranoid=3`: restricts the `perf_event_open` syscall to root by default. Backstops the sysctl of the same effect (see Sysctls below) so the restriction holds even if the `99-hardened.conf` drop-in is absent or overridden. linux-hardened patch default `y`. Matches linux-hardened upstream.
 
-### `CONFIG_USERFAULTFD=y`
+### `# CONFIG_USERFAULTFD is not set`
 
-Kept on with the sysctl restriction `vm.unprivileged_userfaultfd=0` (see Sysctls below). anthraxx compiles `userfaultfd` out entirely (`=n`) — a stricter stance. We retain the syscall for root-only use because some live-migration tools (CRIU is already off, but container runtimes like CRI-O and certain Kubernetes deployments use it occasionally) depend on it being available to privileged callers. Defense-in-depth via the sysctl gives us most of the protection (unprivileged userspace can't use it as a use-after-free exploit primitive) without breaking those tools. Potential future adoption of anthraxx's compile-out posture, pending an audit of user-infra dependencies.
+Compiled out entirely, matching anthraxx. `userfaultfd` is a well-known use-after-free exploitation primitive (a process can stall page faults to widen race windows); removing it closes that path for **all** privilege levels, not just unprivileged callers. We previously kept it on with the `vm.unprivileged_userfaultfd=0` sysctl, but the only consumer that justified keeping it — CRIU — is already disabled (`# CONFIG_CHECKPOINT_RESTORE is not set`), and `userfaultfd` for QEMU post-copy live migration is a *hypervisor-host* facility (our hypervisors run a stock kernel; the hardened kernel runs only inside guests), so compiling it out of the guest kernel does not affect migration. `olddefconfig` also drops the dependent `HAVE_ARCH_USERFAULTFD_WP` and `PTE_MARKER_UFFD_WP`. Matches linux-hardened upstream.
 
 ## Sysctls
 
@@ -214,11 +214,17 @@ Restricts perf events, BPF program loading, and ptrace to root. Together these c
 
 User impact: covered in [docs/users/incompatibilities.md](../docs/users/incompatibilities.md). Matches linux-hardened upstream.
 
-### `vm.unprivileged_userfaultfd=0`
+### `kernel.kptr_restrict=2`
 
-Restricts the `userfaultfd` syscall to privileged (root) callers. We keep `CONFIG_USERFAULTFD=y` (see the attack-surface note above; anthraxx compiles it out) so root-only consumers — some container runtimes and live-migration tooling — keep working, while this sysctl removes the unprivileged use that makes userfaultfd a convenient use-after-free exploitation primitive. The value pins the mainline kernel default (`0`) explicitly, so the posture is declared rather than inherited.
+Hides kernel pointers (`%pK`) from everyone, including root, defeating address-harvesting used to defeat KASLR or target exploits. Consistent with the already-shipped `dmesg_restrict` / `perf_event_paranoid` posture; the usability cost (kernel-symbol resolution in some profilers) is near-zero for us given unprivileged perf/BPF are already restricted.
 
-User impact: negligible — unprivileged `userfaultfd` is rarely depended on, and CRIU (its main consumer) is already disabled via `# CONFIG_CHECKPOINT_RESTORE is not set`. linux-hardened goes further and compiles the syscall out entirely; pinning the sysctl is our defense-in-depth equivalent while keeping it available to root.
+### `net.core.bpf_jit_harden=2`
+
+Constant-blinds the BPF JIT for all users, mitigating JIT-spray. Relevant because the BPF JIT is always on; unprivileged BPF is already disabled, so this hardens the privileged-BPF path that remains (tc/XDP/tracing).
+
+### `dev.tty.ldisc_autoload=0`
+
+Blocks on-demand autoloading of TTY line disciplines (a historic local-privilege-escalation surface via `TIOCSETD`). Shipped as a sysctl rather than compiling line-discipline autoload out, so the rare serial/PPP user can re-enable it with an `/etc/sysctl.d` override.
 
 ## Container NAT (project pin)
 
@@ -229,6 +235,58 @@ User impact: negligible — unprivileged `userfaultfd` is rarely depended on, an
 Container runtimes (Docker, Podman, containerd) program their bridge NAT through the `iptables-nft` backend, which resolves the `MASQUERADE` and `SNAT`/`DNAT` rule targets to the generic xtables modules `xt_MASQUERADE` and `xt_nat`. The kernel tree advances ahead of anthraxx's pinned `config.x86_64` seed (the seed routinely lags the built version); the 6.12 → 7.0 Kconfig refactor removed the old `IP_NF_TARGET_MASQUERADE` symbol that used to `select` the xt MASQUERADE target, so `olddefconfig` left it off even though its dependency (`NF_NAT`) is met. Result: `dockerd` aborted at startup — `Extension MASQUERADE revision 0 not supported, missing kernel module`. We pin both generic xt targets explicitly in `intent.config` so they no longer hinge on a symbol that disappeared upstream. These are loadable modules and add no attack surface until loaded; a container-compat fix, not a hardening choice.
 
 The broader legacy xtables stacks (`ip_tables` / `ip6_tables` / `ebtables` / `arptables` and their mangle/raw/security tables) deliberately stay off: traffic routes through nftables, so they are vestigial for our targets, and omitting them keeps the attack surface smaller. Re-enable a specific legacy module here only when a concrete workload is shown to need `iptables-legacy`.
+
+## Inherited-hardening insurance pins
+
+These symbols are all set identically by anthraxx's seed and appear in the shipped `final.config`; we pin them in `configs/intent.config` so a future seed bump cannot silently drop one (previously they were covered only by the release-to-release `tools/check-hardening-drift.sh`, not the configure-time fidelity assertion). None changes behaviour.
+
+### `CONFIG_CPU_MITIGATIONS=y`, `CONFIG_MITIGATION_PAGE_TABLE_ISOLATION=y`, `CONFIG_MITIGATION_RETPOLINE=y`, `CONFIG_MITIGATION_RETHUNK=y`
+
+`CONFIG_CPU_MITIGATIONS=y` is the master switch for every per-vulnerability CPU mitigation; losing it is the compile-time equivalent of booting `mitigations=off`. The other three are the structural mitigations the rest build on: KPTI (Meltdown), retpoline and return-thunk (Spectre-v2 / retbleed). We deliberately do **not** pin the ~21 per-CPU-vulnerability mitigation symbols (SRSO, GDS, RFDS, SPECTRE_BHI, …) — they are added or renamed almost every kernel release and are gated by the master switch, so pinning them would only produce spurious fidelity-assertion failures on each bump. Matches anthraxx.
+
+### `CONFIG_LSM="landlock,lockdown,yama,integrity,bpf"`, `CONFIG_SECURITY_YAMA=y`, `CONFIG_SECURITY_LANDLOCK=y`, `CONFIG_SECURITY_LOADPIN=y`, `CONFIG_SECURITY_LOADPIN_ENFORCE=y`, `CONFIG_SECURITY_SAFESETID=y`
+
+Pins the active LSM set and ordering plus the stacked LSMs: Yama (ptrace scope), Landlock (unprivileged sandboxing), LoadPin + enforce (pin kernel-file loads to one verified filesystem), and SafeSetID (constrain set*id transitions). The lockdown LSM is pinned separately under Module + kernel integrity. Matches anthraxx.
+
+### `CONFIG_X86_KERNEL_IBT=y`, `CONFIG_X86_USER_SHADOW_STACK=y`
+
+Hardware CET: IBT is coarse forward-edge control-flow integrity via `endbr` landing pads (the GCC-compatible counterpart to the Clang-only kernel CFI we cannot build), and the user shadow stack gives backward-edge protection for userspace. Both no-op gracefully on pre-CET CPUs. Matches anthraxx.
+
+### `CONFIG_IOMMU_DEFAULT_DMA_STRICT=y`, `# CONFIG_IOMMU_DEFAULT_PASSTHROUGH is not set`
+
+Strict mode flushes the IOMMU TLB before a page can be reused, closing the window a malicious DMA-capable device could exploit; passthrough (no translation) stays off. We do not additionally force the IOMMU on at boot, to avoid boot regressions on arbitrary general-user hardware. Matches anthraxx.
+
+### `CONFIG_BPF_UNPRIV_DEFAULT_OFF=y`, `# CONFIG_USER_NS_UNPRIVILEGED is not set`
+
+Compile-time backstops for the `kernel.unprivileged_bpf_disabled=1` and `kernel.unprivileged_userns_clone=0` sysctls, so the restriction holds even without the `unredacted-hardened-defaults` package installed. Matches anthraxx.
+
+### `CONFIG_RANDOM_KMALLOC_CACHES=y`, `CONFIG_SLAB_BUCKETS=y`, `CONFIG_HARDENED_USERCOPY_DEFAULT_ON=y`
+
+Heap-hardening companions to the already-pinned slab options: randomized kmalloc cache selection (heap-grooming / use-after-free mitigation), separate caches for user-controlled allocation sizes, and the default-on switch that makes hardened usercopy active. Match anthraxx.
+
+### `CONFIG_STACKPROTECTOR=y`, `CONFIG_X86_UMIP=y`, `CONFIG_RESET_ATTACK_MITIGATION=y`
+
+`STACKPROTECTOR` is the parent of the already-pinned `STACKPROTECTOR_STRONG`. UMIP blocks userspace `SGDT` / `SIDT` / `SLDT` / `SMSW` / `STR` (KASLR-leak primitives). The reset-attack mitigation asks firmware to overwrite memory on an unclean reset (cold-boot mitigation). Match anthraxx.
+
+## Additional hardening (beyond anthraxx)
+
+Net-new flips anthraxx does not set, chosen for zero meaningful breakage on our targets. These are deliberate divergences in the stricter direction.
+
+### `CONFIG_ZERO_CALL_USED_REGS=y`
+
+Zeroes call-clobbered general-purpose registers on function return, shrinking the stale kernel pointers/data available to ROP/leak chains and reducing usable gadgets. GCC-supported and deterministic, so it does not affect reproducible builds; cost is ~1% on hot syscall paths. anthraxx leaves it off.
+
+### `CONFIG_PROC_MEM_NO_FORCE=y`
+
+Removes the `FOLL_FORCE` override when writing to `/proc/<pid>/mem`, closing a write primitive that can bypass memory protections. Normal ptrace-based debugging, which does not need the force override, is unaffected. anthraxx leaves the default in place.
+
+### `# CONFIG_MODULE_FORCE_LOAD is not set`
+
+Removes `insmod --force`, which would otherwise load modules with mismatched version magic. Module signature enforcement (`MODULE_SIG_FORCE`) is independent and unaffected, and DKMS does not use `--force`; removing it closes a path to loading wrong-version modules. anthraxx leaves it enabled.
+
+### `# CONFIG_SECURITY_SELINUX_DEVELOP is not set`, `# CONFIG_SECURITY_SELINUX_BOOTPARAM is not set`
+
+SELinux is compiled in but not part of our active `CONFIG_LSM` stack, so these are latent. Pinned off so that, were SELinux ever enabled, it could not be placed in permissive mode at runtime (`DEVELOP`) or disabled via a boot parameter (`BOOTPARAM`). No current user impact. anthraxx leaves both on.
 
 ## Review process
 

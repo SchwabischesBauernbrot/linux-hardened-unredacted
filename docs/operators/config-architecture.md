@@ -6,9 +6,9 @@ The build's `.config` is composed at configure time from two committed inputs pl
 
 1. **The upstream seed.** A snapshot of anthraxx's Arch `linux-hardened` `config.x86_64`, pinned by sha256 and signed-commit-verified. Lives in `configs/upstream-seed.toml`. Fetched and verified at build time by `build/fetch-seed.sh`. ~12,000 lines representing upstream linux-hardened's idea of a sane hardened kernel for the matching patch revision.
 
-2. **`configs/intent.config`.** Our overlay: 65 setting lines pinning every hardening symbol POLICY.md positions on. Two layers:
-   - **Deltas** (13 lines): where we deliberately diverge from anthraxx (stricter lockdown forcing, `MODULE_SIG_FORCE`, SHA256+RSA module-signing crypto vs their SHA512+ECDSA, XZ vs ZSTD module compression, latent_entropy off, Docker NAT modules, `USERFAULTFD` kept on with sysctl restriction).
-   - **Insurance pins** (52 lines): every other POLICY-tracked hardening symbol, pinned explicitly even when anthraxx already sets it the same way. Defense-in-depth — a future seed bump cannot silently regress one of these because the fidelity assertion (below) fires the moment one fails to land.
+2. **`configs/intent.config`.** Our overlay: 92 setting lines pinning every hardening symbol POLICY.md positions on. Two layers:
+   - **Deltas** (17 lines): where we deliberately diverge from anthraxx (stricter lockdown forcing, `MODULE_SIG_FORCE`, SHA256+RSA module-signing crypto vs their SHA512+ECDSA, XZ vs ZSTD module compression, latent_entropy off, Docker NAT modules, `USERFAULTFD` kept on with sysctl restriction).
+   - **Insurance pins** (75 lines): every other POLICY-tracked hardening symbol, pinned explicitly even when anthraxx already sets it the same way. Defense-in-depth — a future seed bump cannot silently regress one of these because the fidelity assertion (below) fires the moment one fails to land.
 
 3. **The patched kernel tree.** Upstream Linux at the tagged version plus the linux-hardened patch (`build/fetch-sources.sh` + `build/apply-patches.sh`). Independent of seed/intent; same as in every prior architecture.
 
