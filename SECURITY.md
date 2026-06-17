@@ -2,11 +2,35 @@
 
 ## Reporting
 
-Email `security@unredacted.org`, PGP-encrypted preferred. The public key fingerprint will be published here once generated.
+Email `security@unredacted.org`, PGP-encrypted preferred. The security-contact key fingerprint is:
+
+```
+5FE5DA1E6A5C7289E7A5D1F26A144C6EFB11AA0D
+```
+
+Import the public key below and confirm that fingerprint with `gpg --show-keys` before sending an encrypted report:
+
+```
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+xjMEaZfrKhYJKwYBBAHaRw8BAQdAWwHZdP0KiJm9W4cj2DgtFmbR+wry8dAT
+vlhPtQBXwDDNMXNlY3VyaXR5QHVucmVkYWN0ZWQub3JnIDxzZWN1cml0eUB1
+bnJlZGFjdGVkLm9yZz7CwBEEExYKAIMFgmmX6yoDCwkHCRBqFExu+xGqDUUU
+AAAAAAAcACBzYWx0QG5vdGF0aW9ucy5vcGVucGdwanMub3Jnnjdlrdrq40Du
+UbwRW4J/MlzY+azT/XpmFRQj35WcXl0DFQoIBBYAAgECGQECmwMCHgEWIQRf
+5doealxyieel0fJqFExu+xGqDQAAX8EA/Rag0qTQiaPCqWWgZhPaLtmIGCtG
+h7tHyvQDaTMbvBlbAP9rKjmqNaBkLsirvvZ7uGZEEOhfuL98nwxd+Cki8dcY
+A844BGmX6yoSCisGAQQBl1UBBQEBB0D+d4DwAYjG0SLpK9kHIxmmb8af3obl
+phf9NLlO/r8mWwMBCAfCvgQYFgoAcAWCaZfrKgkQahRMbvsRqg1FFAAAAAAA
+HAAgc2FsdEBub3RhdGlvbnMub3BlbnBncGpzLm9yZ+uLZSvtnN2B1bSxegAQ
+/Eyk6MHZeaN8uerKpQgFJssTApsMFiEEX+XaHmpcconnpdHyahRMbvsRqg0A
+AEpaAQCSHx9LRFzaUQoAt7Pl7NZCr0OXrpxRgpsJMpI8C7aQ1QEA4HqW+vhp
+k95pLavFmJZhDRM8RTN5Jx2hin9+AAwX0AQ=
+=Lq4H
+-----END PGP PUBLIC KEY BLOCK-----
+```
 
 Coordinate disclosure timelines per the CVE policy in [docs/users/cve-policy.md](docs/users/cve-policy.md).
-
-<!-- TODO: publish the security contact's PGP key fingerprint once generated -->
 
 ## Threat model
 
