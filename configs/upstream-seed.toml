@@ -29,8 +29,8 @@
 # the drift guard, not by a version-match gate.
 
 url        = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
-commit     = "a81351d2bab1e3da9ba9010e5c61185478002ed3"
-tag        = "7.0.11.hardened1-1"
+commit     = "6beb6172c7a1a5df2d97c22294b03a8495dac78d"
+tag        = "7.0.12.hardened1-1"
 config_path = "config.x86_64"
-sha256     = "4cb7f3058843970a24176e537b377f1604ce2dffbe56f1c828e378052987ac51"
+sha256     = "589b58d0fa313de32261e1179a0fe98201c65f6c09685336b37bb98ac4788ed9"
 signer_fpr = "E240B57E2C4630BA768E2F26FC1B547C8D8172C8"
