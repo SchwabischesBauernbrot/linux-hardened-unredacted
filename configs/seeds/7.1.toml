@@ -1,0 +1,23 @@
+# Upstream kernel config seed pin — STABLE line (7.1).
+#
+# We seed our build's .config from anthraxx's (Levente Polyak's) own Arch
+# Linux packaging repo for linux-hardened, signed-commit-verified against his
+# key (E240B57E…) + sha256.
+#
+# NOTE — the seed intentionally LAGS the kernel line: anthraxx's Arch packaging
+# has not published a 7.1 config.x86_64 yet, so the 7.1 line is seeded from the
+# current 7.0.12 config (commit below). This is by design — the seed is only a
+# baseline; `make olddefconfig` reconciles it to the 7.1 tree, the fidelity
+# assertion enforces every configs/intent.config pin, and the hardening-drift
+# guard covers inherited symbols once a 7.1 baseline exists. Bump this pin to a
+# real 7.1 config (via tools/bump-seed.sh --pin-file configs/seeds/7.1.toml
+# <ref>, or the weekly seed-bump PR) as soon as anthraxx ships one.
+#
+# Pinning model + bump procedure: docs/operators/config-architecture.md.
+
+url         = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
+commit      = "6beb6172c7a1a5df2d97c22294b03a8495dac78d"
+tag         = "7.0.12.hardened1-1"
+config_path = "config.x86_64"
+sha256      = "589b58d0fa313de32261e1179a0fe98201c65f6c09685336b37bb98ac4788ed9"
+signer_fpr  = "E240B57E2C4630BA768E2F26FC1B547C8D8172C8"
