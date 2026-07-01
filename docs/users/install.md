@@ -63,7 +63,7 @@ deb [signed-by=/etc/apt/keyrings/unredacted-hardened.asc] https://repo.unredacte
 sudo apt install linux-image-hardened-unredacted-amd64 linux-headers-hardened-unredacted-amd64
 ```
 
-This pulls the highest-version kernel currently in `main` for `trixie`. To pin a specific version, install the explicit name (e.g. `linux-image-7.0.10-hardened-unredacted-amd64`).
+This installs the current stable hardened kernel and follows it forward as new versions publish — the way Debian's own `linux-image-amd64` meta-package works. To pin one exact point release, install the fully-versioned name (e.g. `linux-image-7.0.12-hardened-unredacted-amd64`) and optionally `apt-mark hold` it — see [pinning.md](pinning.md).
 
 The install regenerates the initramfs and updates GRUB (via the distro's kernel hooks). On Secure Boot machines it does **not** auto-enroll a MOK — enroll the signing certificate yourself per [secure-boot.md](secure-boot.md) before rebooting into the hardened kernel.
 

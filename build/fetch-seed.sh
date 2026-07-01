@@ -1,24 +1,37 @@
 #!/usr/bin/env bash
-# Fetch + verify the upstream kernel-config seed pinned in
-# configs/upstream-seed.toml.
+# Fetch + verify the upstream kernel-config seed for the kernel line being
+# built: anthraxx's Arch packaging config.x86_64, verified by git verify-commit
+# (against the pinned signer fingerprint) + sha256.
 #
-# Runs in the network-ON phase of the workflow, before the
-# network-isolated configure/build step. Writes:
-#   $WORKDIR/upstream-seed.config   the verified config.x86_64 bytes
+# Seed selection (which pin file):
+#   - $SERIES set (X.Y derived from the build tag) + configs/seeds/$SERIES.toml
+#     exists  -> that file (the per-line path; the stable line advances 7.0 ->
+#     7.1 by adding seeds/7.1.toml and pointing lines.toml at it).
+#   - else $SEED_PIN_PATH if set (manual override).
+#   - else configs/upstream-seed.toml (legacy; a symlink to the stable seed).
+#
+# (Tracking an LTS line whose config Arch no longer carries would add a second
+# seed source keyed off the pin — see docs/operators/config-architecture.md.
+# The project currently ships a single stable line, so only the arch-git
+# source is wired in.)
+#
+# Runs in the network-ON phase of the workflow, before the network-isolated
+# configure/build step. Writes:
+#   $WORKDIR/upstream-seed.config   the verified config bytes
 #   $WORKDIR/seed-info.json         provenance for tools/build-manifest.py
 #
-# Verification is belt-and-suspenders:
-#   1. git verify-commit against the pinned signer fingerprint
-#      (anthraxx's key, already in keys/anthraxx.gpg).
-#   2. sha256sum of the extracted config.x86_64 against the pin.
-# Both must pass or the script aborts with a clear error.
+# tools/repro-check.sh reproduces a release by replaying the seed recorded in
+# its manifest via the FETCH_SEED_* overrides below, so it pins the HISTORICAL
+# seed regardless of what the current pin files say.
 #
 # Required env:
 #   WORKDIR    absolute writable directory
 #
 # Optional env:
-#   SEED_PIN_PATH        default: <repo>/configs/upstream-seed.toml
-#   ANTHRAXX_KEYRING     default: <repo>/keys/anthraxx.gpg
+#   SERIES                kernel line key (X.Y), selects configs/seeds/<X.Y>.toml
+#   SEED_PIN_PATH         explicit pin file (overrides SERIES selection)
+#   ANTHRAXX_KEYRING      default: <repo>/keys/anthraxx.gpg
+#   FETCH_SEED_URL/COMMIT/CONFIG_PATH/SHA256/SIGNER_FPR   pin overrides (repro)
 
 set -euo pipefail
 umask 022
@@ -26,12 +39,20 @@ umask 022
 : "${WORKDIR:?WORKDIR required}"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-pin_file="${SEED_PIN_PATH:-$repo_root/configs/upstream-seed.toml}"
 anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
 
-[[ -f $pin_file ]]         || { echo "missing seed pin: $pin_file" >&2; exit 1; }
-[[ -s $anthraxx_keyring ]] || { echo "missing anthraxx keyring: $anthraxx_keyring (see keys/README.md)" >&2; exit 1; }
-[[ -d $WORKDIR ]]          || { echo "WORKDIR $WORKDIR does not exist" >&2; exit 1; }
+[[ -d $WORKDIR ]] || { echo "WORKDIR $WORKDIR does not exist" >&2; exit 1; }
+
+# --- Resolve which seed pin to use -------------------------------------
+if [[ -n "${SERIES:-}" && -f "$repo_root/configs/seeds/${SERIES}.toml" ]]; then
+    pin_file="$repo_root/configs/seeds/${SERIES}.toml"
+elif [[ -n "${SEED_PIN_PATH:-}" ]]; then
+    pin_file="$SEED_PIN_PATH"
+else
+    pin_file="$repo_root/configs/upstream-seed.toml"
+fi
+[[ -f $pin_file ]] || { echo "missing seed pin: $pin_file" >&2; exit 1; }
+echo "seed pin file: $pin_file"
 
 # Parse a simple key="value" line from the TOML pin file. The pin is
 # hand-written + reviewed (not adversarial), so a grep+sed suffices --
@@ -45,10 +66,11 @@ toml_get() {
     printf '%s' "$raw" | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/'
 }
 
-# For normal builds, the pin comes from configs/upstream-seed.toml.
-# tools/repro-check.sh overrides via env vars to pin to a HISTORICAL seed
-# (the values stored in releases/<tag>/manifest.json's upstream_seed
-# block), which may differ from the current TOML.
+[[ -s $anthraxx_keyring ]] || { echo "missing anthraxx keyring: $anthraxx_keyring (see keys/README.md)" >&2; exit 1; }
+
+# For normal builds, values come from the pin file. tools/repro-check.sh
+# overrides via env vars to pin to a HISTORICAL seed (the values stored in
+# releases/<tag>/manifest.json's upstream_seed block).
 seed_url=${FETCH_SEED_URL:-$(toml_get url)}
 seed_commit=${FETCH_SEED_COMMIT:-$(toml_get commit)}
 seed_config_path=${FETCH_SEED_CONFIG_PATH:-$(toml_get config_path)}
@@ -63,8 +85,7 @@ echo "  sha256     : $seed_sha256"
 echo "  signer_fpr : $seed_signer"
 
 # --- Clone the pinned commit -------------------------------------------
-# Prefer a shallow fetch-by-commit so the clone is fast (the linux-hardened
-# packaging repo is small, but principle: fetch only what we need).
+# Prefer a shallow fetch-by-commit so the clone is fast.
 # GitLab supports uploadpack.allowAnySHA1InWant by default for public repos.
 # If a future server disables it, fall back to a full clone.
 clone_dir="$WORKDIR/upstream-seed.git"

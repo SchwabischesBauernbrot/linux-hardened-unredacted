@@ -4,7 +4,7 @@ The build's `.config` is composed at configure time from two committed inputs pl
 
 ## The three inputs
 
-1. **The upstream seed.** A snapshot of anthraxx's Arch `linux-hardened` `config.x86_64`, pinned by sha256 and signed-commit-verified. Lives in `configs/upstream-seed.toml`. Fetched and verified at build time by `build/fetch-seed.sh`. ~12,000 lines representing upstream linux-hardened's idea of a sane hardened kernel for the matching patch revision.
+1. **The upstream seed.** A full hardened `.config` snapshot (~12,000 lines), pinned by sha256 and fetched + verified at build time by `build/fetch-seed.sh`. The seed is selected **per kernel line** (`configs/seeds/<X.Y>.toml`, chosen by the tag-derived `SERIES`; see [Kernel lines](#kernel-lines-single-stable-line-multi-line-capable)). For the stable line it is anthraxx's Arch `linux-hardened` `config.x86_64`, signed-commit-verified. (`configs/upstream-seed.toml` remains as a back-compat symlink to the stable line's seed.)
 
 2. **`configs/intent.config`.** Our overlay: 92 setting lines pinning every hardening symbol POLICY.md positions on. Two layers:
    - **Deltas** (17 lines): where we deliberately diverge from anthraxx (stricter lockdown forcing, `MODULE_SIG_FORCE`, SHA256+RSA module-signing crypto vs their SHA512+ECDSA, XZ vs ZSTD module compression, latent_entropy off, Docker NAT modules, `USERFAULTFD` kept on with sysctl restriction).
@@ -31,6 +31,30 @@ Fail-fast happens at the fidelity assertion (~2 min after the build container st
   - `sha256sum config.x86_64` against the pinned hash in `upstream-seed.toml`. A tampered git server can't substitute different bytes without breaking the hash.
 - **Pinning.** The pin is a specific commit hash, not a branch. anthraxx (or anyone) can't move the pin under us by tagging or force-pushing; we only ever build what we explicitly bumped to.
 - **Reproducibility.** The release manifest records the full pin (`upstream_seed.{url, commit, config_path, sha256, signer_fpr, signature_verified}`). `tools/repro-check.sh` reads it back and fetches the exact same seed for independent rebuild verification.
+
+## Kernel lines (single stable line, multi-line capable)
+
+The project tracks kernel **lines** — a *line* is a kernel `major.minor` (the `series`, e.g. `7.0`), derived from a build's tag in `build-kernel.yml`. Today we track **one rolling stable line** (7.0, advancing to 7.1). The machinery below is line-parameterized, so tracking additional lines later is largely a config change rather than a rewrite.
+
+### The registry: `configs/lines.toml`
+
+One `[[line]]` block per tracked line is the single source of truth: `series`, `kind` (exactly one `stable`), `keep_in_main` (prune depth), and `seed` (the per-line seed pin path). `tools/lines.py` reads it — Python consumers import it; shell consumers call `python3 tools/lines.py <query>` (e.g. `stable-series`, `seed-path 7.0`). Seed selection, meta-package naming, prune buckets, and drift scoping all key off it.
+
+**Advancing the stable line** (7.0 → 7.1) is one reviewed edit: add `configs/seeds/7.1.toml` (via `tools/bump-seed.sh --pin-file configs/seeds/7.1.toml <7.1-arch-ref>`), repoint the `configs/upstream-seed.toml` symlink to it, and change the block's `series` + `seed`. The umbrella meta, prune buckets, and drift scope follow automatically; the first 7.1 build has no same-line drift baseline yet, so the guard correctly *skips* rather than comparing against 7.0.
+
+### Per-line seeds
+
+Each line's seed lives in `configs/seeds/<series>.toml`; `build/fetch-seed.sh` selects it from the tag-derived `SERIES`. The stable line's seed is anthraxx's Arch `config.x86_64`, signed-commit + sha256 verified (see [Trust chain](#trust-chain)) — Arch tracks current stable, so it auto-adopts new mainline hardening anthraxx picks up. `tools/bump-seed.sh` and `seed-bump.yml` keep it current.
+
+### How the mechanisms scope per line
+
+- **Meta-packages** (`build/build-debs.sh`): each line emits a versioned `linux-image-hardened-unredacted-<X.Y>-amd64`; the stable line additionally emits the unversioned umbrella `linux-image-hardened-unredacted-amd64` (Depends `>=` the stable versioned meta), so the umbrella tracks current stable and follows a 7.0 → 7.1 transition automatically.
+- **Retention** (`tools/prune.py`): buckets by `(major, minor)` with each line's own `keep_in_main`; old minors are retained per line until you retire one by setting `keep_in_main = 0` (explicit sunset).
+- **Drift baseline** (`build-kernel.yml`): scoped to the same line, so advancing 7.0 → 7.1 doesn't false-fail against a cross-series `final.config`.
+
+### Adding an LTS line later
+
+Arch packages only the current stable line, so an older LTS (e.g. a 6.x LTS) has no current Arch seed. The seed for such a line would come instead from a distro that actively maintains that LTS — e.g. Debian trixie ships the 6.12 LTS, whose complete `/boot/config-*` (extracted from its signed `linux-image` `.deb`, archive-keyring-verified) is a version-matched seed. Standing this up means reintroducing a second seed source in `fetch-seed.sh` (a `seed_type` dispatch) plus a small pin helper — deferred until an LTS line is actually wanted (the full design lives in the project plan and git history). Because a distro seed sets different *un-pinned* hardening defaults than anthraxx's, blessing such a line also needs a one-time inherited-gap audit ([`kernel-hardening-checker`](https://github.com/a13xp0p0v/kernel-hardening-checker)) promoting any real gaps into the shared `configs/intent.config`.
 
 ## Operator workflows
 
@@ -109,7 +133,7 @@ This model inherits anthraxx's hardening choices automatically (new LSMs, new ma
 
 ## When to suspect this model is wrong for a situation
 
-- **You need to ship a kernel for which anthraxx has no seed.** anthraxx tracks roughly upstream's stable cadence. If you need to ship a kernel they haven't packaged (e.g., a brand-new mainline release within hours of upstream), you'll have to either wait for them, or bootstrap a one-off seed from a stock distro config + `intent.config` + olddefconfig.
+- **You need to ship a kernel for which Arch has no current seed.** Arch packages only the current stable line. An older LTS line would be seeded from the distro that maintains it (not wired in today — see [Adding an LTS line later](#adding-an-lts-line-later)). For a brand-new mainline release within hours of upstream (before anthraxx packages it), you'll have to wait for them or bootstrap a one-off seed.
 - **You need a non-x86_64 target.** anthraxx's `config.x86_64` is x86_64-only. The `73946f6` "prepare for multi-arch" commit is scaffolding only. Other arches need an alternate seed source — Phase 2 territory.
 - **You need to ship without network at build time.** The seed fetch needs network. Mirror anthraxx's repo to your own Forgejo if upstream availability becomes a concern.
 
@@ -117,7 +141,10 @@ This model inherits anthraxx's hardening choices automatically (new LSMs, new ma
 
 | Path | Role |
 | ---- | ---- |
-| `configs/upstream-seed.toml` | Pin: URL, commit, sha256, signer fpr. |
+| `configs/lines.toml` | Registry of tracked kernel lines (series, kind, keep_in_main, seed). |
+| `tools/lines.py` | Reads `lines.toml`; importable + a CLI for shell consumers. |
+| `configs/seeds/<X.Y>.toml` | Per-line seed pin (the stable line's anthraxx Arch seed). |
+| `configs/upstream-seed.toml` | Back-compat symlink to the stable line's seed pin. |
 | `configs/intent.config` | Hardening pins (deltas + insurance). |
 | `configs/POLICY.md` | Per-symbol rationale; bidirectional parity with intent.config. |
 | `build/fetch-seed.sh` | Network-on step: clone + verify-commit + sha256-check. |

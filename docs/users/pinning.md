@@ -34,7 +34,18 @@ The hardened source line should appear with priority `990`, above any stock-dist
 Pin-Priority: 600
 ```
 
+## Track latest stable, or pin to a series
+
+Two tiers of meta-package name (mirroring Debian's `linux-image-amd64` vs `linux-image-6.1-amd64`):
+
+- `linux-image-hardened-unredacted-amd64` — the **umbrella**; tracks the current stable line and follows it forward, including across a series transition (e.g. 7.0 → 7.1).
+- `linux-image-hardened-unredacted-<X.Y>-amd64` — a **per-series** meta (e.g. `…-7.0-amd64`); stays on that kernel series across upgrades and won't jump to a newer series.
+
+Most users want the umbrella. Install the per-series name if you'd rather stay on a specific series (e.g. keep 7.0 when 7.1 ships). Both can be installed at once; they resolve to different kernels and coexist.
+
 ## Pin to a specific hardened version
+
+To freeze on one exact point release (no upgrades at all within a line):
 
 ```
 sudo apt-mark hold linux-image-7.0.10-hardened-unredacted-amd64

@@ -18,13 +18,14 @@ The fingerprint must be:
 6E229B1A2E3594F8CAE32393A2907910E8020EB0
 ```
 
-Compare against the canonical sources:
+Compare against both canonical sources:
 
 1. This repository's `README.md`.
 2. https://unredacted.org (the 501(c)(3) site).
-3. A third-party out-of-band channel (Keyoxide or social, to be published).
 
-If the fingerprint your `gpg --show-keys` prints doesn't match all reachable sources, one is stale or has been tampered with. Do not install packages until the discrepancy is resolved; email `security@unredacted.org`.
+(A third independent out-of-band channel — e.g. a Keyoxide profile — may be added later; until then, verify against the two above.)
+
+If the fingerprint your `gpg --show-keys` prints doesn't match both sources, one is stale or has been tampered with. Do not install packages until the discrepancy is resolved; email `security@unredacted.org`.
 
 ## Verify the kernel signing cert fingerprint
 

@@ -23,6 +23,8 @@ on:
 #     rather than opening a PR.
 #   - It proposes only when config.x86_64's sha256 actually changes — a
 #     commit-only bump (same config) is not worth a PR.
+#   - It bumps the stable line's seed (the only line tracked today). If more
+#     lines are added later (configs/lines.toml), extend it per line.
 
 jobs:
   propose:
@@ -39,13 +41,14 @@ jobs:
           token: ${{ secrets.SEED_BUMP_TOKEN }}
 
       # node:22-bookworm (the runner default image) ships git + curl but
-      # not gnupg (bump-seed.sh verifies the commit signature) or jq (the
-      # PR-API payload). act runs as root, so no sudo.
+      # not gnupg (bump-seed.sh verifies the commit signature), jq (the
+      # PR-API payload), or python3 (tools/lines.py resolves the stable
+      # line's seed file). act runs as root, so no sudo.
       - name: install deps
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends git gnupg jq curl ca-certificates
+          apt-get install -y --no-install-recommends git gnupg jq curl ca-certificates python3
 
       - name: evaluate + bump seed (signature-verified)
         id: bump
@@ -54,24 +57,29 @@ jobs:
         run: |
           set -euo pipefail
           ref="${REF:-origin/HEAD}"
-          echo "evaluating anthraxx seed at ref: $ref"
-          sha_of() { sed -nE 's/^sha256[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' configs/upstream-seed.toml; }
+          # Follow anthraxx's tip for the stable line (the only line tracked
+          # today; see configs/lines.toml).
+          stable=$(python3 tools/lines.py stable-series)
+          seed_file=$(python3 tools/lines.py seed-path "$stable")
+          echo "evaluating anthraxx seed for stable line $stable ($seed_file) at ref: $ref"
+          sha_of() { sed -nE 's/^sha256[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file"; }
           old_sha=$(sha_of)
           # bump-seed.sh clones anthraxx, verifies the target commit's GPG
           # signature against keys/anthraxx.gpg, recomputes config.x86_64's
-          # sha256, and rewrites configs/upstream-seed.toml in place (logging
-          # a hardening-relevant diff). A signature failure exits non-zero
-          # here and fails the job (no PR).
-          ./tools/bump-seed.sh "$ref" | tee /tmp/bump.log
+          # sha256, and rewrites the seed pin in place (logging a hardening-
+          # relevant diff). A signature failure exits non-zero here and fails
+          # the job (no PR).
+          ./tools/bump-seed.sh --pin-file "$seed_file" "$ref" | tee /tmp/bump.log
           new_sha=$(sha_of)
+          echo "seed_file=$seed_file" >> "$GITHUB_OUTPUT"
           if [[ $old_sha == "$new_sha" ]]; then
             echo "config.x86_64 unchanged vs $ref (sha256 $new_sha); nothing to propose"
             # bump-seed may have rewritten the commit/tag pin for a commit-
             # only move; revert so the working tree is clean and no PR opens.
-            git checkout -- configs/upstream-seed.toml
+            git checkout -- "$seed_file"
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
-            newcommit=$(sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' configs/upstream-seed.toml)
+            newcommit=$(sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file")
             echo "config.x86_64 changed: $old_sha -> $new_sha (commit $newcommit)"
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "newcommit=$newcommit" >> "$GITHUB_OUTPUT"
@@ -82,6 +90,7 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.SEED_BUMP_TOKEN }}
           NEWCOMMIT: ${{ steps.bump.outputs.newcommit }}
+          SEED_FILE: ${{ steps.bump.outputs.seed_file }}
         run: |
           set -euo pipefail
           if [[ -z "${FORGEJO_TOKEN:-}" ]]; then
@@ -106,7 +115,7 @@ jobs:
           git config user.name "forgejo-runner"
           git config user.email "noreply@unredacted.org"
           git switch -c "$branch"
-          git add configs/upstream-seed.toml
+          git add "$SEED_FILE"
           git commit -m "seed: bump to ${NEWCOMMIT:0:12}"
           # Authorized by the checkout-configured credential (token above).
           git push origin "$branch"

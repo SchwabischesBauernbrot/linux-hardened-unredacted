@@ -34,9 +34,13 @@ from urllib.parse import quote
 # We reuse its streaming upload and Fastly purge rather than duplicating
 # them. Importing runs publish.py's module body only (main() is guarded).
 from publish import purge_fastly, upload_deb
+# lines.py is a sibling module too; it reads configs/lines.toml (the registry
+# of tracked kernel lines) for per-line retention depth (keep_in_main). The
+# import is side-effect-free; the TOML is read only when its functions run.
+import lines as line_registry
 
 FORGEJO_BASE = "https://git.unredacted.org"
-KEEP_IN_MAIN_PER_MAJOR = 3
+DEFAULT_KEEP_IN_MAIN = 3
 # Retention rotates `main`; archived versions land in `archive`.
 SOURCE_COMPONENT = "main"
 ARCHIVE_COMPONENT = "archive"
@@ -256,44 +260,74 @@ def parse_version(v: str) -> tuple[int, ...]:
 
 def select_versions_to_archive(
     versions_in_main: list[str],
-    keep_per_major: int = KEEP_IN_MAIN_PER_MAJOR,
+    default_keep: int = DEFAULT_KEEP_IN_MAIN,
+    keep_per_line: dict[tuple[int, int], int] | None = None,
 ) -> list[str]:
     """Given the versions currently in `main`, return those to archive.
 
-    Retention keeps the newest `keep_per_major` distinct kernel-version
-    CORES (major.minor.patch-hardenedN) per major series. The packaging
-    rebuild tail (the optional `.P`) does NOT count as a separate version:
-    within a kept core only the newest rebuild stays in `main` and older
-    `.P` rebuilds archive. So a burst of packaging rebuilds on the current
-    kernel (7.0.10-hardened1, .1, .2, .3) can no longer evict an older but
-    still-supported kernel (7.0.9-hardened1) from `main` — the bug when
-    this grouped by major alone and counted every build toward the quota.
+    Retention is PER LINE: versions are bucketed by (major, minor) — the
+    kernel line key, e.g. (7, 0) or (6, 12) — and each line independently
+    keeps its newest N distinct CORES (major.minor.patch-hardenedN). N comes
+    from `keep_per_line[(major, minor)]` (the line's keep_in_main in
+    configs/lines.toml), falling back to `default_keep` for any line not in
+    the registry. A line with keep 0 archives entirely (a clean sunset knob
+    for an old stable line).
 
-    Cores beyond the newest `keep_per_major` archive in full. Versions that
-    don't parse are left in `main` and logged for operator review (prune
-    does not auto-archive a version it can't interpret).
+    Bucketing by (major, minor) rather than by leading major means a fast
+    stable line (7.1) accumulating cores can no longer evict an older but
+    still-maintained line (7.0), and any separately-tracked line gets its own
+    retention window independent of the stable churn.
+
+    The packaging rebuild tail (the optional `.P`) does NOT count as a
+    separate version: within a kept core only the newest rebuild stays in
+    `main` and older `.P` rebuilds archive. Cores beyond the newest N archive
+    in full. Versions that don't parse are left in `main` and logged for
+    operator review (prune does not auto-archive a version it can't interpret).
     """
-    # major -> core(tuple of 4 ints) -> [(version, parsed_key), ...]
-    by_major: dict[int, dict[tuple, list[tuple[str, tuple]]]] = {}
+    keep_per_line = keep_per_line or {}
+    # line(major,minor) -> core(tuple of 4 ints) -> [(version, parsed_key), ...]
+    by_line: dict[tuple[int, int], dict[tuple, list[tuple[str, tuple]]]] = {}
     for v in versions_in_main:
         parts = parse_version(v)
         if not parts:
             print(f"prune: unparseable version left in main (not archived): {v!r}",
                   file=sys.stderr)
             continue
+        line_key = parts[:2]  # (major, minor) — the kernel line
         core = parts[:4]  # (major, minor, patch, hardened); drop the .P rebuild
-        by_major.setdefault(parts[0], {}).setdefault(core, []).append((v, parts))
+        by_line.setdefault(line_key, {}).setdefault(core, []).append((v, parts))
 
     archive_candidates: list[str] = []
-    for _major, cores in by_major.items():
-        # Newest cores first; keep the first keep_per_major, archive the rest.
+    for line_key, cores in by_line.items():
+        keep = keep_per_line.get(line_key, default_keep)
+        # Newest cores first; keep the first `keep`, archive the rest.
         for idx, core in enumerate(sorted(cores, reverse=True)):
             builds = sorted(cores[core], key=lambda vp: vp[1], reverse=True)
             # Kept core: archive every rebuild except the newest. Dropped
             # core: archive all of its builds.
-            stale = builds[1:] if idx < keep_per_major else builds
+            stale = builds[1:] if idx < keep else builds
             archive_candidates.extend(v for v, _ in stale)
     return archive_candidates
+
+
+def keep_map_from_registry() -> dict[tuple[int, int], int]:
+    """Per-line keep_in_main from configs/lines.toml, keyed by (major, minor).
+
+    Returns {} (callers then fall back to --keep) if the registry can't be
+    read — prune must still work with --keep even if lines.toml is absent.
+    """
+    out: dict[tuple[int, int], int] = {}
+    try:
+        for s in line_registry.all_series():
+            keep = line_registry.keep_for_series(s)
+            if keep is None:
+                continue
+            major, _, minor = s.partition(".")
+            out[(int(major), int(minor))] = keep
+    except Exception as e:  # noqa: BLE001 - the registry is advisory here
+        print(f"prune: could not read configs/lines.toml ({e}); "
+              "using --keep for all lines", file=sys.stderr)
+    return out
 
 
 def main(argv: list[str]) -> int:
@@ -306,8 +340,10 @@ def main(argv: list[str]) -> int:
         "--owner", default="unredacted",
     )
     parser.add_argument(
-        "--keep", type=int, default=KEEP_IN_MAIN_PER_MAJOR,
-        help=f"how many minor versions per major to keep in main (default: {KEEP_IN_MAIN_PER_MAJOR})",
+        "--keep", type=int, default=DEFAULT_KEEP_IN_MAIN,
+        help="default cores to keep in main per kernel line, for lines not "
+             f"listed in configs/lines.toml (default: {DEFAULT_KEEP_IN_MAIN}); "
+             "registered lines use their keep_in_main",
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -330,7 +366,9 @@ def main(argv: list[str]) -> int:
             "dry_run": True,
             "distribution": args.distribution,
             "owner": args.owner,
-            "keep_per_major": args.keep,
+            "default_keep": args.keep,
+            "keep_per_line": {f"{m}.{n}": k
+                              for (m, n), k in keep_map_from_registry().items()},
             "note": "set FORGEJO_USER/FORGEJO_TOKEN to preview the live rotation plan",
         }, indent=2))
         return 0
@@ -340,22 +378,26 @@ def main(argv: list[str]) -> int:
     # Each selected version may span several packages (linux-image,
     # linux-headers, linux-libc-dev, and the meta-packages) — all of them
     # at that version move together.
+    keep_per_line = keep_map_from_registry()
     packages = list_packages(args.owner, user, token)
     debian_pkgs = [p for p in packages if p.get("type") == "debian"]
     versions = sorted({p["version"] for p in debian_pkgs}, key=parse_version)
-    to_archive = set(select_versions_to_archive(list(versions), args.keep))
+    to_archive = set(
+        select_versions_to_archive(list(versions), args.keep, keep_per_line)
+    )
     pkgs_to_archive = [p for p in debian_pkgs if p["version"] in to_archive]
 
     plan = {
         "owner": args.owner,
         "distribution": args.distribution,
-        "keep_per_major": args.keep,
+        "default_keep": args.keep,
+        "keep_per_line": {f"{m}.{n}": k for (m, n), k in keep_per_line.items()},
         "in_main_versions": list(versions),
         "to_archive_versions": sorted(to_archive, key=parse_version),
         "packages_to_archive": sorted(
             f"{p['name']}={p['version']}" for p in pkgs_to_archive
         ),
-        "rationale": "keep the top N minor versions per major series in main",
+        "rationale": "keep the newest N cores per kernel line (major.minor) in main",
         "dry_run": args.dry_run,
     }
     print(json.dumps(plan, indent=2, sort_keys=True))
@@ -387,14 +429,16 @@ def main(argv: list[str]) -> int:
     # failed to purge can leave a Packages index referencing now-deleted
     # pool files (apt 404s on download). An attempted-but-failed purge is
     # fatal; absent creds is a loud warning (direct-origin deploys exist).
-    failed = {c: r for c, r in purges.items() if not r.get("purged")}
-    errored = {c: r for c, r in failed.items()
-               if "missing" not in str(r.get("reason", ""))}
+    # prune always calls purge_fastly with dry_run=False, so status is one of
+    # ok|creds_missing|failed (never dry_run).
+    errored = {c: r for c, r in purges.items() if r.get("status") == "failed"}
+    creds_missing = {c: r for c, r in purges.items()
+                     if r.get("status") == "creds_missing"}
     if errored:
         print("ERROR: Fastly purge failed after rotation; stale apt metadata may "
               "reference archived/deleted pool files until TTL.", file=sys.stderr)
         return 1
-    if failed:
+    if creds_missing:
         print("WARNING: Fastly creds unset — apt metadata NOT purged after "
               "rotation.", file=sys.stderr)
     return 0

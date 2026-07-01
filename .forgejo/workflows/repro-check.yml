@@ -12,7 +12,18 @@ on:
 
 jobs:
   repro:
-    runs-on: linux-hardened
+    # Host-execution label (maps to `:host` in the runner config), NOT the
+    # containerized `linux-hardened` label the build/sign/publish jobs use.
+    # tools/repro-check.sh runs `docker run` to rebuild in the recorded
+    # container image; running this job host-side (rather than inside a job
+    # container with a mounted docker socket) avoids docker-in-docker AND
+    # keeps repro-check.sh's `docker run -v "$repo_root:/repo:ro"` bind mount
+    # correct — that path resolves on the same host the docker daemon runs on.
+    # Keeping docker/host access on this separate label, off the signing path,
+    # is deliberate. Host prerequisites (docker, sbsigntool for sbattach, jq,
+    # diffoscope) are installed once at runner provisioning — see
+    # docs/operators/runner-setup.md — not per-run.
+    runs-on: linux-hardened-host
     steps:
       - uses: actions/checkout@v4
 
@@ -31,13 +42,26 @@ jobs:
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
 
-      # Runner runs as root; no sudo (same pattern as cve-watch.yml /
-      # publish.yml / validate.yml).
-      - name: install diff tools
+      # Host execution: prerequisites are pre-installed on the runner host
+      # (not apt-installed per-run, since the job runs directly on the host,
+      # not in a disposable container). Verify them up front with a clear
+      # message rather than failing deep in repro-check.sh. diffoscope is
+      # optional (repro-check degrades to a hash-only report without it).
+      - name: check host prerequisites
         if: steps.rel.outputs.version != ''
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends jq diffoscope
+          set -euo pipefail
+          missing=""
+          for t in docker sbattach jq; do
+            command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::linux-hardened-host runner is missing required tools:$missing" >&2
+            echo "install them on the host (see docs/operators/runner-setup.md)" >&2
+            exit 1
+          fi
+          command -v diffoscope >/dev/null 2>&1 || \
+            echo "::warning::diffoscope not on host; repro-check reports hash-only diffs"
 
       - name: run repro check
         id: repro

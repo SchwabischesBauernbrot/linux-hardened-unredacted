@@ -209,6 +209,7 @@ def purge_fastly(
     if dry_run:
         return {
             "purged": False,
+            "status": "dry_run",
             "reason": "dry-run",
             "surrogate_keys": keys,
             "service_id_set": bool(service_id),
@@ -218,6 +219,7 @@ def purge_fastly(
     if not service_id or not token:
         return {
             "purged": False,
+            "status": "creds_missing",
             "reason": "FASTLY_SERVICE_ID or FASTLY_PURGE_TOKEN missing",
             "surrogate_keys": keys,
         }
@@ -254,6 +256,7 @@ def purge_fastly(
     all_ok = all(r.get("status") == 200 for r in results)
     return {
         "purged": all_ok,
+        "status": "ok" if all_ok else "failed",
         "surrogate_keys": keys,
         "results": results,
     }
@@ -348,8 +351,8 @@ def main(argv: list[str]) -> int:
     # ATTEMPTED and failed is fatal; absent creds (a direct-origin / no-CDN
     # deploy is explicitly supported, see SECURITY.md) is a loud warning.
     purge = plan["purge"]
-    if not args.dry_run and not purge.get("purged"):
-        if "missing" in str(purge.get("reason", "")):
+    if not args.dry_run and purge.get("status") != "ok":
+        if purge.get("status") == "creds_missing":
             print(
                 "WARNING: Fastly creds unset — apt metadata NOT purged. If this "
                 "repo is fronted by Fastly, clients serve stale metadata until "
@@ -357,6 +360,9 @@ def main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
         else:
+            # "failed" or any unexpected status -> fail closed: a purge that
+            # was attempted and didn't cleanly succeed may leave stale apt
+            # metadata shadowing a security release.
             print(
                 "ERROR: Fastly purge failed after a successful upload; the new "
                 "packages may be shadowed by stale cached apt metadata. See the "

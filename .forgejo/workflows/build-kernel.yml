@@ -21,13 +21,16 @@ jobs:
       # (the job container's filesystem is invisible to dind). Collapsing
       # to a single container makes the path arithmetic trivial.
       #
-      # Trade-off: the compile step no longer runs with --network=none.
-      # The build scripts don't open the network during compile (apt-get
-      # ran in the setup step), so the practical attack surface is small.
-      # Phase 1 hardening (tracked in OPERATOR_TODO.md) reintroduces
-      # isolation via `unshare -n` or `iptables -P OUTPUT DROP` inside
-      # the compile step once we can grant the runner CAP_NET_ADMIN
-      # safely.
+      # Network isolation IS enforced at compile time: the "configure +
+      # build" step below wraps configure-kernel.sh + build-debs.sh in
+      # `unshare -n`, so the kernel build runs with no network (inputs were
+      # already fetched + verified in earlier network-ON steps). If the
+      # runner cannot create a network namespace, the build falls back to
+      # running without isolation and logs a WARNING — unless the repo
+      # variable REQUIRE_NET_ISOLATION=1 is set, which turns the missing
+      # namespace into a hard failure. Granting the runner container
+      # CAP_SYS_ADMIN (what `unshare -n` requires) and setting that variable
+      # is the operator step in docs/operators/runner-setup.md.
       image: debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
     strategy:
       matrix:
@@ -149,9 +152,14 @@ jobs:
             echo "lightweight tag, falling back to commit timestamp for SOURCE_DATE_EPOCH" >&2
             sde=$(git log -1 --format=%ct "$tag^{commit}")
           fi
+          # series is the kernel line key (X.Y): it selects the per-line seed
+          # pin (configs/seeds/<X.Y>.toml) and scopes the hardening-drift
+          # baseline to the same line.
+          series="${kernel%.*}"
           echo "kernel=$kernel"             >> "$GITHUB_OUTPUT"
           echo "hardened=$hardened"         >> "$GITHUB_OUTPUT"
           echo "packaging=$packaging"       >> "$GITHUB_OUTPUT"
+          echo "series=$series"             >> "$GITHUB_OUTPUT"
           echo "source_date_epoch=$sde"     >> "$GITHUB_OUTPUT"
 
       - name: fetch sources
@@ -167,12 +175,14 @@ jobs:
           ./build/fetch-sources.sh
 
       - name: fetch + verify upstream config seed
-        # Pulls anthraxx's pinned config.x86_64 from the Arch packaging
-        # repo, runs `git verify-commit` against his pinned key fpr, and
-        # sha256-verifies the bytes. Network-ON; results land in $WORKDIR
-        # for the network-isolated configure step below.
+        # Selects the per-line seed pin (configs/seeds/<series>.toml via
+        # SERIES) — anthraxx's signed config.x86_64 for the stable line —
+        # runs `git verify-commit` against the pinned key fpr, and
+        # sha256-verifies the bytes. Network-ON; results land in $WORKDIR for
+        # the network-isolated configure step below.
         env:
           WORKDIR: ${{ runner.temp }}/work
+          SERIES: ${{ steps.ver.outputs.series }}
         run: ./build/fetch-seed.sh
 
       - name: apply patches
@@ -269,17 +279,26 @@ jobs:
         # policy gate it shouldn't enforce. First-ever build: no baseline.
         env:
           WORKDIR: ${{ runner.temp }}/work
+          SERIES: ${{ steps.ver.outputs.series }}
         run: |
           set -euo pipefail
           new="$WORKDIR/final.config"
           [[ -f $new ]] || { echo "no $new — did the build step run?" >&2; exit 1; }
+          # Scope the baseline to the SAME kernel line (X.Y). Comparing a
+          # 6.12 build against a 7.x final.config would flag every symbol
+          # that only exists (or is only enabled) on 7.x as a false
+          # regression. Match release dirs named v<series>.* (the dot is
+          # escaped so v7.0 doesn't also match v7.10).
+          esc_series=${SERIES//./\\.}
           baseline_dir=$(find releases -mindepth 2 -maxdepth 2 -name final.config \
-              -printf '%h\n' 2>/dev/null | sort -V | tail -n1 || true)
+              -printf '%h\n' 2>/dev/null \
+              | grep -E "/v${esc_series}\." \
+              | sort -V | tail -n1 || true)
           if [[ -n $baseline_dir && -f "$baseline_dir/final.config" ]]; then
-            echo "hardening-drift baseline: $baseline_dir/final.config"
+            echo "hardening-drift baseline (line $SERIES): $baseline_dir/final.config"
             ./tools/check-hardening-drift.sh "$baseline_dir/final.config" "$new"
           else
-            echo "hardening-drift: no prior release baseline in releases/; skipping"
+            echo "hardening-drift: no prior $SERIES release baseline in releases/; skipping"
           fi
 
       - name: sign kernel + modules

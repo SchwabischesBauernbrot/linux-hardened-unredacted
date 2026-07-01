@@ -228,6 +228,18 @@ Push the actual upstream `linux-hardened` tag you intend to ship. Run `publish.y
 
 Subscribe to the Forgejo RSS feed yourself, so you see what users see.
 
+## 15. Retention rotation (prune)
+
+As releases accumulate, `main` should hold only the newest few kernels per line; older ones move to the `archive` component (still installable, just not the default). Retention is **per kernel line**: each line in [`configs/lines.toml`](../../configs/lines.toml) keeps its own `keep_in_main` newest cores (the stable line keeps 3), so if more than one line is ever tracked they don't evict each other.
+
+This runs via the **`prune`** workflow (Actions → `prune`), and is **destructive** (it re-uploads old versions to `archive`, then deletes them from `main`). `tools/prune.py` has not yet been exercised against a live registry, so:
+
+1. **Always dry-run first.** Dispatch `prune` with `confirm` left **blank** — that prints the rotation plan (`to_archive_versions`, `packages_to_archive`) and changes nothing. With registry creds present it lists the live registry and shows the real plan.
+2. **Review the plan.** Confirm only versions you intend to retire are listed, and that no line you still support is being emptied.
+3. **Run for real.** Re-dispatch with `confirm` set to the **exact distribution name** (e.g. `trixie`). Any other value (or blank) stays a dry-run.
+
+The workflow reuses the publish credentials (`REGISTRY_USER`/`REGISTRY_TOKEN`, `FASTLY_*`) — no new secret to provision. Cadence: after a release once a line exceeds its keep window. To **sunset** an old stable line entirely (e.g. once everyone has moved off 7.0), give it a `[[line]]` block with `keep_in_main = 0` in `configs/lines.toml`, dry-run, then rotate.
+
 ## When something goes wrong months later
 
 The runbook above is the path through unfamiliar territory once. After that, the `cve-watch.yml` job tells you when upstream moves; you push a matching local tag; CI does the rest. The same failure modes (Debian source version drift, Pangolin/Fastly secret rotation expiry, runner image staleness) will recur. Keep this doc updated when you hit a new one.

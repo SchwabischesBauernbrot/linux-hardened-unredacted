@@ -107,10 +107,10 @@ release=$(jq -r '.outputs[0].release' "$manifest")
 arch=$(jq -r '.outputs[0].arch' "$manifest")
 
 # Pin the HISTORICAL upstream-config seed from the manifest. The current
-# repo's configs/upstream-seed.toml may have moved forward; for repro we
-# must reproduce the seed that was in effect when the release was built.
-# fetch-seed.sh respects these FETCH_SEED_* env vars and falls back to
-# the TOML otherwise.
+# repo's per-line seed pins may have moved forward; for repro we must
+# reproduce the seed that was in effect when the release was built.
+# fetch-seed.sh respects these FETCH_SEED_* env vars and falls back to the
+# pin files otherwise.
 seed_url=$(jq -r '.upstream_seed.url // empty' "$manifest")
 seed_commit=$(jq -r '.upstream_seed.commit // empty' "$manifest")
 seed_config_path=$(jq -r '.upstream_seed.config_path // empty' "$manifest")
@@ -120,12 +120,18 @@ seed_signer=$(jq -r '.upstream_seed.signer_fpr // empty' "$manifest")
     echo "manifest missing upstream_seed.{url,commit,sha256}; this release predates the seed architecture" >&2
     exit 1
 }
+seed_env=(-e "FETCH_SEED_URL=$seed_url"
+          -e "FETCH_SEED_COMMIT=$seed_commit"
+          -e "FETCH_SEED_CONFIG_PATH=$seed_config_path"
+          -e "FETCH_SEED_SHA256=$seed_sha256"
+          -e "FETCH_SEED_SIGNER_FPR=$seed_signer")
+seed_desc="$seed_commit ($seed_sha256)"
 
 rebuild_work="$work/build"
 mkdir -p "$rebuild_work"
 
 echo "rebuilding $version in $container_image (SOURCE_DATE_EPOCH=$source_date_epoch)"
-echo "  pinned seed: $seed_commit ($seed_sha256)"
+echo "  pinned seed: $seed_desc"
 # The dep-install block mirrors .forgejo/workflows/build-kernel.yml's
 # "install build deps" step; keep the two in sync when either changes.
 # We can't share a script: the CI installs deps before actions/checkout
@@ -139,11 +145,7 @@ docker run --rm \
     -e DISTRO="$distro" -e RELEASE="$release" -e ARCH="$arch" \
     -e REVISION=1 \
     -e SOURCE_DATE_EPOCH="$source_date_epoch" \
-    -e FETCH_SEED_URL="$seed_url" \
-    -e FETCH_SEED_COMMIT="$seed_commit" \
-    -e FETCH_SEED_CONFIG_PATH="$seed_config_path" \
-    -e FETCH_SEED_SHA256="$seed_sha256" \
-    -e FETCH_SEED_SIGNER_FPR="$seed_signer" \
+    "${seed_env[@]}" \
     "$container_image" \
     bash -euo pipefail -c '
         apt-get update -q

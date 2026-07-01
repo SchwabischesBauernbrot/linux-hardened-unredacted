@@ -150,6 +150,83 @@ jobs:
           fi
           echo "intent.config and POLICY.md agree"
 
+  dep-list-parity:
+    # The kernel-build apt dep list is hand-maintained in THREE places that
+    # must stay consistent or a build done in one environment won't reproduce
+    # in another:
+    #   - .forgejo/workflows/build-kernel.yml  ("install build deps" step)
+    #   - containers/Dockerfile.runner-trixie-amd64  (the pre-built runner image)
+    #   - tools/repro-check.sh  (its inline rebuild deps)
+    # The first two must be IDENTICAL (wiring in the runner image is a no-op
+    # swap). repro-check.sh intentionally omits a known subset (nodejs for JS
+    # actions, sbsigntool for signing, jq/curl used only by the workflow, not
+    # the rebuild). This guards both invariants so the "keep in sync" comments
+    # can't silently rot.
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - name: build-deps consistent across the three locations
+        run: |
+          set -euo pipefail
+          # Extract the explicit hand-install package set: the apt-get install
+          # --no-install-recommends block that ends at 'devscripts'. Ignores
+          # the separate build-dep + gcc-plugin installs and apt boilerplate.
+          extract_deps() {
+            awk '
+              /apt-get[ \t]+install/ && /--no-install-recommends/ { cap=1 }
+              cap {
+                line=$0
+                gsub(/[\;]/, " ", line)
+                n=split(line, t, /[ \t]+/)
+                for (i=1;i<=n;i++) {
+                  tok=t[i]
+                  if (tok ~ /^[a-z0-9][a-z0-9.+-]*$/ && tok != "apt-get" \
+                      && tok != "install" && tok != "update" \
+                      && tok != "linux" && tok != "build-dep") print tok
+                }
+                if (line ~ /devscripts/) exit
+              }' "$1" | sort -u
+          }
+          bk=$(extract_deps .forgejo/workflows/build-kernel.yml)
+          df=$(extract_deps containers/Dockerfile.runner-trixie-amd64)
+          rc=$(extract_deps tools/repro-check.sh)
+
+          # Guard against a vacuous pass if an anchor changes and extraction
+          # silently yields nothing.
+          for pair in "build-kernel:$bk" "dockerfile:$df" "repro-check:$rc"; do
+            name=${pair%%:*}; val=${pair#*:}
+            if [[ -z $val ]]; then
+              echo "::error::extracted EMPTY dep list for $name (anchor changed?)" >&2
+              exit 1
+            fi
+          done
+
+          fails=0
+          # 1. build-kernel.yml and the runner Dockerfile must be identical.
+          if ! diff <(echo "$bk") <(echo "$df") >/dev/null; then
+            echo "::error::build-kernel.yml and Dockerfile.runner dep lists differ:" >&2
+            diff <(echo "$bk") <(echo "$df") >&2 || true
+            fails=1
+          fi
+          # 2. build-kernel MINUS repro-check must be EXACTLY the known subset.
+          EXPECTED_OMITTED="curl jq nodejs sbsigntool"
+          got=$(comm -23 <(echo "$bk") <(echo "$rc") | tr '\n' ' ' | xargs || true)
+          if [[ "$got" != "$EXPECTED_OMITTED" ]]; then
+            echo "::error::repro-check.sh dep subset drifted." >&2
+            echo "  build-kernel minus repro-check = [$got]" >&2
+            echo "  expected exactly               = [$EXPECTED_OMITTED]" >&2
+            fails=1
+          fi
+          # 3. repro-check must not ADD a package build-kernel lacks.
+          extra=$(comm -13 <(echo "$bk") <(echo "$rc") || true)
+          if [[ -n $extra ]]; then
+            echo "::error::repro-check.sh has packages absent from build-kernel.yml:" >&2
+            echo "$extra" | sed 's/^/    /' >&2
+            fails=1
+          fi
+          if (( fails > 0 )); then exit 1; fi
+          echo "dep-list parity OK ($(echo "$bk" | wc -l | xargs) pkgs; repro-check omits: $EXPECTED_OMITTED)"
+
   no-placeholder-digests:
     # Pin placeholders must be replaced with concrete digests on main.
     # This job runs on push to main only; feature branches can carry the

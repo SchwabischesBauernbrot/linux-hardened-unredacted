@@ -14,7 +14,7 @@ On top of upstream Linux, this build applies the [`anthraxx/linux-hardened`](htt
 
 That hardening comes with friction worth knowing before you install:
 
-- **Out-of-tree modules** (NVIDIA, ZFS, VirtualBox) must be rebuilt against our headers and signed. DKMS does this automatically with a machine-local MOK key you enroll once at reboot.
+- **Out-of-tree modules** (NVIDIA, ZFS, VirtualBox) must be rebuilt against our headers and signed. DKMS is designed to do this with a machine-local MOK key you enroll once at reboot (not yet validated against a published release — see [docs/users/dkms.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/dkms.md)).
 - **Rootless containers** (Docker, Podman), the Chromium sandbox, Snap, and Flatpak depend on unprivileged user namespaces, which are off by default. Re-enable them via the opt-in in [docs/users/incompatibilities.md](https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/incompatibilities.md).
 - **kexec/kdump, hibernation, and `/dev/mem`-based tools** do not work.
 - **Every module must be signed.** An unsigned out-of-tree module will not load (`MODULE_SIG_FORCE`).
