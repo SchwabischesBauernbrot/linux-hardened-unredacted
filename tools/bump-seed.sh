@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Bump the pinned upstream-config seed in configs/upstream-seed.toml.
+# Bump the pinned upstream-config seed — the stable line's anthraxx Arch
+# config.x86_64 — in a per-line seed file (configs/seeds/<X.Y>.toml, or the
+# legacy configs/upstream-seed.toml symlink).
 #
 # Usage:
-#   tools/bump-seed.sh <commit-or-tag>
+#   tools/bump-seed.sh [--pin-file FILE] <commit-or-tag>
 #
 # Examples:
-#   tools/bump-seed.sh 7.0.10.hardened1-1       # bump to a tag
-#   tools/bump-seed.sh 1a2b3c4d…                # bump to a specific commit
+#   tools/bump-seed.sh 7.0.10.hardened1-1                       # default pin file
+#   tools/bump-seed.sh --pin-file configs/seeds/7.0.toml HEAD   # a specific line
+#   tools/bump-seed.sh 1a2b3c4d…                                # a specific commit
+#
+# --pin-file defaults to configs/upstream-seed.toml (a symlink to the stable
+# line's configs/seeds/<X.Y>.toml); the symlink is resolved before rewriting
+# so the real file is edited, not the symlink.
 #
 # What it does:
 #   1. Clones anthraxx's Arch packaging repo at the given ref.
@@ -23,7 +30,16 @@
 set -euo pipefail
 umask 022
 
-ref=${1:?usage: bump-seed.sh <commit-or-tag>}
+ref=""
+pin_file=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --pin-file) pin_file="$2"; shift 2 ;;
+        -*) echo "unknown flag: $1" >&2; exit 2 ;;
+        *) ref="$1"; shift ;;
+    esac
+done
+[[ -n $ref ]] || { echo "usage: bump-seed.sh [--pin-file FILE] <commit-or-tag>" >&2; exit 2; }
 # A literal "HEAD" would resolve back to the pinned commit after the detached
 # baseline checkout below (bumping the seed to itself). Rewrite it to
 # origin/HEAD, which tracks anthraxx's default-branch tip. Pass an explicit
@@ -31,7 +47,11 @@ ref=${1:?usage: bump-seed.sh <commit-or-tag>}
 [[ $ref == HEAD ]] && ref=origin/HEAD
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-pin_file="$repo_root/configs/upstream-seed.toml"
+pin_file="${pin_file:-$repo_root/configs/upstream-seed.toml}"
+# Resolve symlinks so the in-place rewrite edits the real file. The legacy
+# configs/upstream-seed.toml is a symlink to configs/seeds/<stable>.toml; a
+# bare `mv tmp symlink` would replace the symlink with a regular file.
+pin_file="$(readlink -f "$pin_file" 2>/dev/null || echo "$pin_file")"
 anthraxx_keyring="$repo_root/keys/anthraxx.gpg"
 [[ -f $pin_file ]] || { echo "missing $pin_file" >&2; exit 1; }
 [[ -s $anthraxx_keyring ]] || { echo "missing $anthraxx_keyring" >&2; exit 1; }
@@ -135,9 +155,10 @@ sed -E \
 mv "$tmp_pin" "$pin_file"
 echo "updated $pin_file"
 echo
+rel_pin="${pin_file#"$repo_root"/}"
 echo "Next steps:"
-echo "  git diff configs/upstream-seed.toml"
+echo "  git diff $rel_pin"
 echo "  # If the kconfig delta above introduced symbols you want pinned in"
 echo "  # intent.config, add them and re-check policy parity locally."
-echo "  git add configs/upstream-seed.toml [configs/intent.config configs/POLICY.md]"
+echo "  git add $rel_pin [configs/intent.config configs/POLICY.md]"
 echo "  git commit -m \"seed: bump to $ref ($new_commit)\""

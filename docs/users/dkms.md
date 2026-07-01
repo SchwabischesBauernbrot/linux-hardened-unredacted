@@ -22,7 +22,7 @@ Errors usually mean the out-of-tree module hasn't caught up with the kernel's AP
 
 The hardened kernel requires modules to be signed by a key trusted by the running kernel. DKMS-built modules are **not** signed by our project key; we never have your local DKMS build environment. DKMS signs them with a per-machine MOK key instead.
 
-Debian's `dkms` package handles this automatically: it generates a machine-local MOK key, signs each rebuilt module with it, and prompts you to enroll the key on next reboot.
+Debian's `dkms` package is designed to handle this: it generates a machine-local MOK key, signs each rebuilt module with it, and prompts you to enroll the key on next reboot. This path has not yet been validated against a published hardened release — if a rebuilt module fails to load, see the troubleshooting steps below and file an issue.
 
 If `dmesg` reports `module verification failed` after rebooting into the hardened kernel:
 
@@ -36,4 +36,4 @@ The path may differ on your distribution; `dkms status` lists the active MOK key
 
 ## Tested modules
 
-See [incompatibilities.md](incompatibilities.md) for per-release DKMS results.
+See [incompatibilities.md](incompatibilities.md) for the per-release DKMS result tables. Note: no release has been validated end-to-end yet, so those tables are placeholders for now.

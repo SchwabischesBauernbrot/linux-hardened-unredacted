@@ -1,0 +1,76 @@
+name: prune
+on:
+  # Retention rotation of the Debian registry (tools/prune.py): keep the
+  # newest N cores per kernel line in `main`, move older ones to `archive`
+  # (per-line N from configs/lines.toml). This is DESTRUCTIVE (it deletes
+  # from main after re-uploading to archive) and tools/prune.py is not yet
+  # exercised against a live registry, so this workflow DEFAULTS TO DRY-RUN:
+  # a real rotation runs only when the `confirm` input exactly equals the
+  # distribution name. Always review a dry-run plan first.
+  #
+  # Manual-dispatch only. Per spec 6.1 it holds publish credentials
+  # (registry + Fastly) and does NOT hold source-fetch or signing secrets.
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: "Distribution / codename to rotate (trixie, bookworm, noble, jammy)"
+        default: trixie
+        required: true
+        type: string
+      keep:
+        description: "Default cores kept per line for lines not in configs/lines.toml"
+        default: "3"
+        required: false
+        type: string
+      confirm:
+        description: "Type the distribution name again to run a REAL rotation. Blank = dry-run."
+        default: ""
+        required: false
+        type: string
+
+jobs:
+  prune:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # act runs the job as root; no sudo. Same pattern as publish.yml.
+      - name: install python3
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3
+
+      - name: decide mode
+        id: mode
+        env:
+          DIST: ${{ inputs.distribution }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CONFIRM" ] && [ "$CONFIRM" = "$DIST" ]; then
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            echo "REAL rotation: confirm matched distribution ($DIST)"
+          else
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+            echo "dry-run (confirm blank or did not match the distribution)"
+          fi
+
+      - name: run prune
+        env:
+          FORGEJO_USER: ${{ secrets.REGISTRY_USER }}
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          FASTLY_SERVICE_ID: ${{ secrets.FASTLY_SERVICE_ID }}
+          FASTLY_PURGE_TOKEN: ${{ secrets.FASTLY_PURGE_TOKEN }}
+          DIST: ${{ inputs.distribution }}
+          KEEP: ${{ inputs.keep }}
+          DRY_RUN: ${{ steps.mode.outputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args="--distribution $DIST --keep $KEEP"
+          if [ "$DRY_RUN" = "true" ]; then
+            args="$args --dry-run"
+          fi
+          # shellcheck disable=SC2086
+          python3 tools/prune.py $args

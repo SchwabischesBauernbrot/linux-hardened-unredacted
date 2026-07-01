@@ -1,0 +1,32 @@
+# Tracked kernel lines.
+#
+# Single source of truth for which hardened-kernel lines we build and publish,
+# and their per-line metadata. Consumed by:
+#   - build/build-debs.sh        meta-package naming (per-line + umbrella)
+#   - tools/prune.py             retention buckets + per-line keep_in_main
+#   - .forgejo/workflows/seed-bump.yml   the stable line's seed bumps
+# via the helper tools/lines.py (Python consumers import it; shell consumers
+# call `python3 tools/lines.py <query>`).
+#
+# The `series` (kernel major.minor) is the LINE KEY used everywhere: seed
+# selection (configs/seeds/<series>.toml), meta-package naming, prune
+# bucketing, and drift-baseline scoping.
+#
+# We currently track a single rolling STABLE line. The machinery is multi-line
+# capable: to track an additional line, add a [[line]] block and a matching
+# configs/seeds/<series>.toml. A second stable-cadence line anthraxx packages
+# would use an arch-git seed like the one below; an LTS line that anthraxx's
+# Arch packaging no longer carries (e.g. a 6.x LTS) would need a seed sourced
+# from the distro that maintains that LTS — see docs/operators/config-architecture.md.
+#
+# Advancing the stable line (e.g. 7.0 -> 7.1): add configs/seeds/7.1.toml,
+# repoint the configs/upstream-seed.toml symlink to it, then change the block
+# below's `series` + `seed`. The umbrella meta, prune buckets, and drift scope
+# all follow automatically. Old minors are retained per line until you retire
+# them by setting keep_in_main = 0 (explicit sunset).
+
+[[line]]
+series       = "7.0"
+kind         = "stable"
+keep_in_main = 3
+seed         = "configs/seeds/7.0.toml"

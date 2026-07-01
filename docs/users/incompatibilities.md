@@ -2,6 +2,8 @@
 
 Living document. If you hit something not listed here, file an issue with kernel version, distro, and a reproducer.
 
+> **No release has been validated end-to-end yet.** The *behaviors* described below (sysctls, compiled-out features) are authoritative — they follow directly from the kernel config and ship today. The per-module **result tables** (NVIDIA, DKMS modules) are placeholders and will be filled in as releases are tested; treat them as "not yet validated," not "known good."
+
 ## Container runtimes: Docker rootless, Podman rootless, LXC unprivileged
 
 **Symptom:** `clone3: Operation not permitted` or `unshare: cannot unshare user namespace: operation not permitted`.
@@ -45,7 +47,7 @@ This widens the kernel's attack surface; only do it if you need user namespaces.
 
 **Workaround:** Use VirtualBox's current DKMS package. Report your version on the issue.
 
-**Status:** Tested per release; results in the table below.
+**Status:** Not yet validated against a published release (see the note at the top). Expected to work via DKMS once a release is tested.
 
 ## QEMU/KVM
 

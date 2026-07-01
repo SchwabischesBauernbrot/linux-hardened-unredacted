@@ -62,8 +62,13 @@ sudo docker run --rm -v /var/lib/forgejo-runner:/data \
     --instance https://git.unredacted.org \
     --token <REGISTRATION_TOKEN> \
     --name "$(hostname -s)-runner" \
-    --labels "linux-hardened,debian-13"
+    --labels "linux-hardened,debian-13,linux-hardened-host:host"
 ```
+
+Two execution backends are registered on the one runner:
+
+- **`linux-hardened`** (and `debian-13`) — the default docker-backed label. Jobs run in a container (the runner's default image, or the one a job names via `container:`, e.g. `build-kernel.yml`'s pinned `debian:trixie`). The build, sign, publish, and validate jobs use this.
+- **`linux-hardened-host:host`** — host execution. Jobs run directly on the host shell, not in a container. **Only `repro-check.yml` uses it**, because it must run `docker run` itself (to rebuild in the recorded image) with bind-mount paths that resolve on the host. Keeping docker/host access on this separate label keeps it off the signing path. The host must have `docker`, `sbsigntool` (`sbattach`), `jq`, and `diffoscope` installed; `repro-check.yml` checks for them up front.
 
 ## Run as a service
 
@@ -95,7 +100,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now forgejo-runner
 ```
 
-The docker-socket mount lets the runner spawn each job's container (e.g. `build-kernel.yml`'s pinned `debian:trixie`) on the host docker daemon. The build runs *inside* that one container; there is no separate per-target image. Note: a job that itself needs to run `docker` — e.g. `repro-check.yml`, which rebuilds in the recorded container image — would additionally need the socket mounted into its *own* container (and the docker CLI installed), which is not configured by default; run `tools/repro-check.sh` on a docker-capable host instead.
+The docker-socket mount lets the runner spawn each job's container (e.g. `build-kernel.yml`'s pinned `debian:trixie`) on the host docker daemon. The build runs *inside* that one container; there is no separate per-target image. `repro-check.yml` is the exception: it must run `docker` *itself* (to rebuild in the recorded image), and mounting the socket into a job container would break `tools/repro-check.sh`'s `docker run -v "$repo_root:/repo:ro"` (the path would resolve on the host, not in the job container). So that job runs on the **`linux-hardened-host`** label (host execution, above) instead of in a container — `docker run` then works natively and the bind mount is correct. The nightly cron therefore runs on the host; the host needs `docker`, `sbsigntool`, `jq`, and `diffoscope` pre-installed.
 
 ## Optional: pre-built runner image
 
