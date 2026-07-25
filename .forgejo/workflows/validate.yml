@@ -82,6 +82,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m py_compile tools/*.py
+      # py_compile only proves the files parse. The doctests in prune.py cover
+      # parse_version and select_versions_to_archive -- the function that
+      # decides what gets DELETED, including the .P-rebuild handling and the
+      # per-line sunset knob. They existed (for parse_version) and had never
+      # been run by anything.
+      - run: python3 -m doctest tools/prune.py tools/lines.py
+      # Smoke-test the line registry: py_compile does not prove
+      # configs/lines.toml parses, and lines.py raises on a malformed registry
+      # (two stable lines, a bad series). Without this, a broken registry
+      # surfaces only when seed-bump.yml or a build runs.
+      - run: python3 tools/lines.py stable-series
 
   intent-matches-policy:
     # Bidirectional parity between configs/intent.config (the project's
