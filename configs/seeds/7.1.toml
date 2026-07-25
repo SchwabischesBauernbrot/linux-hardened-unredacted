@@ -4,20 +4,32 @@
 # Linux packaging repo for linux-hardened, signed-commit-verified against his
 # key (E240B57E…) + sha256.
 #
-# NOTE — the seed intentionally LAGS the kernel line: anthraxx's Arch packaging
-# has not published a 7.1 config.x86_64 yet, so the 7.1 line is seeded from the
-# current 7.0.12 config (commit below). This is by design — the seed is only a
-# baseline; `make olddefconfig` reconciles it to the 7.1 tree, the fidelity
-# assertion enforces every configs/intent.config pin, and the hardening-drift
-# guard covers inherited symbols once a 7.1 baseline exists. Bump this pin to a
-# real 7.1 config (via tools/bump-seed.sh --pin-file configs/seeds/7.1.toml
-# <ref>, or the weekly seed-bump PR) as soon as anthraxx ships one.
+# The pin below is a SAME-LINE 7.1 config (anthraxx's 7.1.4.hardened1-1). It
+# still routinely lags the kernel we build by a patch level — anthraxx changes
+# config.x86_64 in only ~1 in 4–5 tags, so his newest published config is
+# usually a few releases behind the tag being built. That is expected and
+# handled, not gated: the seed is only a baseline. `make olddefconfig`
+# reconciles it to the tree being built, the fidelity assertion enforces every
+# configs/intent.config pin, and tools/check-hardening-drift.sh diffs the
+# result against the most recent published 7.1 final.config in releases/ — so
+# a symbol we INHERIT from the seed (rather than pin in intent) cannot
+# silently regress across a seed bump.
+#
+# History, retained because it applies to any newly stood-up line: before
+# 7.1.4.hardened1-1, anthraxx had published no 7.1 config.x86_64 at all, and
+# this line was seeded CROSS-SERIES from the 7.0.12 config. That fallback is
+# the intended stopgap when a line is stood up ahead of upstream packaging,
+# but it is strictly worse than a same-line seed — a cross-series config sets
+# different UN-pinned hardening defaults, and the drift guard cannot catch the
+# difference until that line has published a release to baseline against. Bump
+# to a same-line config as soon as one ships (tools/bump-seed.sh --pin-file
+# configs/seeds/<X.Y>.toml <ref>, or the weekly seed-bump PR).
 #
 # Pinning model + bump procedure: docs/operators/config-architecture.md.
 
 url         = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
-commit     = "e7dd7be0e11a483e9cbb5a225b3a9771e879549f"
-tag        = "7.1.4.hardened1-1"
+commit      = "e7dd7be0e11a483e9cbb5a225b3a9771e879549f"
+tag         = "7.1.4.hardened1-1"
 config_path = "config.x86_64"
-sha256     = "dfb67aa3ad8e87b9657988e1df626a092b3b948c6514aa2b5f27ecaf67c2e40e"
+sha256      = "dfb67aa3ad8e87b9657988e1df626a092b3b948c6514aa2b5f27ecaf67c2e40e"
 signer_fpr  = "E240B57E2C4630BA768E2F26FC1B547C8D8172C8"

@@ -20,10 +20,15 @@
 #   2. Verifies the commit is signed by our pinned signer fingerprint
 #      (E240B57E… — anthraxx).
 #   3. Computes sha256 of config.x86_64 at that commit.
-#   4. Rewrites configs/upstream-seed.toml in place.
+#   4. Rewrites configs/upstream-seed.toml in place (values only — the file's
+#      key alignment and its header prose are left exactly as they were).
 #   5. Prints a summary diff of intent-relevant kconfig symbols between
 #      the old and new seed so the operator can include it in the commit
 #      message.
+#   6. WARNS when the bump crosses a kernel-series boundary (e.g. a 7.0 seed
+#      to a 7.1 one). Because step 4 never rewrites prose, such a bump leaves
+#      the seed file's header comment describing the OLD arrangement; that
+#      comment has to be updated by hand in the same commit.
 #
 # Run BEFORE re-tagging for a build that should incorporate seed updates.
 
@@ -52,6 +57,9 @@ pin_file="${pin_file:-$repo_root/configs/upstream-seed.toml}"
 # configs/upstream-seed.toml is a symlink to configs/seeds/<stable>.toml; a
 # bare `mv tmp symlink` would replace the symlink with a regular file.
 pin_file="$(readlink -f "$pin_file" 2>/dev/null || echo "$pin_file")"
+# Repo-relative form for anything user-facing: under CI the absolute path is a
+# long runner-workspace path that wraps badly in a log or a PR body.
+rel_pin="${pin_file#"$repo_root"/}"
 anthraxx_keyring="$repo_root/keys/anthraxx.gpg"
 [[ -f $pin_file ]] || { echo "missing $pin_file" >&2; exit 1; }
 [[ -s $anthraxx_keyring ]] || { echo "missing $anthraxx_keyring" >&2; exit 1; }
@@ -63,9 +71,16 @@ toml_get() {
 }
 url=$(toml_get url)
 old_commit=$(toml_get commit)
+old_tag=$(toml_get tag)
 old_sha=$(toml_get sha256)
 config_path=$(toml_get config_path)
 signer=$(toml_get signer_fpr)
+
+# Kernel line (X.Y) of an anthraxx packaging tag like 7.1.4.hardened1-1.
+# Empty for a commit-only pin, which the caller must tolerate.
+series_of() {
+    printf '%s' "${1:-}" | sed -nE 's/^([0-9]+\.[0-9]+)\..*/\1/p'
+}
 
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 clone_dir="$work/repo"
@@ -131,6 +146,36 @@ if [[ -n $new_tag ]]; then
 fi
 echo
 
+# Series-boundary warning. Each seed file's header comment explains WHICH
+# upstream series the seed comes from and why; this script rewrites pin VALUES
+# and never that prose, so a bump across a series boundary leaves a factually
+# wrong comment behind. That is exactly how configs/seeds/7.1.toml ended up
+# still claiming "anthraxx has not published a 7.1 config.x86_64 yet" while
+# pinned to 7.1.4.hardened1-1. seed-bump.yml embeds this whole summary in the
+# PR body, so warning here puts it in front of a human at review time.
+pin_series=$(basename "$pin_file" .toml)
+# Only meaningful for the per-line configs/seeds/<X.Y>.toml naming; a pin file
+# named anything else (a test fixture, say) shouldn't emit a bogus mismatch.
+[[ $pin_series =~ ^[0-9]+\.[0-9]+$ ]] || pin_series=""
+old_series=$(series_of "$old_tag")
+new_series=$(series_of "$new_tag")
+if [[ -n $old_series && -n $new_series && $old_series != "$new_series" ]]; then
+    echo "  WARNING -- SERIES BOUNDARY: seed moves $old_series -> $new_series"
+    if [[ -n $pin_series && $new_series == "$pin_series" ]]; then
+        echo "    Line $pin_series now has a SAME-LINE seed; it was previously seeded"
+        echo "    cross-series from $old_series. The header comment almost certainly"
+        echo "    still describes the old fallback arrangement."
+    fi
+    echo "    Re-read the header comment in $rel_pin and update it in the SAME"
+    echo "    commit/PR as this pin -- this script does not touch prose."
+    echo
+elif [[ -n $pin_series && -n $new_series && $new_series != "$pin_series" ]]; then
+    echo "  note: seed series $new_series differs from line $pin_series -- a"
+    echo "        cross-series fallback, expected only until anthraxx publishes a"
+    echo "        $pin_series config.x86_64. Confirm the header comment says so."
+    echo
+fi
+
 if [[ $old_sha == "$new_sha" ]]; then
     echo "config.x86_64 is BYTE-IDENTICAL between $old_commit and $new_commit."
     echo "Bumping the commit pin anyway (e.g. for traceability) -- no kconfig delta."
@@ -146,16 +191,37 @@ fi
 
 echo
 echo "==================== rewriting upstream-seed.toml ===================="
+# Rewrite only the VALUE, keeping each key's existing column alignment via the
+# \1 backreference. The previous form replaced the whole line and hardcoded the
+# padding (`commit     = `), which was one space short of the files' actual
+# `config_path = ` column — so every bump silently de-aligned the three keys it
+# touches while leaving the three it doesn't. Deriving the spacing from the file
+# also means a file aligned to a different width stays self-consistent.
 tmp_pin=$(mktemp)
 sed -E \
-    -e "s|^commit[[:space:]]*=.*|commit     = \"$new_commit\"|" \
-    -e "s|^tag[[:space:]]*=.*|tag        = \"${new_tag:-<commit-only>}\"|" \
-    -e "s|^sha256[[:space:]]*=.*|sha256     = \"$new_sha\"|" \
+    -e "s|^(commit[[:space:]]*=[[:space:]]*)\"[^\"]*\"|\1\"$new_commit\"|" \
+    -e "s|^(tag[[:space:]]*=[[:space:]]*)\"[^\"]*\"|\1\"${new_tag:-<commit-only>}\"|" \
+    -e "s|^(sha256[[:space:]]*=[[:space:]]*)\"[^\"]*\"|\1\"$new_sha\"|" \
     "$pin_file" > "$tmp_pin"
 mv "$tmp_pin" "$pin_file"
+# Those substitutions are value-anchored, so they are a silent no-op on a line
+# whose value isn't double-quoted — which would leave the pin unchanged while
+# this script reports success and seed-bump.yml opens a PR containing nothing.
+# Verify the rewrite landed instead of trusting it.
+for expect in "commit:$new_commit" "sha256:$new_sha" "tag:${new_tag:-<commit-only>}"; do
+    key=${expect%%:*}
+    want=${expect#*:}
+    got=$(toml_get "$key")
+    if [[ $got != "$want" ]]; then
+        echo "ERROR: failed to rewrite '$key' in $pin_file" >&2
+        echo "       got:  '${got}'" >&2
+        echo "       want: '${want}'" >&2
+        echo "       Expected a line of the form: $key = \"<value>\"" >&2
+        exit 1
+    fi
+done
 echo "updated $pin_file"
 echo
-rel_pin="${pin_file#"$repo_root"/}"
 echo "Next steps:"
 echo "  git diff $rel_pin"
 echo "  # If the kconfig delta above introduced symbols you want pinned in"
