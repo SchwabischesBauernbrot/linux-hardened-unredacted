@@ -346,10 +346,29 @@ jobs:
         env:
           WORKDIR: ${{ runner.temp }}/work
           SERIES: ${{ steps.ver.outputs.series }}
+          # Escape hatch for a REVIEWED, intentional hardening-symbol drop
+          # (e.g. upstream removed the symbol). check-hardening-drift.sh has
+          # honoured this variable since it was written, and BOTH
+          # configs/POLICY.md and docs/operators/config-architecture.md tell the
+          # operator to set it as a repo variable — but it was never listed
+          # here, so `vars.ALLOW_HARDENING_REGRESSION` never reached the script
+          # and the documented override was inert. Without it, the only way past
+          # a drift failure is a commit to main, which the stale-tag guard above
+          # then turns into "delete and re-cut the tag" — mid-CVE-SLA. Same
+          # plumbing as ALLOW_STALE_TAG and REQUIRE_NET_ISOLATION.
+          ALLOW_HARDENING_REGRESSION: ${{ vars.ALLOW_HARDENING_REGRESSION }}
         run: |
           set -euo pipefail
           new="$WORKDIR/final.config"
           [[ -f $new ]] || { echo "no $new — did the build step run?" >&2; exit 1; }
+          # An empty SERIES would make esc_series empty, the grep below match
+          # nothing, baseline_dir come back empty, and the guard "skip" — i.e.
+          # silently disable itself. It is always set by derive-version; assert
+          # rather than trust, because the failure is invisible.
+          [[ -n ${SERIES:-} ]] || {
+            echo "::error::SERIES is empty; the drift baseline cannot be scoped" >&2
+            exit 1
+          }
           # Scope the baseline to the SAME kernel line (X.Y). Comparing a
           # 6.12 build against a 7.x final.config would flag every symbol
           # that only exists (or is only enabled) on 7.x as a false
@@ -364,7 +383,13 @@ jobs:
             echo "hardening-drift baseline (line $SERIES): $baseline_dir/final.config"
             ./tools/check-hardening-drift.sh "$baseline_dir/final.config" "$new"
           else
-            echo "hardening-drift: no prior $SERIES release baseline in releases/; skipping"
+            # ::warning:: not a bare echo: a SKIPPED guard is a materially
+            # different outcome from a passed one, and a plain echo scrolls
+            # past in a 40-minute build log. This is the legitimate
+            # first-build-of-a-line case, but it is also what a mis-set SERIES
+            # or a missing releases/ dir looks like, so it should be visible in
+            # the run summary rather than buried.
+            echo "::warning::hardening-drift guard SKIPPED — no prior $SERIES release baseline in releases/"
           fi
 
       - name: sign kernel + modules
