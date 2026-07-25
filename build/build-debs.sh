@@ -26,7 +26,9 @@
 #   KERNEL_VERSION
 #   HARDENED_REVISION
 #   ARCH
-#   REVISION              kernel build version (uname -v) for traceability
+#   PACKAGING_REVISION    optional trailing .N from the tag; also becomes
+#                         KBUILD_BUILD_VERSION (uname -v), so `uname -v` is
+#                         derivable from the tag alone
 #   SOURCE_DATE_EPOCH     reproducible-build timestamp
 #
 # Optional:
@@ -41,7 +43,6 @@ umask 022
 : "${KERNEL_VERSION:?KERNEL_VERSION required}"
 : "${HARDENED_REVISION:?HARDENED_REVISION required}"
 : "${ARCH:?ARCH required}"
-: "${REVISION:?REVISION required}"
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH required for reproducible builds}"
 
 # DISTRO and RELEASE flow through the workflow for traceability but
@@ -71,6 +72,11 @@ esac
 # this, so it must be an absolute path fixed before the cd.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Must match build/configure-kernel.sh's MODULE_SIG_KEY_BASENAME and the value
+# configs/intent.config pins for CONFIG_MODULE_SIG_KEY. Not the kernel's stock
+# `signing_key.pem` -- see the intent.config comment for why.
+MODULE_SIG_KEY_BASENAME="unredacted-signing.pem"
+
 patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 [[ -d $patched_dir ]] || {
     echo "patched tree missing at $patched_dir" >&2
@@ -96,13 +102,19 @@ patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 # 7.0.9-*; ours > a hypothetical Debian 7.0.9-1 because revision
 # "hardened1" sorts above "1".
 #
-# We deliberately don't include $REVISION (github.run_number) or a
-# distro token in the version. CI reruns of the same tag are
-# bit-identical, so apt would see no change and not trigger spurious
-# upgrades. The apt repo is per-distro, so the distro identifier is
-# redundant. The build's run_number stays visible in the kernel binary
-# via KBUILD_BUILD_VERSION (uname -v) for traceability without
-# polluting the user-facing version.
+# We deliberately don't include a CI run number or a distro token in the
+# version. CI reruns of the same tag are bit-identical, so apt would see no
+# change and not trigger spurious upgrades. The apt repo is per-distro, so the
+# distro identifier is redundant.
+#
+# That bit-identical claim used to be FALSE, and this comment used to explain
+# why in the same breath as breaking it: the run number was passed through to
+# KBUILD_BUILD_VERSION "for traceability", which put it in UTS_VERSION inside
+# vmlinux. So two runs of one tag produced different bytes under the same .deb
+# version -- invisible to apt, and unreproducible by anyone, since the value was
+# recorded nowhere (repro-check.sh hard-coded REVISION=1). KBUILD_BUILD_VERSION
+# now derives from the tag instead, and the CI run number is recorded in the
+# manifest as `ci_run_number` where a verifier can actually read it.
 #
 # PACKAGING_REVISION re-ships the same upstream + hardened revision with
 # packaging-only changes. It comes from the optional trailing .N on the
@@ -215,6 +227,18 @@ echo "=== end pre-build sanity ==="
 # bindeb-pkg runs `make clean` internally, which removes generated files
 # but preserves .config. The merged .config from configure-kernel.sh is
 # what bindeb-pkg uses.
+# CONFIG_MODULE_SIG_ALL=y means `make` signs every module, so the key must be
+# present at the path .config names. configure-kernel.sh put it there; assert it
+# is still there. bindeb-pkg runs `make clean` internally, and while our
+# non-default filename is on neither CLEAN_FILES nor MRPROPER_FILES, that is a
+# kbuild internal -- fail with a clear message rather than let `make` die on
+# "No rule to make target".
+[[ -f "certs/$MODULE_SIG_KEY_BASENAME" ]] || {
+    echo "missing certs/$MODULE_SIG_KEY_BASENAME before make." >&2
+    echo "configure-kernel.sh installs it; did something clean the tree?" >&2
+    exit 1
+}
+
 echo "running make bindeb-pkg"
 echo "  KDEB_PKGVERSION=$new_version"
 echo "  LOCALVERSION=$local_version"
@@ -229,7 +253,7 @@ make \
     KDEB_PKGVERSION="$new_version" \
     LOCALVERSION="$local_version" \
     EXTRAVERSION="" \
-    KBUILD_BUILD_VERSION="$REVISION" \
+    KBUILD_BUILD_VERSION="${PACKAGING_REVISION:-1}" \
     bindeb-pkg
 
 # bindeb-pkg writes its .debs to $WORKDIR (one level above $patched_dir).
@@ -246,20 +270,83 @@ if (( ${#image_debs[@]} == 0 )); then
     exit 1
 fi
 
+# --- Post-build integrity assertions ------------------------------------
+# Three invariants the old MODULE_SIG_KEY handling silently broke. Each is a
+# hard failure: they run after `make`, so the cost of tripping one is a rebuild,
+# never a bad release.
+
+# (a) The cert kbuild embedded is OURS.
+# kbuild extracts the certificate from CONFIG_MODULE_SIG_KEY into
+# certs/signing_key.x509 and links that DER into .builtin_trusted_keys -- the
+# trust root for every module signature this kernel will accept. Assert it
+# matches our PEM's certificate. This is what converts a wrong assumption about
+# kbuild's key handling (e.g. if it had regenerated the key, which is precisely
+# why intent.config avoids the stock `certs/signing_key.pem` name) from a
+# silently mis-keyed kernel into an aborted build.
+key_src="certs/$MODULE_SIG_KEY_BASENAME"
+extracted_der="certs/signing_key.x509"
+if [[ ! -f $extracted_der ]]; then
+    echo "expected kbuild to extract $extracted_der from $key_src, but it is absent." >&2
+    echo "Check CONFIG_MODULE_SIG_KEY in .config and upstream certs/Makefile's" >&2
+    echo "extract-cert rule -- the output filename is a kbuild internal and may" >&2
+    echo "have changed." >&2
+    exit 1
+fi
+if ! openssl x509 -in "$key_src" -outform DER 2>/dev/null | cmp -s - "$extracted_der"; then
+    echo "the certificate kbuild embedded does NOT match $key_src." >&2
+    echo "This kernel would trust a key we do not hold. Refusing to package." >&2
+    exit 1
+fi
+echo "  embedded cert matches $key_src"
+
+# (b) No private key escaped into any package.
+# We now place a private key inside a tree that bindeb-pkg packages from.
+# mkdebian's headers file list does not match certs/*.pem, but assert it rather
+# than reason about it -- the cost of being wrong is publishing a signing key.
+for deb in "$WORKDIR"/*.deb; do
+    [[ -f $deb ]] || continue
+    if dpkg-deb -c "$deb" | grep -q "$MODULE_SIG_KEY_BASENAME"; then
+        echo "FATAL: $(basename "$deb") contains $MODULE_SIG_KEY_BASENAME (the PRIVATE key)." >&2
+        exit 1
+    fi
+done
+echo "  no .deb contains $MODULE_SIG_KEY_BASENAME"
+
+# Shred the in-tree key now that signing is done. The workflow's trap also
+# removes it, but that only fires at step end; narrowing the window is free.
+shred -u "$key_src" 2>/dev/null || rm -f "$key_src"
+
 # Capture the final .config so the hardening-drift guard (and any future
 # diffing) can use it as a baseline. bindeb-pkg doesn't move .config; it
 # stays in the patched tree.
 #
-# Normalize CONFIG_MODULE_SIG_KEY back to the intent placeholder first:
-# configure-kernel.sh's post-fidelity override repoints it at a per-build
-# tmpfs path ($keydir/signing.pem) so `make` can sign modules. Left in,
-# that random path makes final.config non-reproducible (a spurious one-line
-# diff every build) and commits a runner-internal path into public git when
-# publish.yml commits releases/<tag>/final.config. The placeholder is what
-# intent.config declares; the real path is pure build-runtime state.
-sed 's|^CONFIG_MODULE_SIG_KEY=.*|CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"|' \
-    "$patched_dir/.config" > "$WORKDIR/final.config"
-echo "captured final.config from $patched_dir/.config (MODULE_SIG_KEY normalized to placeholder)"
+# A plain copy: no normalization needed any more. CONFIG_MODULE_SIG_KEY is now a
+# constant in-tree path (see configs/intent.config), so what the fidelity
+# assertion checked, what the build used, and what ships are the same value.
+# This used to `sed` the value back to a placeholder, because
+# configure-kernel.sh had repointed it at a per-build `mktemp -d` path -- but
+# that only fixed THIS captured copy, while the tree's .config kept the random
+# path and bindeb-pkg shipped it as /boot/config-<rel> and (via
+# CONFIG_IKCONFIG) inside /proc/config.gz.
+cp "$patched_dir/.config" "$WORKDIR/final.config"
+echo "captured final.config from $patched_dir/.config"
+
+# (c) The .config we recorded is the .config that shipped.
+# The bug above was exactly a divergence between these two, undetected for
+# twelve releases. Assert them equal so it cannot recur silently: whatever is in
+# /boot/config-<rel> (identical bytes to /proc/config.gz, via CONFIG_IKCONFIG)
+# must equal releases/<tag>/final.config.
+img_deb=$(printf '%s\n' "${image_debs[@]}" | head -n1)
+if ! dpkg-deb --fsys-tarfile "$img_deb" \
+        | tar -xO --wildcards './boot/config-*' 2>/dev/null \
+        | cmp -s - "$WORKDIR/final.config"; then
+    echo "the .config shipped in $(basename "$img_deb") differs from the captured" >&2
+    echo "final.config. These must be byte-identical: final.config is the public" >&2
+    echo "record and the hardening-drift baseline, and /boot/config-* plus" >&2
+    echo "/proc/config.gz are what users can actually inspect." >&2
+    exit 1
+fi
+echo "  shipped /boot/config-* matches final.config"
 
 # --- Meta-packages -------------------------------------------------------
 # bindeb-pkg names its packages after the kernelrelease

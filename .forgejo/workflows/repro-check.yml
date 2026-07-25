@@ -20,9 +20,10 @@ jobs:
     # keeps repro-check.sh's `docker run -v "$repo_root:/repo:ro"` bind mount
     # correct — that path resolves on the same host the docker daemon runs on.
     # Keeping docker/host access on this separate label, off the signing path,
-    # is deliberate. Host prerequisites (docker, sbsigntool for sbattach, jq,
-    # diffoscope) are installed once at runner provisioning — see
-    # docs/operators/runner-setup.md — not per-run.
+    # is deliberate. Host prerequisites are just docker + jq, installed once at
+    # runner provisioning — see docs/operators/runner-setup.md. (sbsigntool and
+    # diffoscope were required until the verdict stopped shelling out to
+    # sbattach and diffoscope.)
     runs-on: linux-hardened-host
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=""
-          for t in docker sbattach jq; do
+          for t in docker jq; do
             command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
           done
           if [ -n "$missing" ]; then
@@ -60,8 +61,9 @@ jobs:
             echo "install them on the host (see docs/operators/runner-setup.md)" >&2
             exit 1
           fi
-          command -v diffoscope >/dev/null 2>&1 || \
-            echo "::warning::diffoscope not on host; repro-check reports hash-only diffs"
+          # sbattach and diffoscope are no longer needed: the verdict parses
+          # .debs in pure Python (tools/canonical-deb-hash.py) and reports the
+          # differing archive member directly.
 
       - name: run repro check
         id: repro

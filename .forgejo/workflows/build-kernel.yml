@@ -259,7 +259,12 @@ jobs:
           DISTRO: ${{ matrix.target.distro }}
           RELEASE: ${{ matrix.target.release }}
           ARCH: ${{ matrix.target.arch }}
-          REVISION: ${{ github.run_number }}
+          # No REVISION here any more. It used to pass github.run_number to
+          # build-debs.sh, which fed it to KBUILD_BUILD_VERSION and so into
+          # UTS_VERSION inside vmlinux -- making two runs of the same tag differ
+          # while the .deb version stayed identical, and while nothing recorded
+          # the value. KBUILD_BUILD_VERSION now derives from the tag; the run
+          # number is recorded in the manifest as ci_run_number.
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
           WORKDIR: ${{ runner.temp }}/work
           SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
@@ -270,16 +275,22 @@ jobs:
           REQUIRE_NET_ISOLATION: ${{ vars.REQUIRE_NET_ISOLATION }}
         run: |
           set -euo pipefail
-          # Materialize the project signing key + cert into a tmpfs file
-          # for the kernel build to consume as CONFIG_MODULE_SIG_KEY. The
-          # build then signs every module with our project key and embeds
-          # our cert in .builtin_trusted_keys, so the kernel intrinsically
-          # trusts our signatures without needing MOK enrollment. The same
-          # key+cert is reused by sign-debs.sh later to sign vmlinuz for
-          # UEFI Secure Boot.
+          # Materialize the project signing key + cert into a tmpfs file.
+          # configure-kernel.sh copies it to the FIXED in-tree path
+          # configs/intent.config pins (certs/unredacted-signing.pem) -- the
+          # .config value is a constant and is never rewritten, so no runner
+          # path can leak into the shipped config. The build then signs every
+          # module with our key and embeds our cert in .builtin_trusted_keys,
+          # so the kernel intrinsically trusts our signatures without MOK
+          # enrollment. The same key+cert is re-materialized by the sign step
+          # later to sign vmlinuz for UEFI Secure Boot.
           umask 077
           keydir=$(mktemp -d)
-          trap 'rm -rf "$keydir"' EXIT
+          # Clean up BOTH copies: the tmpfs staging dir and the in-tree copy.
+          # build-debs.sh shreds the in-tree key on the success path; this trap
+          # covers every failure path, where the tree is left behind for
+          # debugging and must not contain a private key.
+          trap 'rm -rf "$keydir"; rm -f "$WORKDIR"/linux-*/certs/unredacted-signing.pem' EXIT
           cat <<<"$SIGNING_KEY"  > "$keydir/signing.key"
           cat <<<"$SIGNING_CERT" > "$keydir/signing.crt"
           # The kernel build wants one PEM file containing both the key
@@ -289,10 +300,11 @@ jobs:
           openssl pkey -in "$keydir/signing.key" -noout
           openssl x509 -in "$keydir/signing.crt" -noout
           export MODULE_SIG_KEY_PATH="$keydir/signing.pem"
-          # Export the individual paths too so sign-debs.sh (which runs
-          # later in this same job, after this trap fires) re-materializes
-          # them from the same secrets — the trap rm -rf cleans this dir
-          # at the end of THIS step.
+          # Nothing is exported across steps: the trap above deletes $keydir at
+          # the end of THIS step, and the sign step re-materializes its own copy
+          # from the same secrets. (This comment previously said the paths were
+          # exported "too", which contradicted itself and invited a future
+          # editor to add a cross-step export that would defeat the cleanup.)
 
           # Run the compile with NO network. All sources are fetched and
           # build-deps installed in earlier steps; the kernel build itself
@@ -428,23 +440,27 @@ jobs:
           export SOURCE_DATE_EPOCH
           cd "$WORKDIR"
 
-          # Per-.deb unsigned (post-strip) hashes.
-          : > unsigned-deb-sha256.txt
-          for deb in *.deb; do
-            [[ -f $deb ]] || continue
-            stripped=$(mktemp --suffix=.deb)
-            "$repo/tools/strip-signatures.sh" "$deb" "$stripped"
-            sha=$(sha256sum "$stripped" | awk '{print $1}')
-            rm -f "$stripped"
-            printf '%s\t%s\n' "$deb" "$sha" >> unsigned-deb-sha256.txt
-          done
+          # Per-.deb canonical + key-independent hashes.
+          #
+          # Was: strip-signatures.sh then sha256 the result. That ends in
+          # `dpkg-deb -b`, which RECOMPRESSES data.tar with the local
+          # dpkg/liblzma defaults -- so the recorded hash depended on which
+          # machine ran the strip. The build side ran it in this container,
+          # repro-check.sh ran it on the bare host, and a verifier on any other
+          # distro got a mismatch for every package including the ~800-byte
+          # metas where the strip is a no-op. canonical-deb-hash.py never
+          # repacks: pure-stdlib parse, canonicalize content, digest a sorted
+          # description of the tree.
+          python3 "$repo/tools/canonical-deb-hash.py" ./*.deb > deb-hashes.tsv
+          echo "--- canonical hashes ---"
+          cat deb-hashes.tsv
 
           # Cheap SBOM: build-container packages + toolchain versions.
           python3 "$repo/tools/sbom.py" "$WORKDIR/sbom.json"
 
           python3 "$repo/tools/build-manifest.py" \
             --workdir "$WORKDIR" \
-            --deb-hashes "$WORKDIR/unsigned-deb-sha256.txt" \
+            --deb-hashes "$WORKDIR/deb-hashes.tsv" \
             --kernel-version "$KERNEL_VERSION" \
             --hardened-revision "$HARDENED_REVISION" \
             --container-image "$CONTAINER_IMAGE" \

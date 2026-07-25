@@ -116,9 +116,20 @@ Build module-signing into the kernel (`CONFIG_MODULE_SIG`), refuse unsigned modu
 
 Module-signing key algorithm: RSA, not ECDSA. anthraxx uses ECDSA; we deliberately diverge. RSA is more broadly compatible with downstream verifiers — older shim chains, embedded MOK utilities, distros that haven't refreshed their host-side tooling. Cryptographically sufficient for the threat model (the matching `MODULE_SIG_SHA256` paired hash gives us SHA-256 + RSA, a standard combination). A future migration to ECDSA is possible once the ecosystem catches up.
 
-### `CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"`
+### `CONFIG_MODULE_SIG_KEY="certs/unredacted-signing.pem"`
 
-Placeholder path: the kernel build's stock default. The actual signing key is materialized at CI-runtime into a tmpfs file from the project's Forgejo-resident `KERNEL_SIGNING_KEY` secret, and `build/configure-kernel.sh` `sed`-replaces this line with the runtime path *after* the fidelity assertion runs — so the ephemeral path never appears in any drift check. The placeholder exists in `intent.config` only to give the fidelity assertion a stable value to look for.
+A **fixed in-tree path**, not a placeholder. `build/configure-kernel.sh` copies the project signing key — materialized from the Forgejo-resident `KERNEL_SIGNING_KEY` secret — to exactly this path inside the kernel tree, and never rewrites the `.config` value. So the value the fidelity assertion checks is the value that ships, and it is byte-identical on every build and on any rebuilder's machine.
+
+**Why it changed.** This entry used to declare the kernel's stock `certs/signing_key.pem` while `configure-kernel.sh` rewrote the line, *after* the fidelity check, to a per-build `mktemp -d` path. The rewrite landed in the **tree's** `.config`, which `bindeb-pkg` ships as `/boot/config-<rel>`, embeds into `/proc/config.gz` via `CONFIG_IKCONFIG`, and packages in the headers `.deb`; only the separately-captured `final.config` was normalized back. Confirmed on a running machine:
+
+```
+# zcat /proc/config.gz | grep MODULE_SIG_KEY
+CONFIG_MODULE_SIG_KEY="/tmp/tmp.TliL5BYWSL/signing.pem"
+```
+
+Consequences, in ascending order: every kernel up to `v7.1.4` published a runner temp-directory name (an information leak — the private key itself was never shipped); two runs of the same tag were never bit-identical, contradicting the reproducibility claim; and because `MODULE_SIG_ALL=y` and the headers package carries that same `.config`, an out-of-tree build going through the kernel's own `modules_install` signing path reaches for a key file that does not exist.
+
+**Why not the stock name.** Upstream `certs/Makefile` guards a `FORCE` + `if_changed,gen_key` rule with `ifeq ($(CONFIG_MODULE_SIG_KEY),certs/signing_key.pem)`. Under the default name kbuild would **regenerate** our pre-placed key with a fresh random one, shipping a kernel whose `.builtin_trusted_keys` trusts a key nobody holds; that name is also on `MRPROPER_FILES`. With a non-default name no generator rule exists, so a *missing* key fails loudly rather than silently producing an ephemeral-key kernel — the failure direction we want. `build/build-debs.sh` additionally asserts, after `make`, that the DER kbuild extracted matches our certificate.
 
 ### `CONFIG_MODULE_COMPRESS_XZ=y`, `# CONFIG_MODULE_COMPRESS_ZSTD is not set`
 

@@ -29,10 +29,11 @@
 #   DISTRO RELEASE ARCH
 #
 # Optional env:
-#   MODULE_SIG_KEY_PATH   override CONFIG_MODULE_SIG_KEY to a CI-runtime
-#                         tmpfs path so the kernel build signs modules with
-#                         the project's key. Applied AFTER the fidelity
-#                         check so the runtime path never pollutes intent.
+#   MODULE_SIG_KEY_PATH   path to the key+cert PEM to install at the fixed
+#                         in-tree location configs/intent.config pins
+#                         (certs/unredacted-signing.pem). Does NOT change
+#                         .config -- the path there is a constant. Omit it only
+#                         if the key is already at that in-tree path.
 
 set -euo pipefail
 umask 022
@@ -47,6 +48,12 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 src_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 seed_config="$WORKDIR/upstream-seed.config"
 intent_config="$repo_root/configs/intent.config"
+
+# The basename of the in-tree module-signing key. Must match the value
+# configs/intent.config pins for CONFIG_MODULE_SIG_KEY, and must NOT be the
+# kernel's stock `signing_key.pem` -- see the intent.config comment for why
+# (kbuild regenerates that name). build/build-debs.sh shares this constant.
+MODULE_SIG_KEY_BASENAME="unredacted-signing.pem"
 
 [[ -d $src_dir ]]      || { echo "kernel source tree not found at $src_dir" >&2; exit 1; }
 [[ -f $seed_config ]]  || { echo "missing seed config at $seed_config (run build/fetch-seed.sh first)" >&2; exit 1; }
@@ -135,20 +142,71 @@ EOF
 fi
 echo "fidelity assertion: OK ($(grep -cE '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' "$intent_config") intent lines, all landed)"
 
-# --- Step 5: post-fidelity MODULE_SIG_KEY runtime override ------------
-# intent.config pins the kernel's stock CONFIG_MODULE_SIG_KEY placeholder
-# so the fidelity check has a stable value to assert. The kernel build
-# needs the runtime tmpfs path to the materialized project signing key;
-# replace AFTER the fidelity check so the CI-runtime path never appears
-# in any drift comparison.
+# --- Step 5: install the module-signing key at the fixed in-tree path -
+# configs/intent.config pins CONFIG_MODULE_SIG_KEY to a CONSTANT in-tree path.
+# This step puts the key THERE, and never touches .config.
+#
+# The previous version did the opposite: it left the stock placeholder in
+# intent.config and rewrote .config, after the fidelity check, to a per-build
+# `mktemp -d` path. That rewrite hit the TREE's .config, which bindeb-pkg ships
+# as /boot/config-<rel> and embeds into /proc/config.gz (CONFIG_IKCONFIG=y) --
+# so every published kernel carried a runner temp-directory name, and two runs
+# of the same tag were never bit-identical. Only the separately-captured
+# final.config was normalized. Confirmed on a running machine:
+#   CONFIG_MODULE_SIG_KEY="/tmp/tmp.TliL5BYWSL/signing.pem"
+#
+# With a constant there is nothing to rewrite, nothing to normalize, and no
+# ordering requirement against the fidelity assertion: the value asserted is
+# the value that ships.
+key_dest="certs/$MODULE_SIG_KEY_BASENAME"
+
+# Assert .config actually holds the constant, unconditionally. This is the
+# coupling between intent.config and this script; without it a future edit to
+# either could desync the config value from the install path, and the symptom
+# would be a mis-keyed kernel rather than an error.
+want_line="CONFIG_MODULE_SIG_KEY=\"$key_dest\""
+if ! grep -qxF "$want_line" .config; then
+    echo "expected .config to contain exactly:" >&2
+    echo "  $want_line" >&2
+    echo "found: $(grep -m1 '^CONFIG_MODULE_SIG_KEY=' .config || echo '<absent>')" >&2
+    echo "configs/intent.config and this script must name the same path." >&2
+    exit 2
+fi
+
 if [[ -n "${MODULE_SIG_KEY_PATH:-}" ]]; then
+    # Production: the key comes from the KERNEL_SIGNING_KEY secret, already
+    # materialized to a tmpfs file by the workflow.
     [[ -f $MODULE_SIG_KEY_PATH ]] || {
         echo "MODULE_SIG_KEY_PATH set but file missing: $MODULE_SIG_KEY_PATH" >&2
         exit 1
     }
-    echo "pinning CONFIG_MODULE_SIG_KEY=$MODULE_SIG_KEY_PATH (post-fidelity override)"
-    sed -i '/^CONFIG_MODULE_SIG_KEY=/d; /^# CONFIG_MODULE_SIG_KEY/d' .config
-    printf 'CONFIG_MODULE_SIG_KEY="%s"\n' "$MODULE_SIG_KEY_PATH" >> .config
+    openssl pkey -in "$MODULE_SIG_KEY_PATH" -noout 2>/dev/null || {
+        echo "MODULE_SIG_KEY_PATH does not contain a readable private key: $MODULE_SIG_KEY_PATH" >&2
+        exit 1
+    }
+    openssl x509 -in "$MODULE_SIG_KEY_PATH" -noout 2>/dev/null || {
+        echo "MODULE_SIG_KEY_PATH has no certificate; kbuild needs key+cert in one PEM." >&2
+        exit 1
+    }
+    install -m 0600 "$MODULE_SIG_KEY_PATH" "$key_dest"
+    echo "installed module-signing key at $key_dest (0600)"
+elif [[ -f $key_dest ]]; then
+    # A caller placed the key itself (e.g. a rebuilder using their own
+    # throwaway key). Accept it rather than overwrite.
+    echo "using pre-existing $key_dest"
+else
+    # Fail at configure (~2 min) rather than deep in `make`. Naming the three
+    # legitimate cases makes this actionable instead of cryptic.
+    echo "no module-signing key available, and one is required." >&2
+    echo "" >&2
+    echo "CONFIG_MODULE_SIG_ALL=y means kbuild signs every module during the" >&2
+    echo "build, so it needs the key+cert PEM at $key_dest. Three valid cases:" >&2
+    echo "  1. production CI: the workflow sets MODULE_SIG_KEY_PATH from the" >&2
+    echo "     KERNEL_SIGNING_KEY secret" >&2
+    echo "  2. an independent rebuild: generate a throwaway key and point" >&2
+    echo "     MODULE_SIG_KEY_PATH at it (tools/repro-check.sh does this)" >&2
+    echo "  3. you placed $key_dest yourself before running this script" >&2
+    exit 1
 fi
 
 echo "configure-kernel.sh: OK"
