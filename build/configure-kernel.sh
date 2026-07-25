@@ -89,6 +89,49 @@ make ARCH="$kernel_arch" olddefconfig
 # because a transitive dep wasn't met; an upstream rename we haven't
 # caught. Fails fast with the offending symbol named.
 echo "running fidelity assertion (every intent.config line lands in .config)"
+# Parse the intent lines ONCE into a variable so the count can be sanity-checked
+# BEFORE the loop and reused in the success message. The previous form fed grep
+# straight into the loop's process substitution and re-grepped inline in the
+# final echo, which could pass VACUOUSLY: with an empty or unparseable
+# intent.config, grep matched nothing, the loop body never ran, fidelity_miss
+# stayed 0, and the step printed
+#   fidelity assertion: OK (0 intent lines, all landed)
+# then exited 0 -- the gate that proves every hardening pin actually landed
+# proving nothing, and shipping whatever the seed happened to say. `set -e`
+# could not catch it either: a failing command substitution used as an ARGUMENT
+# (inside echo) does not fail the shell. Verified empirically.
+intent_lines=$(grep -hE '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' "$intent_config" || true)
+intent_count=$(printf '%s' "$intent_lines" | grep -c . || true)
+# Guard 1: nothing parsed at all -- empty, mangled, or the wrong file.
+if (( intent_count == 0 )); then
+    echo "no intent lines parsed from $intent_config (empty or malformed?)" >&2
+    echo "refusing to report a fidelity pass that checked nothing." >&2
+    exit 2
+fi
+# Guard 2: a floor well below the real count (92 today), to catch a file
+# truncated to something that still parses partially. Lower this NUMBER
+# deliberately, in the same commit, if intent.config is ever pruned below it.
+MIN_INTENT_LINES=60
+if (( intent_count < MIN_INTENT_LINES )); then
+    echo "only $intent_count intent lines parsed from $intent_config" >&2
+    echo "(need >= $MIN_INTENT_LINES); the file looks truncated." >&2
+    exit 2
+fi
+# Guard 3: every line that even LOOKS like a kconfig line must have parsed.
+# Catches the partial-parse cases a floor cannot see -- CRLF line endings,
+# trailing whitespace after "is not set", "#CONFIG_X" without the space --
+# each of which silently drops that pin from the assertion rather than failing.
+# If a future COMMENT in intent.config legitimately begins with "# CONFIG_",
+# reword it (same convention as validate.yml's workflow-expressions job).
+intent_candidates=$(grep -cE '^(# )?CONFIG_[A-Z0-9_]+' "$intent_config" || true)
+if (( intent_count != intent_candidates )); then
+    echo "$intent_candidates lines in $intent_config look like kconfig lines," >&2
+    echo "but only $intent_count parsed. The difference is silently unenforced." >&2
+    echo "Likely CRLF endings, trailing whitespace, or a missing space after '#'." >&2
+    grep -nE '^(# )?CONFIG_[A-Z0-9_]+' "$intent_config" \
+        | grep -vE ':(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' >&2 || true
+    exit 2
+fi
 fidelity_miss=0
 while IFS= read -r line; do
     case $line in
@@ -110,7 +153,10 @@ while IFS= read -r line; do
             ;;
         *) continue ;;
     esac
-done < <(grep -hE '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' "$intent_config")
+done <<<"$intent_lines"   # here-string: keeps the loop in THIS shell, so
+                          # fidelity_miss below is the loop's value (process
+                          # substitution would also work, but the count is
+                          # already materialized above)
 
 if [[ $fidelity_miss -ne 0 ]]; then
     cat >&2 <<'EOF'
@@ -133,7 +179,7 @@ did NOT survive olddefconfig.
 EOF
     exit 2
 fi
-echo "fidelity assertion: OK ($(grep -cE '^(CONFIG_[A-Z0-9_]+=|# CONFIG_[A-Z0-9_]+ is not set$)' "$intent_config") intent lines, all landed)"
+echo "fidelity assertion: OK ($intent_count intent lines checked, all landed)"
 
 # --- Step 5: post-fidelity MODULE_SIG_KEY runtime override ------------
 # intent.config pins the kernel's stock CONFIG_MODULE_SIG_KEY placeholder
