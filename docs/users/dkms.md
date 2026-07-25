@@ -32,7 +32,13 @@ sudo mokutil --import /var/lib/dkms/mok.pub   # re-enqueue if missing
 sudo reboot
 ```
 
-The path may differ on your distribution; `dkms status` lists the active MOK key.
+The path may differ on your distribution. `dkms status` shows module/kernel build states, **not** the signing key — on Debian the key and certificate paths come from `mok_signing_key` and `mok_certificate` in `/etc/dkms/framework.conf`:
+
+```
+grep -E 'mok_(signing_key|certificate)' /etc/dkms/framework.conf
+```
+
+This machine-local MOK is *yours*, not the project's. [uninstall.md](uninstall.md#remove-the-mok-enrollment-optional) warns against deleting it when removing the project's certificate — doing so would break every DKMS-signed module on the machine.
 
 ## Tested modules
 
