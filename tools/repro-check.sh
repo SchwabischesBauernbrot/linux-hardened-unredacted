@@ -5,15 +5,27 @@
 # Usage: tools/repro-check.sh VERSION
 # e.g.   tools/repro-check.sh v6.12.8-hardened1
 #
-# Reproducibility scope: we compare the .debs *after stripping the
-# signing layer*. The signing layer (sbsign on vmlinuz, sign-file on
-# .ko*) embeds per-invocation state plus the private key, so an
-# independent rebuilder can never reproduce the signed bytes. The
-# unsigned bytes are what the project actually promises will reproduce.
-# See releases/README.md for the contract.
+# Reproducibility scope, per package:
 #
-# Exits 0 on byte-identical match (post-strip). On mismatch, exits
-# non-zero and writes a per-file diffoscope report under repro-diff/.
+#   key_independent_sha256  every archive member EXCEPT the paths whose bytes
+#                           depend on which signing key built the kernel
+#                           (boot/vmlinuz-*, boot/System.map-*,
+#                           usr/lib/debug/**). A third party with no access to
+#                           the project key must be able to match this, so a
+#                           mismatch is always a FAILURE.
+#   canonical_sha256        every member. Matching it requires the project's
+#                           PRIVATE signing key, because kbuild links the
+#                           signing certificate into .builtin_trusted_keys and
+#                           sign-file needs the private half -- the published
+#                           .der cannot substitute. Set REPRO_SIGNING_KEY_PATH
+#                           if you hold the real key; otherwise a difference
+#                           here is reported as expected, not as a failure.
+#
+# Both digests come from tools/canonical-deb-hash.py, which never repacks a
+# .deb, so the verdict does not depend on the local dpkg/liblzma version.
+#
+# Exits 0 when every comparable package matched, 2 on any failure (with
+# per-member JSON under repro-diff/), 3 on recorded-input drift.
 
 set -euo pipefail
 umask 022
@@ -41,30 +53,27 @@ tag_hardened="${BASH_REMATCH[2]}"
 packaging_revision="${BASH_REMATCH[4]:-}"
 
 command -v jq >/dev/null || { echo "jq required" >&2; exit 1; }
-if ! command -v diffoscope >/dev/null; then
-    echo "diffoscope not installed; reports will be sha256 mismatches only" >&2
-fi
+# diffoscope is no longer used: a mismatch now emits per-member JSON from
+# tools/canonical-deb-hash.py, which names the exact archive member that
+# differs. That is more actionable than a diffoscope HTML of two whole .debs,
+# and it needs no host tooling.
 
 container_image=$(jq -r '.container_image // empty' "$manifest")
 source_date_epoch=$(jq -r '.source_date_epoch // empty' "$manifest")
 [[ -n $container_image ]] || { echo "manifest missing container_image" >&2; exit 1; }
 [[ -n $source_date_epoch ]] || { echo "manifest missing source_date_epoch" >&2; exit 1; }
-# Used by strip-signatures.sh's repack (below) so the stripped bytes are
-# reproducible run to run; also passed into the rebuild container.
+# Passed into the rebuild container so the rebuild clamps timestamps the same
+# way the original did. (It no longer feeds a repack: the verdict never repacks.)
 export SOURCE_DATE_EPOCH="$source_date_epoch"
 
 command -v docker >/dev/null || { echo "docker required for the rebuild stage" >&2; exit 1; }
-# strip-signatures.sh removes the released vmlinuz's Authenticode signature
-# with sbattach (from sbsigntool). Without it that strip is a SILENT no-op,
-# so the released image .deb keeps its signature while the rebuilt one never
-# had one -> a guaranteed false mismatch. Require it up front.
-command -v sbattach >/dev/null || { echo "sbattach (from sbsigntool) required for the vmlinuz signature strip; install sbsigntool" >&2; exit 1; }
+# No sbattach requirement any more. The vmlinuz Authenticode signature used to
+# be removed by `sbattach --remove`, whose absence would have made that strip a
+# SILENT no-op; tools/canonical-deb-hash.py parses the PE certificate table
+# directly, in pure Python, so there is no host tool to be missing and the
+# transform is symmetric on both sides by construction.
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-# Where to fetch the released .debs from for the comparison. Default to
-# the public apt repo; override RELEASED_DIR to compare against a local
-# copy (offline verification, or comparing two of your own builds).
-repo_base_url="${REPO_BASE_URL:-https://repo.unredacted.org/debian}"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -236,86 +245,114 @@ shopt -u nullglob
 (( ${#rebuilt[@]} > 0 )) || { echo "rebuild produced no .debs" >&2; exit 2; }
 mv "$rebuild_work"/*.deb "$work/"
 
-# --- Fetch the released .debs --------------------------------------------
-# Signatures are stripped from BOTH sides only to produce a diffoscope DIFF
-# on mismatch; the pass/fail verdict itself compares the rebuilt .deb's
-# stripped hash against the manifest's recorded unsigned hash and does NOT
-# need the released .debs. Source order: RELEASED_DIR (a local copy), else
-# the manifest's canonical_path fetched from the apt repo. If neither is
-# available we still run the verdict but warn loudly that diff reports are
-# unavailable — previously this was a silent skip that left a mismatch
-# impossible to diagnose.
-mkdir -p "$work/released"
-if [[ -z ${RELEASED_DIR:-} ]] \
-   && ! jq -e '[.outputs[].deb_files[].canonical_path // empty] | length > 0' \
-        "$manifest" >/dev/null; then
-    echo "WARN: no RELEASED_DIR set and the manifest carries no canonical_path —" >&2
-    echo "WARN: released .debs will not be fetched. The reproducibility verdict" >&2
-    echo "WARN: (rebuilt hash vs manifest) still runs, but diffoscope diff reports" >&2
-    echo "WARN: will be unavailable on mismatch. Set RELEASED_DIR=<dir> to a local" >&2
-    echo "WARN: copy of the released .debs for a full diff." >&2
-fi
-while IFS=$'\t' read -r name canonical_path; do
+# NOTE: there is no released-.deb fetch step. There used to be one, gated on a
+# manifest field `canonical_path` that tools/build-manifest.py never wrote -- so
+# it was unreachable, $work/released/ was always empty, and repro-check.yml's
+# "upload diff report on failure" always uploaded nothing. The verdict below
+# compares the rebuild against the hashes the manifest records, and emits
+# per-member JSON on a mismatch, which is diagnosable without either the
+# released .deb or diffoscope.
+#
+# Comparing against the PUBLISHED bytes (rather than the build host's own record
+# of them) is a genuinely different and stronger check; it is not attempted here
+# and should not be implied.
+
+# --- Verdict --------------------------------------------------------------
+# Per-package, not one boolean for the whole release.
+#
+# tools/canonical-deb-hash.py computes two digests. `key_independent_sha256`
+# excludes the paths whose bytes depend on WHICH signing key built the kernel
+# (boot/vmlinuz-*, boot/System.map-*, usr/lib/debug/**); `canonical_sha256`
+# covers everything. A rebuilder without the project's private key cannot
+# reproduce the first set -- kbuild links the signing cert's DER into
+# .builtin_trusted_keys, and handing over the published .der does not help
+# because sign-file needs the private half -- but CAN reproduce everything else
+# byte-for-byte, including all ~5,000 modules, /boot/config-* and the modules.*
+# indexes.
+#
+# So:
+#   key_independent mismatch  -> FAIL, always. Real divergence.
+#   canonical mismatch        -> FAIL if the real key was supplied
+#                                (REPRO_SIGNING_KEY_PATH), else INFO: expected,
+#                                and names the excluded paths.
+#
+# The old verdict reported one boolean per package against a hash of a
+# `dpkg-deb -b` repack, which conflated "cannot check without the key" with
+# "failed" AND depended on the local dpkg/liblzma version.
+have_real_key=0
+[[ -n ${REPRO_SIGNING_KEY_PATH:-} ]] && have_real_key=1
+
+# schema_version tells us what the manifest can support. Absent = legacy: those
+# releases predate canonical hashing AND recorded no ci_run_number while the
+# build compiled it into UTS_VERSION, so a rebuild cannot match by construction.
+# Report that as partial rather than red -- a permanently-failing check nobody
+# can act on is worse than an honest "not verifiable".
+schema=$(jq -r '.schema_version // 0' "$manifest")
+legacy=0
+(( schema < 3 )) && legacy=1
+
+mkdir -p repro-diff
+fails=0; exact=0; indep_ok=0; info=0; missing=0; total=0
+
+while IFS=$'\t' read -r name exp_canon exp_indep; do
     [[ -n $name ]] || continue
-    if [[ -n ${RELEASED_DIR:-} ]]; then
-        if [[ -f "$RELEASED_DIR/$name" ]]; then
-            cp "$RELEASED_DIR/$name" "$work/released/$name"
-        else
-            echo "  WARN: $name not found in RELEASED_DIR" >&2
-        fi
-    elif [[ -n $canonical_path ]]; then
-        wget --no-verbose -O "$work/released/$name" \
-            "$repo_base_url/$canonical_path" \
-            || { rm -f "$work/released/$name"; echo "  WARN: could not fetch released $name from $repo_base_url/$canonical_path" >&2; }
-    fi
-done < <(jq -r '.outputs[].deb_files[] | "\(.name)\t\(.canonical_path // "")"' "$manifest")
-
-# Strip the signing layer from a .deb. Delegates to the shared
-# implementation so this verifier and the recording side
-# (tools/build-manifest.py, via build-kernel.yml) strip IDENTICALLY —
-# otherwise the post-strip hashes could never match. SOURCE_DATE_EPOCH was
-# exported above so the repack inside the helper is deterministic.
-strip_signatures() {
-    "$repo_root/tools/strip-signatures.sh" "$1" "$2"
-}
-
-# Compare expected vs actual stripped hashes. The caller must have
-# placed the rebuilt .debs in $work AND a copy of the corresponding
-# released .debs in $work/released/ (so we can strip both sides
-# identically).
-mkdir -p repro-diff "$work/stripped/rebuild" "$work/stripped/released"
-mismatches=0
-while IFS=$'\t' read -r expected_stripped name _canonical_path; do
+    total=$((total + 1))
     rebuild_path="$work/$name"
-    released_path="$work/released/$name"
     if [[ ! -f $rebuild_path ]]; then
-        printf 'MISSING: %s not produced by rebuild\n' "$name" >&2
-        mismatches=$((mismatches + 1))
+        printf '  MISSING  %s (not produced by the rebuild)\n' "$name" >&2
+        missing=$((missing + 1)); fails=$((fails + 1)); continue
+    fi
+    read -r _n got_canon got_indep < <(
+        python3 "$repo_root/tools/canonical-deb-hash.py" "$rebuild_path")
+
+    if [[ -z $exp_indep ]]; then
+        # Legacy manifest: only the repack-dependent hash was recorded, and it
+        # is not comparable to anything we can compute. Say so per package.
+        printf '  SKIP     %s (legacy manifest: no canonical hash recorded)\n' "$name"
+        info=$((info + 1)); continue
+    fi
+
+    if [[ $got_indep != "$exp_indep" ]]; then
+        printf '  FAIL     %s  key-independent content differs\n' "$name" >&2
+        printf '             expected %s\n             got      %s\n' \
+            "$exp_indep" "$got_indep" >&2
+        fails=$((fails + 1))
+        # Per-member JSON is what makes a mismatch diagnosable without
+        # diffoscope or the released .deb.
+        python3 "$repo_root/tools/canonical-deb-hash.py" --json "$rebuild_path" \
+            > "repro-diff/${name}.rebuilt.json" 2>/dev/null || true
         continue
     fi
-    rebuild_stripped="$work/stripped/rebuild/$name"
-    strip_signatures "$rebuild_path" "$rebuild_stripped"
-    actual=$(sha256sum "$rebuild_stripped" | awk '{print $1}')
+    indep_ok=$((indep_ok + 1))
 
-    if [[ $actual != "$expected_stripped" ]]; then
-        printf 'MISMATCH: %s\n  expected (unsigned) %s\n  actual   (unsigned) %s\n' \
-            "$name" "$expected_stripped" "$actual" >&2
-        if command -v diffoscope >/dev/null && [[ -f $released_path ]]; then
-            released_stripped="$work/stripped/released/$name"
-            strip_signatures "$released_path" "$released_stripped"
-            diffoscope --html "repro-diff/${name}.html" \
-                       "$released_stripped" "$rebuild_stripped" || true
-        elif [[ ! -f $released_path ]]; then
-            echo "  (no diff report for $name: released .deb unavailable — set RELEASED_DIR for a diffoscope diff)" >&2
-        else
-            echo "  (no diff report for $name: diffoscope not installed)" >&2
-        fi
-        mismatches=$((mismatches + 1))
+    if [[ $got_canon == "$exp_canon" ]]; then
+        printf '  OK       %s  exact\n' "$name"
+        exact=$((exact + 1))
+    elif (( have_real_key )); then
+        printf '  FAIL     %s  key-dependent members differ despite REPRO_SIGNING_KEY_PATH\n' "$name" >&2
+        fails=$((fails + 1))
+    else
+        printf '  OK*      %s  key-independent content matches; key-dependent members not verifiable without the project signing key\n' "$name"
+        info=$((info + 1))
     fi
-done < <(jq -r '.outputs[].deb_files[] | "\(.unsigned_deb_sha256 // .sha256)\t\(.name)\t\(.canonical_path // "")"' "$manifest")
+done < <(jq -r '.outputs[].deb_files[]
+    | "\(.name)\t\(.canonical_sha256 // .unsigned_deb_sha256 // "")\t\(.key_independent_sha256 // "")"' \
+    "$manifest")
 
-if (( mismatches > 0 )); then
-    echo "$mismatches reproducibility diff(s); see repro-diff/" >&2
+echo
+printf 'repro-check: %d package(s): %d exact, %d key-independent-only, %d not comparable, %d failed\n' \
+    "$total" "$exact" "$((indep_ok - exact))" "$info" "$fails"
+if (( legacy )); then
+    echo "note: $manifest predates schema_version 3, so this release is only"
+    echo "      partially verifiable by construction. See releases/README.md."
+fi
+if (( fails > 0 )); then
+    echo "$fails package(s) failed; per-member detail in repro-diff/" >&2
+    exit 2
+fi
+if (( indep_ok == 0 && exact == 0 )); then
+    # Nothing was actually compared. Do not exit 0 on that.
+    echo "no package was comparable; refusing to report success" >&2
     exit 2
 fi
 
