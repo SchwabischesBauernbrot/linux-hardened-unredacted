@@ -126,6 +126,18 @@ Then, in a **follow-up commit**, point `build-kernel.yml`'s `container.image` at
 - Off-host log shipping with alerts on: docker image pulls outside the configured digests, unexpected outbound connections, registration changes.
 - Once the runner can grant the build container `CAP_SYS_ADMIN`, set the repo variable `REQUIRE_NET_ISOLATION=1`: `build-kernel.yml` then **hard-fails** if it can't isolate the compile in a network namespace (`unshare -n`) while the signing key is materialized in tmpfs. Today, without that capability, it logs a warning and compiles without isolation.
 
+## Repo variables
+
+Set these in the Forgejo UI under **Settings → Actions → Variables** (repo *variables*, not secrets — they carry no credential). A workflow only sees a variable if its step lists it in `env:`, so adding a name here is half the job; the other half is the `env:` entry, which `validate.yml` should eventually assert.
+
+| Variable | Default when unset | Effect when set to `1` |
+| -------- | ------------------ | ---------------------- |
+| `REQUIRE_NET_ISOLATION` | warn and compile without a network namespace | **Hard-fail** the build if `unshare -n` is unavailable while the signing key is on disk. Set this once the runner can grant `CAP_SYS_ADMIN`. |
+| `ALLOW_STALE_TAG` | hard-fail a tag that is behind `origin/main` | Downgrade to a warning and build anyway. For a deliberate rebuild of an old commit only — a stale tag builds an old seed pin and skips the drift guard. |
+| `ALLOW_HARDENING_REGRESSION` | hard-fail on an inherited hardening symbol that regressed | Downgrade to a warning and continue. For a **reviewed** drop only (e.g. upstream removed the symbol); that release's `final.config` then becomes the new baseline. |
+
+Leave all three unset for normal operation: each default is the safe one. `ALLOW_STALE_TAG` and `ALLOW_HARDENING_REGRESSION` are single-build overrides — unset them again once the build you needed them for has run, or the next genuine regression passes silently.
+
 ## Secret scoping
 
 The per-workflow secrets (defined in the Forgejo UI) follow spec §6.1's principle of least privilege:
