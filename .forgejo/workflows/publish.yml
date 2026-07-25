@@ -256,3 +256,76 @@ jobs:
           git commit -m "publish: ${VER}"
           remote="https://oauth2:${MANIFEST_COMMIT_TOKEN}@git.unredacted.org/${GITHUB_REPOSITORY}.git"
           git push "$remote" "HEAD:main"
+
+      - name: publish the release (un-draft)
+        # build-kernel.yml creates the Forgejo release as a DRAFT by design --
+        # that is the human review gate before anything becomes public. This
+        # workflow can read a draft's assets because it sends the token, so
+        # everything above succeeds while the release is still a draft, which is
+        # exactly why the un-draft step was easy to forget. Nothing in any
+        # workflow did it, and it appeared in no runbook.
+        #
+        # Until it happens, an anonymous GET of the release assets 404s, which
+        # breaks: docs/users/secure-boot.md (users wget unredacted-hardened.der
+        # to enrol MOK -- without it they cannot boot the kernel they just
+        # installed on a Secure Boot machine), docs/users/verifying-packages.md
+        # (same download plus the fingerprint in the release notes), and
+        # docs/users/cve-policy.md (the releases RSS feed is the announced
+        # CVE-response channel, and drafts do not appear in it).
+        #
+        # LAST, after the registry publish and the manifest commit: a failure
+        # earlier must leave the release a draft rather than announcing a
+        # half-published release. Idempotent, so re-running publish is safe.
+        #
+        # This does not weaken the human gate: publish.yml is itself
+        # workflow_dispatch-only. And it cannot recurse into this workflow's own
+        # `release: published` trigger -- Forgejo emits no event on the
+        # draft->published transition, which is verified and documented at the
+        # top of this file.
+        env:
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          api="https://git.unredacted.org/api/v1/repos/${GITHUB_REPOSITORY}"
+          # Resolve the id from the LIST endpoint, not /releases/tags/{tag}:
+          # some Forgejo versions filter drafts out of the by-tag lookup and
+          # return a null id. Same reason, same pattern as build-kernel.yml's
+          # release-creation step -- keep the two consistent.
+          id=$(curl -fsS -H "Authorization: token $FORGEJO_TOKEN" \
+                 "$api/releases?limit=50" \
+               | jq -r --arg t "$TAG" '.[] | select(.tag_name==$t) | .id' \
+               | head -n1)
+          if [[ -z $id || $id == "null" ]]; then
+            echo "::error::no release found for tag $TAG; cannot un-draft." >&2
+            echo "::error::build-kernel.yml creates it, so this means the build" >&2
+            echo "::error::never completed for this tag." >&2
+            exit 1
+          fi
+          draft=$(curl -fsS -H "Authorization: token $FORGEJO_TOKEN" \
+                    "$api/releases/$id" | jq -r '.draft')
+          if [[ $draft != "true" ]]; then
+            echo "release $TAG (id $id) is already published; nothing to do"
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/undraft.json -w '%{http_code}' -X PATCH \
+                   -H "Authorization: token $FORGEJO_TOKEN" \
+                   -H "Content-Type: application/json" \
+                   -d '{"draft":false}' "$api/releases/$id")
+          if [[ $code -ge 400 ]]; then
+            echo "::error::un-draft failed for $TAG: HTTP $code" >&2
+            cat /tmp/undraft.json >&2 || true
+            exit 1
+          fi
+          echo "published release $TAG (id $id)"
+          # Confirm the assets are reachable WITHOUT credentials before anyone
+          # relies on the announcement. A 200 here is the property users
+          # actually depend on; the PATCH returning 200 is not the same thing.
+          asset_url="https://git.unredacted.org/${GITHUB_REPOSITORY}/releases/download/${TAG}/unredacted-hardened.der"
+          anon=$(curl -sS -o /dev/null -w '%{http_code}' "$asset_url" || echo 000)
+          if [[ $anon != "200" ]]; then
+            echo "::warning::anonymous GET of unredacted-hardened.der returned $anon (expected 200)."
+            echo "::warning::Users follow docs/users/secure-boot.md to fetch this cert; check before announcing."
+          else
+            echo "anonymous asset fetch OK (200): $asset_url"
+          fi
