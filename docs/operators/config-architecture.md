@@ -19,7 +19,7 @@ cp $WORKDIR/upstream-seed.config .config
 scripts/kconfig/merge_config.sh -m .config configs/intent.config   # intent over seed
 make olddefconfig                                                  # resolve dependencies under our toolchain
 <fidelity assertion: every line in configs/intent.config lands in .config or abort>
-sed CONFIG_MODULE_SIG_KEY=<runtime tmpfs path>                     # post-fidelity runtime override
+install signing key -> certs/unredacted-signing.pem              # .config is NOT rewritten
 ```
 
 Fail-fast happens at the fidelity assertion (~2 min after the build container starts), not 30+ min into compile.
