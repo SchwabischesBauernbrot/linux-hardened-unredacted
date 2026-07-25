@@ -46,6 +46,41 @@ anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
 # --- Resolve which seed pin to use -------------------------------------
 if [[ -n "${SERIES:-}" && -f "$repo_root/configs/seeds/${SERIES}.toml" ]]; then
     pin_file="$repo_root/configs/seeds/${SERIES}.toml"
+elif [[ -n "${SERIES:-}" ]]; then
+    # SERIES is set (so this is a tag-driven build) but its per-line seed file
+    # does not exist. Falling through to configs/upstream-seed.toml here — a
+    # symlink to the CURRENT stable line's seed — used to happen silently, and
+    # it turns BOTH safety nets off at once:
+    #
+    #   - the fidelity assertion still passes (configs/intent.config is
+    #     satisfied by either series' seed), and
+    #   - the hardening-drift guard finds no releases/v<SERIES>.* baseline, so
+    #     it SKIPS.
+    #
+    # The result is a v7.2.x kernel built from the 7.1 seed, with every
+    # UN-pinned hardening default coming from the wrong series, in a green log.
+    # build-kernel.yml's stale-tag guard already hard-fails the analogous
+    # cross-series hazard for exactly this reason; match that precedent.
+    if [[ "${ALLOW_CROSS_SERIES_SEED:-}" == "1" ]]; then
+        echo "::warning::no configs/seeds/${SERIES}.toml; falling back to the stable-line seed (ALLOW_CROSS_SERIES_SEED=1)" >&2
+        pin_file="$repo_root/configs/upstream-seed.toml"
+    else
+        echo "no seed pin for series $SERIES: configs/seeds/${SERIES}.toml does not exist." >&2
+        echo "" >&2
+        echo "Refusing to fall back to the stable-line seed, which would build a" >&2
+        echo "$SERIES kernel from another series' config: the fidelity assertion would" >&2
+        echo "still pass and the hardening-drift guard would find no $SERIES baseline" >&2
+        echo "and skip, so the wrong config would ship in a green build." >&2
+        echo "" >&2
+        echo "To stand up the $SERIES line:" >&2
+        echo "  1. tools/bump-seed.sh --pin-file configs/seeds/${SERIES}.toml <ref>" >&2
+        echo "  2. repoint the configs/upstream-seed.toml symlink at it" >&2
+        echo "  3. update configs/lines.toml (series + seed)" >&2
+        echo "" >&2
+        echo "For a deliberate one-off cross-series build, set the repo variable" >&2
+        echo "ALLOW_CROSS_SERIES_SEED=1." >&2
+        exit 1
+    fi
 elif [[ -n "${SEED_PIN_PATH:-}" ]]; then
     pin_file="$SEED_PIN_PATH"
 else
@@ -162,6 +197,21 @@ echo "  config sha256: OK ($actual_sha)"
 
 # --- Stage outputs -----------------------------------------------------
 cp "$src" "$WORKDIR/upstream-seed.config"
+
+# Record the verified hash in sha256sum(1) -c format so the NEXT workflow step
+# can re-verify. configure-kernel.sh runs after a step boundary (and inside
+# `unshare -n`), and it previously did a bare `cp "$seed_config" .config` on
+# bytes that were verified in a different step. Anything that mutated $WORKDIR
+# in between -- a compromised intermediate step, a poisoned runner cache --
+# would go undetected, and the seed sets every hardening default we do NOT pin
+# in configs/intent.config, so the fidelity assertion cannot see the swap.
+#
+# This is the symmetric guard to fetch-sources.sh/input-hashes.txt, which
+# apply-patches.sh re-checks for exactly this reason -- see the comment at
+# build/apply-patches.sh:29. A bare filename (not a path) so the check runs
+# from $WORKDIR. sha256sum is coreutils: deliberately not jq, because
+# tools/repro-check.sh's rebuild container does not install jq.
+printf '%s  %s\n' "$seed_sha256" upstream-seed.config > "$WORKDIR/seed-hashes.txt"
 
 # Provenance for the manifest. build-manifest.py reads this and folds it
 # in as the top-level `upstream_seed` key.

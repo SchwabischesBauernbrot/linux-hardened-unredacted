@@ -257,6 +257,13 @@ jobs:
         env:
           WORKDIR: ${{ runner.temp }}/work
           SERIES: ${{ steps.ver.outputs.series }}
+          # Escape hatch for a deliberate one-off build of a series that has no
+          # configs/seeds/<X.Y>.toml yet. Unset (the default) makes that a hard
+          # failure: silently falling back to the stable-line seed builds one
+          # series' kernel from another series' config while the fidelity
+          # assertion still passes and the drift guard finds no baseline and
+          # skips. See build/fetch-seed.sh's resolution block.
+          ALLOW_CROSS_SERIES_SEED: ${{ vars.ALLOW_CROSS_SERIES_SEED }}
         run: ./build/fetch-seed.sh
 
       - name: apply patches

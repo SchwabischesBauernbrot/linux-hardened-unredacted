@@ -64,6 +64,30 @@ case "$ARCH" in
 esac
 
 # --- Step 1: seed in --------------------------------------------------
+# Re-verify the seed bytes across the workflow-step boundary before using them.
+# fetch-seed.sh verified the sha256 (and the signed commit it came from) in an
+# EARLIER step; this script runs in a later one. Without this check, anything
+# that mutated $WORKDIR in between could swap the config after verification and
+# before it becomes .config -- and the fidelity assertion below would not
+# notice, because it only proves configs/intent.config landed. Every hardening
+# symbol we deliberately INHERIT rather than pin (the LSMs, the kstack/slab
+# family, ~31 symbols) comes from these bytes.
+#
+# Symmetric with build/apply-patches.sh, which re-checks input-hashes.txt for
+# the kernel tarball and hardened patch with the same rationale.
+#
+# A missing hash file is a HARD failure, never a skip: a guard that silently
+# disables itself when its input is absent is the exact failure class this
+# repo keeps getting bitten by.
+seed_hashes="$WORKDIR/seed-hashes.txt"
+[[ -f $seed_hashes ]] || {
+    echo "missing $seed_hashes — rerun build/fetch-seed.sh" >&2
+    echo "(refusing to seed .config from unverified bytes)" >&2
+    exit 1
+}
+echo "re-verifying seed bytes against seed-hashes.txt"
+( cd "$WORKDIR" && sha256sum -c seed-hashes.txt )
+
 cp "$seed_config" .config
 echo "seeded .config from upstream-seed.config ($(wc -l < .config) lines)"
 
