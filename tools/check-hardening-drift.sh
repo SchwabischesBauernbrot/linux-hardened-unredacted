@@ -7,7 +7,7 @@
 #   INTENT.config defaults to <repo>/configs/intent.config.
 #
 # Why this exists: build/configure-kernel.sh's fidelity assertion only
-# guards the ~59 symbols pinned in configs/intent.config. The far larger
+# guards the 92 symbols pinned in configs/intent.config. The far larger
 # set of hardening symbols we INHERIT from anthraxx's seed (the LSMs,
 # BPF_UNPRIV_DEFAULT_OFF, the kstack/slab family, ...) is unchecked, so a
 # kernel-version bump against a lagging seed could silently drop one with
@@ -44,6 +44,32 @@ fi
 [[ -f $baseline ]]  || { echo "baseline not found: $baseline" >&2; exit 1; }
 [[ -f $candidate ]] || { echo "candidate not found: $candidate" >&2; exit 1; }
 
+# Both inputs must actually look like kernel .configs before a clean result
+# means anything. Without this the guard passes VACUOUSLY: given an empty or
+# truncated baseline, enabled_hardening() below emits nothing, the `while` loop
+# never iterates, `regressed` stays 0, and we print
+#   hardening-drift: OK (no enabled hardening symbol regressed vs baseline)
+# and exit 0 -- silently retiring the ONLY check that covers the hardening
+# symbols we INHERIT from the seed rather than pin in intent.config. Verified
+# empirically against both an empty file and a 50-line truncation.
+#
+# build-kernel.yml only tests that the baseline file EXISTS, so a truncated or
+# zero-length releases/<tag>/final.config would disable this guard with a green
+# log and no distinguishable output. Same anti-vacuous-pass shape as
+# validate.yml's intent-matches-policy and dep-list-parity jobs.
+#
+# Sizing: the smallest final.config in releases/ carries ~6,800 CONFIG_ lines,
+# so 1000 is far below any real config while still catching truncation.
+MIN_CONFIG_LINES=1000
+for f in "$baseline" "$candidate"; do
+    n=$(grep -cE '^CONFIG_[A-Z0-9_]+=' "$f" || true)
+    if (( n < MIN_CONFIG_LINES )); then
+        echo "hardening-drift: $f has only $n CONFIG_ lines (need >= $MIN_CONFIG_LINES)." >&2
+        echo "refusing to report OK against a truncated or non-.config file." >&2
+        exit 1
+    fi
+done
+
 # Same hardening-prefix heuristic as tools/reconcile-vs-anthraxx.sh and
 # tools/bump-seed.sh — keep the three in sync. It filters driver/fs/
 # CC_HAS_* noise so the check only fires on symbols we actually care about.
@@ -75,6 +101,25 @@ enabled_hardening() {
         | sort -u
 }
 
+# Materialize the baseline symbol set BEFORE the loop so its size can be
+# checked and reported. This is a SECOND vacuity floor, distinct from the
+# CONFIG_-line floor above: exclude_re is built FROM intent.config (see the
+# block above), so a mangled intent file can collapse this set to empty even
+# against a perfectly good baseline -- and the loop would again iterate zero
+# times and report OK.
+baseline_syms=$(enabled_hardening "$baseline")
+baseline_count=$(printf '%s' "$baseline_syms" | grep -c . || true)
+# 31 against the real 7.0/7.1 seeds today; 15 leaves generous headroom for
+# upstream churn while still catching a collapsed comparison set.
+MIN_HARDENING_SYMS=15
+if (( baseline_count < MIN_HARDENING_SYMS )); then
+    echo "hardening-drift: only $baseline_count inherited hardening symbols to compare" >&2
+    echo "(need >= $MIN_HARDENING_SYMS). Either $baseline is not a usable baseline, or" >&2
+    echo "configs/intent.config parsed into an over-broad exclusion set. Refusing to" >&2
+    echo "report OK against a comparison that checks almost nothing." >&2
+    exit 1
+fi
+
 regressed=0
 while IFS= read -r sym; do
     [[ -n $sym ]] || continue
@@ -83,7 +128,7 @@ while IFS= read -r sym; do
         echo "  REGRESSION ${sym}: enabled in baseline, candidate has: ${now:-<absent>}" >&2
         regressed=1
     fi
-done < <(enabled_hardening "$baseline")
+done <<<"$baseline_syms"
 
 if [[ $regressed -ne 0 ]]; then
     if [[ "${ALLOW_HARDENING_REGRESSION:-}" == "1" ]]; then
@@ -103,4 +148,7 @@ the configure-time fidelity assertion did not catch them. Either:
 EOF
     exit 1
 fi
-echo "hardening-drift: OK (no enabled hardening symbol regressed vs baseline)"
+# Report the count, not just "OK". A bare OK is indistinguishable from a
+# vacuous pass in a 40-minute build log; a count makes "checked almost nothing"
+# visible even if some future change slips past the floors above.
+echo "hardening-drift: OK ($baseline_count inherited hardening symbols checked, none regressed)"

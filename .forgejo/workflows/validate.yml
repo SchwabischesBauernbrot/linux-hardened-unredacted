@@ -314,25 +314,136 @@ jobs:
           fi
           echo "seed pins OK ($examined file(s) examined; symlink -> $want)"
 
-  no-placeholder-digests:
-    # Pin placeholders must be replaced with concrete digests on main.
-    # This job runs on push to main only; feature branches can carry the
-    # placeholder so the scaffold builds at all.
+  workflow-shell:
+    # The shellcheck job above covers build/*.sh and tools/*.sh. The largest and
+    # least-tested body of shell in this repo is in workflow `run:` blocks --
+    # cve-watch.yml alone is ~150 lines with jq, comm, an api_call helper and
+    # pipefail interactions -- and nothing checked it. A parse error there
+    # surfaces only when that job actually runs, which for cve-watch or prune
+    # could be weeks later, possibly mid-CVE-response.
     #
-    # Scope is narrow: only Dockerfiles under containers/ (where the
-    # build actually uses the digest). The shim track is intentionally
-    # blocked, so shim/Dockerfile's placeholder is accepted. Docs and
-    # workflow YAML are excluded so example commands and the validator's
-    # own grep pattern don't trip the check.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Gated at severity=error: 43 inline scripts, 0 findings today, so this lands
+    # green and stays a real signal rather than a wall of style noise. Higher
+    # levels are available locally and the backlog is small and honest:
+    # `--severity warning` reports 1, `--severity info` reports 3. Raise the gate
+    # when those are cleared.
+    #
+    # One deliberate interaction: the linter substitutes a placeholder for each
+    # runner expression template (a raw template is not valid shell), so
+    # comparing a template in a run: body shows up as SC2050 "this expression is
+    # constant". That is not noise -- it means a template is being used where the
+    # workflow-expressions job now requires an env: variable, so the two checks
+    # reinforce each other.
     runs-on: linux-hardened
     steps:
       - uses: actions/checkout@v4
-      - run: |
+      - run: apt-get update && apt-get install -y --no-install-recommends shellcheck python3-yaml
+      - run: python3 tools/lint-workflow-shell.py --severity error
+
+  escape-hatches-are-plumbed:
+    # A repo variable only reaches a script if the step that runs it lists the
+    # name in `env:`. Nothing enforced that, and the result was a documented
+    # override that did nothing: check-hardening-drift.sh honoured
+    # ALLOW_HARDENING_REGRESSION, POLICY.md and config-architecture.md both told
+    # the operator to set it, and the drift step's env: block listed only
+    # WORKDIR and SERIES. The operator's only remaining route past a drift
+    # failure was a commit to main -- which the stale-tag guard then turns into
+    # "delete and re-cut the tag", mid-CVE-SLA.
+    #
+    # This is the check that closes that class permanently. Note a workflow-shell
+    # linter would NOT have caught it: a missing YAML env: key involves no shell.
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - name: every ALLOW_*/REQUIRE_* hatch is plumbed and documented
+        run: |
           set -euo pipefail
-          if grep -RnE 'sha256:REPLACE_WITH_CONCRETE_DIGEST' \
-                --include='Dockerfile*' \
-                containers/; then
-            echo "placeholder digest(s) remain in containers/; pin before publishing" >&2
+          # Names the scripts and workflow bodies actually read.
+          names=$(grep -rhoE '\$\{(ALLOW|REQUIRE)_[A-Z0-9_]+:-' \
+                    build/ tools/ .forgejo/workflows/ \
+                  | sed -E 's/^\$\{//; s/:-$//' | sort -u)
+          # Vacuity guard, same shape as the other jobs here: an extraction that
+          # silently found nothing would make this pass without checking.
+          count=$(printf '%s' "$names" | grep -c . || true)
+          if (( count < 3 )); then
+            echo "::error::found only $count ALLOW_*/REQUIRE_* names (expected >= 3);" >&2
+            echo "::error::the extraction pattern is probably broken." >&2
             exit 1
           fi
+          fails=0
+          for n in $names; do
+            # Built as a pattern rather than written literally, so this job never
+            # contains an expression template of its own (which would trip the
+            # workflow-expressions job above).
+            if ! grep -rqE "vars\\.$n" .forgejo/workflows/; then
+              echo "  $n is read by a script but no workflow passes it via env: vars.$n" >&2
+              fails=$((fails+1))
+            fi
+            if ! grep -rq "$n" docs/operators/ configs/POLICY.md; then
+              echo "  $n is not documented in docs/operators/ or configs/POLICY.md" >&2
+              fails=$((fails+1))
+            fi
+          done
+          if (( fails > 0 )); then
+            echo "$fails escape-hatch problem(s)" >&2
+            exit 1
+          fi
+          echo "escape hatches OK ($count: $(echo "$names" | tr '\n' ' '))"
+
+  container-digests-pinned:
+    # Replaces `no-placeholder-digests`, which could no longer fail: it grepped
+    # containers/ for the placeholder token, and that token now appears ONLY in
+    # shim/Dockerfile -- which the job deliberately excludes. A check that
+    # cannot fail is worse than no check, because it reads as coverage.
+    #
+    # Inverted to a POSITIVE assertion, which cannot go dormant: every FROM under
+    # containers/ must carry a concrete @sha256 digest. The shim track is
+    # unbuilt, so shim/Dockerfile keeps its placeholder and stays out of scope.
+    #
+    # Also enforces the digest-sync comment at build-kernel.yml's CONTAINER_IMAGE
+    # ("Keep this digest in sync with the job container image above"), which was
+    # pure convention. They agree today; if they ever diverge, every manifest
+    # records a build environment the build did not use, and repro-check
+    # faithfully rebuilds in an image that never produced the release --
+    # mismatches that look like tampering.
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - name: container FROMs are digest-pinned
+        run: |
+          set -euo pipefail
+          fails=0
+          examined=0
+          for f in containers/Dockerfile*; do
+            [[ -f $f ]] || continue
+            while IFS= read -r line; do
+              examined=$((examined+1))
+              if [[ ! $line =~ @sha256:[0-9a-f]{64}([[:space:]]|$) ]]; then
+                echo "  $f: FROM is not digest-pinned: $line" >&2
+                fails=$((fails+1))
+              fi
+            done < <(grep -E '^[[:space:]]*FROM[[:space:]]' "$f")
+          done
+          if (( examined == 0 )); then
+            echo "::error::no FROM lines examined under containers/ — wrong path?" >&2
+            exit 1
+          fi
+          # build-kernel.yml's job container vs the digest recorded in manifests.
+          job_img=$(grep -oE 'image: debian:[a-z]+@sha256:[0-9a-f]{64}' \
+                      .forgejo/workflows/build-kernel.yml | head -n1 | sed 's/^image: //')
+          rec_img=$(grep -oE 'CONTAINER_IMAGE: debian:[a-z]+@sha256:[0-9a-f]{64}' \
+                      .forgejo/workflows/build-kernel.yml | head -n1 | sed 's/^CONTAINER_IMAGE: //')
+          if [[ -z $job_img || -z $rec_img ]]; then
+            echo "::error::could not extract both the job container image and CONTAINER_IMAGE" >&2
+            echo "::error::(job='$job_img' recorded='$rec_img'); the patterns need updating." >&2
+            exit 1
+          fi
+          if [[ $job_img != "$rec_img" ]]; then
+            echo "  build-kernel.yml: the job container and the recorded CONTAINER_IMAGE differ:" >&2
+            echo "    container.image  : $job_img" >&2
+            echo "    CONTAINER_IMAGE  : $rec_img" >&2
+            echo "  Every manifest would record a build environment the build did not use." >&2
+            fails=$((fails+1))
+          fi
+          if (( fails > 0 )); then echo "$fails digest problem(s)" >&2; exit 1; fi
+          echo "container digests OK ($examined FROM line(s); build image == recorded image)"
