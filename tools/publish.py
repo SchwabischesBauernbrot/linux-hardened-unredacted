@@ -68,12 +68,15 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 def _stream_put(
     url: str, path: Path, headers: dict[str, str], timeout: float,
-) -> tuple[int, str]:
+) -> tuple[int, str, str]:
     """PUT a file with streaming body and an explicit timeout.
 
     urllib.request can take a file-like `data` argument, but it
     sometimes reads the entire body into memory before sending. Using
     http.client directly keeps memory bounded for a 200 MB .deb.
+
+    Returns (status, body, location). `location` is the Location header or
+    "" — it is the actionable detail on a 3xx, which upload_deb rejects.
     """
     parts = urlparse(url)
     conn = http.client.HTTPSConnection(parts.netloc, timeout=timeout)
@@ -88,7 +91,7 @@ def _stream_put(
                 conn.send(chunk)
         resp = conn.getresponse()
         body = resp.read().decode(errors="replace")
-        return resp.status, body
+        return resp.status, body, resp.getheader("Location") or ""
     finally:
         conn.close()
 
@@ -149,7 +152,7 @@ def upload_deb(
     while True:
         attempt += 1
         try:
-            status, body = _stream_put(url, path, headers, timeout)
+            status, body, location = _stream_put(url, path, headers, timeout)
         except (TimeoutError, OSError) as e:
             if attempt <= max_retries:
                 time.sleep(2 ** attempt)
@@ -175,6 +178,29 @@ def upload_deb(
         if status >= 400:
             raise SystemExit(
                 f"upload failed for {path.name}: HTTP {status}\n"
+                f"{_redact(body)[:512]}"
+            )
+        # Anything that is not 2xx did NOT store the package. Notably a 3xx:
+        # the origin sits behind a reverse proxy (see
+        # docs/operators/reverse-proxy.md), and a route that answers the PUT
+        # with 301/302 — http->https canonicalization, a moved upstream, a
+        # trailing-slash redirect — stores nothing. http.client does not
+        # follow redirects and the body is discarded, so the previous
+        # `status >= 400` gate let a 301 fall straight through to
+        # record["status"] = 301: this function printed "uploaded ...", the
+        # manifest recorded a publish that never happened, Fastly was purged,
+        # and the workflow went green over an empty repository. The manifest
+        # schema in releases/README.md documents status as 201, so a 2xx
+        # assertion is what was always intended.
+        if not 200 <= status < 300:
+            raise SystemExit(
+                f"upload failed for {path.name}: HTTP {status} is not 2xx, so "
+                f"nothing was stored.\n"
+                f"  url:      {url}\n"
+                f"  location: {location or '<none>'}\n"
+                f"A 3xx here means the reverse proxy redirected the PUT "
+                f"instead of passing it through; fix the route so the upload "
+                f"endpoint is reached directly.\n"
                 f"{_redact(body)[:512]}"
             )
         record["status"] = status

@@ -140,9 +140,17 @@ jobs:
       - name: assert tag is current with main
         env:
           ALLOW_STALE_TAG: ${{ vars.ALLOW_STALE_TAG }}
+          # Via env:, not spliced into the script body. The runner substitutes
+          # an expression template into the `run:` text BEFORE bash parses it,
+          # so a ref name containing a double quote would close the assignment
+          # at parse time and run the remainder as shell — in the job that
+          # holds KERNEL_SIGNING_KEY. GITHUB_REF_NAME is normally already set
+          # by the runner; REF_NAME is the documented fallback for act runners
+          # that don't export it.
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME:-${{ github.ref_name }}}"
+          tag="${GITHUB_REF_NAME:-$REF_NAME}"
           # The checkout above fetched tags but not necessarily the main
           # branch ref. Fetch it with an EXPLICIT destination refspec rather
           # than `git fetch origin main`: when checkout runs against a tag it
@@ -175,9 +183,16 @@ jobs:
 
       - name: derive version
         id: ver
+        env:
+          # Via env: rather than spliced into the script body — see the
+          # explanation on the "assert tag is current with main" step above.
+          # This matters even though the regex below rejects a malformed tag:
+          # the injection happens at bash PARSE time, before the regex ever
+          # runs, so the validation cannot protect the assignment that feeds it.
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME:-${{ github.ref_name }}}"
+          tag="${GITHUB_REF_NAME:-$REF_NAME}"
           # Fail loud on malformed tags. A typo'd tag would otherwise
           # silently feed garbage to wget in the next step.
           #

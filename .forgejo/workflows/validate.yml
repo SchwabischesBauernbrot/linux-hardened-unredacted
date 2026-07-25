@@ -48,6 +48,32 @@ jobs:
             echo "::error::expression template inside a comment above; reword it" >&2
             fails=1
           fi
+          # A template anywhere inside a run: script body. The preprocessor
+          # splices the VALUE into the script text before bash parses it, so a
+          # value containing a double quote, backtick, $(...) or ; is executable
+          # shell -- in jobs that hold KERNEL_SIGNING_KEY (build-kernel.yml) or
+          # every publish credential and the push-to-main token (publish.yml).
+          # Pass values through env: and reference them as shell variables; an
+          # env var's value is never re-scanned by the shell parser.
+          #
+          # Rule: a template may appear ONLY as a YAML mapping value. So find
+          # every templated line and subtract the ones shaped like `key: value`
+          # or `- key: value`; whatever is left sits in a run: body. A shell
+          # line such as `echo "tag: $X"` does not match the subtraction
+          # pattern, because that requires the colon immediately after a
+          # leading identifier.
+          tmpl='\$\{\{'
+          if grep -RnE "$tmpl" .forgejo/workflows/ \
+              | grep -vE ':[0-9]+:[[:space:]]*(-[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.-]*:[[:space:]]'; then
+            echo "::error::expression template inside a run: body above; pass it via env: instead" >&2
+            fails=1
+          fi
+          # ...and a one-line `run: echo <template>` satisfies the rule above
+          # (it IS a mapping value), so reject that shape explicitly.
+          if grep -RnE "^[[:space:]]*run:.*$tmpl" .forgejo/workflows/; then
+            echo "::error::expression template on a run: line above; pass it via env: instead" >&2
+            fails=1
+          fi
           if [[ $fails -ne 0 ]]; then exit 1; fi
           echo "workflow expressions OK"
 

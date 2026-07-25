@@ -63,13 +63,36 @@ def _safe_error(e: urllib.error.HTTPError) -> str:
     return f"HTTP {e.code} {e.reason}: {redacted[:512]}"
 
 
+# urllib.request follows redirects by default AND downgrades 301/302/303 to
+# GET while doing it. On the destructive path that is actively dangerous: a
+# redirected DELETE would be replayed as a GET, urlopen would hand back the
+# 200 from that GET, and http_delete would report success for a file it never
+# removed — after which the rotation moves on and the archive copy is treated
+# as the only remaining one. A redirected download would likewise return the
+# redirect target's body. There is no legitimate redirect on these endpoints
+# (the registry API is addressed directly), so refuse to follow any: an
+# unexpected redirect is a misrouted proxy to fix, not something to silently
+# absorb. See docs/operators/reverse-proxy.md.
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        raise urllib.error.HTTPError(
+            req.full_url, code,
+            f"unexpected redirect to {newurl} (refusing to follow; "
+            f"the registry endpoint should be reached directly)",
+            headers, fp,
+        )
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def http_get(url: str, user: str, token: str) -> Any:
     auth = base64.b64encode(f"{user}:{token}".encode()).decode()
     req = urllib.request.Request(
         url, headers={"Authorization": f"Basic {auth}", "Accept": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req) as resp:
+        with _OPENER.open(req) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         raise SystemExit(f"GET {url}: {_safe_error(e)}") from e
@@ -81,8 +104,8 @@ def http_delete(url: str, user: str, token: str) -> int:
         url, method="DELETE", headers={"Authorization": f"Basic {auth}"},
     )
     try:
-        with urllib.request.urlopen(req) as resp:
-            return resp.status
+        with _OPENER.open(req) as resp:
+            status = resp.status
     except urllib.error.HTTPError as e:
         # A resumed/retried rotation may re-delete a file already gone from
         # main; treat 404 as already-done so the run stays idempotent rather
@@ -91,6 +114,12 @@ def http_delete(url: str, user: str, token: str) -> int:
             print(f"DELETE {url}: 404 (already removed) — continuing", file=sys.stderr)
             return 404
         raise SystemExit(f"DELETE {url}: {_safe_error(e)}") from e
+    # Only 200/204 mean the file is gone. Anything else 2xx-but-unexpected is
+    # not proof of deletion, and this function's return value is what the
+    # caller uses to decide the archive copy is now the only one.
+    if status not in (200, 204):
+        raise SystemExit(f"DELETE {url}: unexpected HTTP {status} (expected 200 or 204)")
+    return status
 
 
 def download_file(url: str, user: str, token: str, dest: Path) -> None:
@@ -98,7 +127,7 @@ def download_file(url: str, user: str, token: str, dest: Path) -> None:
     auth = base64.b64encode(f"{user}:{token}".encode()).decode()
     req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
     try:
-        with urllib.request.urlopen(req) as resp, dest.open("wb") as f:
+        with _OPENER.open(req) as resp, dest.open("wb") as f:
             while True:
                 chunk = resp.read(DOWNLOAD_CHUNK)
                 if not chunk:

@@ -62,22 +62,61 @@ jobs:
 
       - name: resolve target
         id: target
+        # Every value here arrives via env:, NOT as a template spliced into the
+        # script body. The runner substitutes an expression template into the
+        # `run:` text BEFORE bash parses it, so a value containing a double
+        # quote closes the assignment's quote at parse time and everything
+        # after it is shell code. `inputs.version` is a free-text
+        # workflow_dispatch box and `release.tag_name` is a git ref name (refs
+        # permit " $ ` ; | ( ) ), and THIS job holds REGISTRY_TOKEN,
+        # RELEASE_TOKEN, MANIFEST_COMMIT_TOKEN and FASTLY_PURGE_TOKEN — i.e.
+        # push-to-main and upload-to-the-apt-repo. Every other step in this
+        # file already uses env:; this step was the exception.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VER: ${{ inputs.version }}
+          INPUT_DIST: ${{ inputs.distribution }}
         run: |
           set -euo pipefail
           # Resolve the tag + distribution from whichever trigger fired.
-          if [[ "${{ github.event_name }}" == "release" ]]; then
-            tag="${{ github.event.release.tag_name }}"
+          if [[ "${EVENT_NAME:-}" == "release" ]]; then
+            tag="${RELEASE_TAG:-}"
             # The build is single-target (trixie) today; revisit when the
             # matrix grows to multiple distributions.
             dist="trixie"
           else
-            tag="${{ inputs.version }}"
-            dist="${{ inputs.distribution }}"
+            tag="${INPUT_VER:-}"
+            dist="${INPUT_DIST:-}"
           fi
           [[ -n $tag ]] || { echo "could not resolve release tag" >&2; exit 1; }
+          # Quoting stops command injection; it does NOT stop path traversal.
+          # $tag becomes a path component (releases/<tag>/manifest.json below),
+          # a `git commit -m` argument, and part of a registry URL, so a value
+          # like ../../x is still harmful while being perfectly well-quoted.
+          # Validate the grammar once, here, and every downstream consumer
+          # (which already uses env: correctly) inherits the guarantee.
+          #
+          # Same grammar as build-kernel.yml's derive-version step:
+          # vX.Y.Z-hardenedN[.P], N and P >= 1 with no leading zeros. Kept as a
+          # deliberate duplicate rather than shared, because publish can be
+          # dispatched by hand for a tag this workflow never watched get built.
+          # KEEP THE TWO REGEXES IN SYNC.
+          if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$ ]]; then
+            echo "::error::not a release tag: $tag" >&2
+            echo "::error::expected vX.Y.Z-hardenedN[.P] (N,P >=1, no leading zeros)" >&2
+            exit 1
+          fi
+          # Allowlist, not a regex: $dist is also a path/URL component, and the
+          # set of distributions we publish is small and known. Extend it in the
+          # same commit that teaches the build matrix a new release.
+          case $dist in
+            trixie|bookworm|noble|jammy) ;;
+            *) echo "::error::unknown distribution: $dist" >&2; exit 1 ;;
+          esac
           echo "tag=$tag"   >> "$GITHUB_OUTPUT"
           echo "dist=$dist" >> "$GITHUB_OUTPUT"
-          echo "publishing tag=$tag dist=$dist (event=${{ github.event_name }})"
+          echo "publishing tag=$tag dist=$dist (event=${EVENT_NAME:-})"
 
       - name: download release assets
         env:
