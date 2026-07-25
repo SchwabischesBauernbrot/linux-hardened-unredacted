@@ -6,8 +6,8 @@ The build's `.config` is composed at configure time from two committed inputs pl
 
 1. **The upstream seed.** A full hardened `.config` snapshot (~12,000 lines), pinned by sha256 and fetched + verified at build time by `build/fetch-seed.sh`. The seed is selected **per kernel line** (`configs/seeds/<X.Y>.toml`, chosen by the tag-derived `SERIES`; see [Kernel lines](#kernel-lines-single-stable-line-multi-line-capable)). For the stable line it is anthraxx's Arch `linux-hardened` `config.x86_64`, signed-commit-verified. (`configs/upstream-seed.toml` remains as a back-compat symlink to the stable line's seed.)
 
-2. **`configs/intent.config`.** Our overlay: 92 setting lines pinning every hardening symbol POLICY.md positions on. Two layers:
-   - **Deltas** (17 lines): where we deliberately diverge from anthraxx (stricter lockdown forcing, `MODULE_SIG_FORCE`, SHA256+RSA module-signing crypto vs their SHA512+ECDSA, XZ vs ZSTD module compression, latent_entropy off, Docker NAT modules, `USERFAULTFD` kept on with sysctl restriction).
+2. **`configs/intent.config`.** Our overlay: 90 setting lines pinning every hardening symbol POLICY.md positions on. Two layers:
+   - **Deltas** (17 lines): where we deliberately diverge from anthraxx (stricter lockdown forcing, `MODULE_SIG_FORCE`, SHA256+RSA module-signing crypto, XZ vs ZSTD module compression, latent_entropy off, Docker NAT modules, `USERFAULTFD` compiled out entirely). What anthraxx selects today is not asserted here — the seed is fetched at build time and is not in this tree; re-read it with `tools/reconcile-vs-anthraxx.sh`.
    - **Insurance pins** (75 lines): every other POLICY-tracked hardening symbol, pinned explicitly even when anthraxx already sets it the same way. Defense-in-depth — a future seed bump cannot silently regress one of these because the fidelity assertion (below) fires the moment one fails to land.
 
 3. **The patched kernel tree.** Upstream Linux at the tagged version plus the linux-hardened patch (`build/fetch-sources.sh` + `build/apply-patches.sh`). Independent of seed/intent; same as in every prior architecture.
@@ -88,8 +88,10 @@ If a new kernel introduces a symbol that interacts with one of our intent pins (
 Run periodically (quarterly, or when `tools/reconcile-vs-anthraxx.sh` flags interesting changes):
 
 ```
-tools/bump-seed.sh 7.0.10.hardened1-1   # or a commit hash
+tools/bump-seed.sh --pin-file configs/seeds/7.1.toml 7.1.4.hardened1-1   # or a commit hash
 ```
+
+Always pass `--pin-file` for the line you mean. Without it the default target is the `configs/upstream-seed.toml` symlink, i.e. whichever line is *currently* stable — so a copy-pasted example naming an older series' ref silently rewrites the current line's pin to that series' config. `bump-seed.sh` prints a `SERIES BOUNDARY` warning when a bump crosses lines, but it still performs the rewrite.
 
 This:
 - Fetches the repo at that ref.
@@ -142,6 +144,21 @@ This model eliminates that class *for the symbols we pin*: the seed targets the 
 The intermediate architecture (commit `7fb8b31`) committed the full final `.config` as `configs/config.debian-trixie-amd64` and did `cp + olddefconfig + diff`. That fixed the silent-drop class but required explicit operator review of every per-kernel-bump drift — manageable in principle, but burdensome under a 48-hour CVE SLA with a small ops team. Worse, it didn't pick up new hardening features upstream linux-hardened adopted.
 
 This model inherits anthraxx's hardening choices automatically (new LSMs, new mainline hardening symbols, whatever they enable). The fidelity assertion still catches regressions on the symbols we explicitly track. The seed pin is bumped deliberately when we choose to adopt upstream's changes, not on every kernel bump.
+
+## Open decision: activating LoadPin
+
+`configs/intent.config` pins `CONFIG_SECURITY_LOADPIN=y`, `CONFIG_SECURITY_LOADPIN_ENFORCE=y`, and `CONFIG_SECURITY_SAFESETID=y`, but none of them appears in `CONFIG_LSM` — so the kernel compiles them in and never initialises them. They enforce nothing today. `configs/POLICY.md`'s `CONFIG_LSM` entry states this explicitly; the pins exist so the symbols cannot silently vanish across a seed bump, and so activating them later is a one-line edit.
+
+Turning LoadPin on is a **feature with a rollout**, not a config tidy-up. With `LOADPIN_ENFORCE=y` the kernel pins kernel-file loads (modules, firmware) to the filesystem of the first such load and refuses any from elsewhere; with `MODULE_SIG_FORCE=y` also set there is no soft-fail path. On user hardware we do not control — initramfs→root transitions, a separate `/usr`, firmware or modules on a distinct mount, DKMS modules built after boot — the failure mode ranges from a module refusing to load to an unbootable system.
+
+Preconditions before enabling:
+
+- A boot matrix covering: plain root-fs modules; initramfs→root transition; separate `/usr`; a DKMS module built and loaded post-boot; a firmware load; rescue boot.
+- A `docs/users/incompatibilities.md` entry describing the symptom and the escape.
+- A release-note warning, since it changes runtime behaviour on existing installs.
+- `loadpin` only. SafeSetID additionally needs a userspace policy to do anything, so activating it without one buys nothing.
+
+Note that `tools/check-hardening-drift.sh` cannot guard the `CONFIG_LSM` string — it compares only `=y`/`=m` symbols and skips value-only ones by design. The fidelity assertion is the sole check on that value.
 
 ## When to suspect this model is wrong for a situation
 

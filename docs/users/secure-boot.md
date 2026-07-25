@@ -43,6 +43,8 @@ Secure Boot will only boot our kernel once you tell the firmware to trust the pr
 
 Subsequent kernel updates need no re-enrollment as long as we sign with the same key. Signing-key rotation is announced in release notes and requires importing the new certificate the same way.
 
+To *remove* the enrollment later, see [uninstall.md](uninstall.md#remove-the-mok-enrollment-optional) — and note the warning there about not deleting your machine's own DKMS MOK by mistake.
+
 ### If you rebooted without enrolling
 
 No harm done — re-run the import and reboot again:

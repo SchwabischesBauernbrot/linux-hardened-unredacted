@@ -115,7 +115,10 @@ tools/reconcile-vs-anthraxx.sh
 
 # If you want to adopt their changes, bump the pin (signature + sha256
 # verified; prints the hardening-relevant delta for the commit message)
-tools/bump-seed.sh 7.0.10.hardened1-1
+# Always name the line explicitly: without --pin-file the target is the
+# upstream-seed.toml symlink (whichever line is currently stable), so a ref
+# from an older series would rewrite the current line's pin to that config.
+tools/bump-seed.sh --pin-file configs/seeds/7.1.toml 7.1.4.hardened1-1
 ```
 
 The `intent-matches-policy` CI check (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between `configs/intent.config` and `configs/POLICY.md` — update both together when changing one. Full design in [config-architecture.md](config-architecture.md).
@@ -172,6 +175,35 @@ curl -fsS https://repo.unredacted.org/debian/dists/trixie/main/binary-amd64/Pack
 ```
 
 Then dispatch `repro-check.yml` for this tag to verify reproducibility. It is `workflow_dispatch`-only (Forgejo has no `workflow_run` trigger, so it cannot auto-chain off publish); the nightly cron is the backstop. It needs a docker-capable runner.
+
+## 10a. Publish the release (un-draft it) — manual
+
+`build-kernel.yml` creates the Forgejo release as a **draft** by design: that is the human review gate before anything becomes public. `publish.yml` can read a draft's assets because it sends the release token, so the registry publish above works while the release is still a draft — which is exactly why this step is easy to forget.
+
+Nothing in any workflow un-drafts the release. Until you do it by hand, anonymous users get a 404 on the release assets, which breaks:
+
+- [../users/secure-boot.md](../users/secure-boot.md) — users `wget` `unredacted-hardened.der` from the release URL to enroll MOK. Without it they cannot boot the kernel they just installed on a Secure Boot machine.
+- [../users/verifying-packages.md](../users/verifying-packages.md) — the same download, plus the fingerprint published in the release notes.
+- [../users/cve-policy.md](../users/cve-policy.md) — the Forgejo releases RSS feed is the announced CVE-response channel, and drafts do not appear in it.
+
+In the Forgejo UI: **Releases → the draft → Edit → untick "This is a draft" → Update release**. Or via the API:
+
+```
+# Resolve the id from the LIST endpoint, not /releases/tags/{tag}: some Forgejo
+# versions filter drafts out of the by-tag lookup and return a null id.
+id=$(curl -fsS -H "Authorization: token $RELEASE_TOKEN" \
+  "https://git.unredacted.org/api/v1/repos/unredacted/linux-hardened-unredacted/releases?limit=50" \
+  | jq -r --arg t "$TAG" '.[] | select(.tag_name==$t) | .id')
+curl -fsS -X PATCH -H "Authorization: token $RELEASE_TOKEN" \
+  -H "Content-Type: application/json" -d '{"draft":false}' \
+  "https://git.unredacted.org/api/v1/repos/unredacted/linux-hardened-unredacted/releases/$id"
+```
+
+Confirm it is reachable without credentials before announcing:
+
+```
+curl -sI "https://git.unredacted.org/unredacted/linux-hardened-unredacted/releases/download/$TAG/unredacted-hardened.der" | head -1
+```
 
 ## 11. Install on a clean Debian 13 VM
 

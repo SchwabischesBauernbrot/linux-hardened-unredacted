@@ -72,9 +72,13 @@ Stack-erase runtime knobs, pinned off (the upstream-hardened default; they only 
 
 Deliberately off — a small, reasoned divergence from upstream linux-hardened (which enables it). The plugin mixes compiler-inserted entropy into the RNG during early boot, but the benefit is marginal on our target (x86_64 with RDRAND/RDSEED and modern early-boot seeding), while it injects build-time randomness that breaks bit-for-bit reproducibility. Reproducibility is this project's primary defense against its online-signing-key weakness (an independent rebuilder detecting a tampered build), so we keep clean reproducibility over the marginal entropy gain.
 
-### `# CONFIG_GCC_PLUGIN_STRUCTLEAK is not set`
+### Stack-variable initialisation: `INIT_STACK_ALL_ZERO`, not the structleak plugin
 
-Left off: superseded by `INIT_STACK_ALL_ZERO` (the compiler builtin that zero-initialises stack variables). `RANDSTRUCT` likewise stays at the kernel default (off) to avoid a rebuild-fragile struct ABI, matching upstream.
+Stack variables are zero-initialised by the compiler builtin (`INIT_STACK_ALL_ZERO`, pinned above), not by the GCC structleak plugin.
+
+This entry used to carry a `# CONFIG_GCC_PLUGIN_STRUCTLEAK is not set` assertion and a matching pin in `intent.config`. Both were removed: the plugin no longer exists upstream (the symbol is absent from every `final.config` in `releases/`, across both the 7.0 and 7.1 lines), and an off-pin for a symbol kconfig does not know is satisfied by its absence — so it enforced nothing and could never fail. Reading it as a live position was misleading.
+
+`RANDSTRUCT` likewise stays at the kernel default (off) to avoid a rebuild-fragile struct ABI, matching upstream.
 
 ## Control-flow integrity
 
@@ -112,9 +116,13 @@ Boot-time warning if any W^X violation slips through the static enforcement. Mat
 
 Build module-signing into the kernel (`CONFIG_MODULE_SIG`), refuse unsigned modules at load (`MODULE_SIG_FORCE`), sign every module in the build (`MODULE_SIG_ALL`), use SHA-256 (`MODULE_SIG_SHA256`). The signing key is the project's Forgejo-resident key, except for DKMS-built out-of-tree modules which are signed with the user's machine-local MOK key. anthraxx ships `MODULE_SIG=y` but does not `FORCE`; ours is stricter. Matches linux-hardened upstream on the rest.
 
-### `CONFIG_MODULE_SIG_KEY_TYPE_RSA=y`, `# CONFIG_MODULE_SIG_KEY_TYPE_ECDSA is not set`
+### `CONFIG_MODULE_SIG_KEY_TYPE_RSA=y`
 
-Module-signing key algorithm: RSA, not ECDSA. anthraxx uses ECDSA; we deliberately diverge. RSA is more broadly compatible with downstream verifiers — older shim chains, embedded MOK utilities, distros that haven't refreshed their host-side tooling. Cryptographically sufficient for the threat model (the matching `MODULE_SIG_SHA256` paired hash gives us SHA-256 + RSA, a standard combination). A future migration to ECDSA is possible once the ecosystem catches up.
+Module-signing key algorithm: RSA. More broadly compatible with downstream verifiers — older shim chains, embedded MOK utilities, distros that haven't refreshed their host-side tooling. Cryptographically sufficient for the threat model (the matching `MODULE_SIG_SHA256` paired hash gives SHA-256 + RSA, a standard combination).
+
+Only the selected member is pinned. `MODULE_SIG_KEY_TYPE_*` is a kconfig `choice`, so selecting RSA is exclusive by construction and pinning siblings off adds nothing — while guaranteeing churn every time upstream adds a member. Same reasoning as the per-CPU mitigation symbols below.
+
+*History:* this entry used to pin `# CONFIG_MODULE_SIG_KEY_TYPE_ECDSA is not set` and describe RSA as a deliberate divergence from anthraxx's ECDSA. That off-pin was removed because the symbol no longer exists upstream — as of the 7.x line the choice offers RSA plus the post-quantum ML-DSA variants (`MODULE_SIG_KEY_TYPE_MLDSA_44/65/87`, all off in the shipped `final.config`), with no ECDSA member. An off-pin for a symbol kconfig does not know is satisfied by its absence, so it could never have failed. What anthraxx selects *today* is not asserted here: the seed is fetched at build time and is not in this tree, so re-read it at the next bump via `tools/reconcile-vs-anthraxx.sh` rather than trusting a claim in this document.
 
 ### `CONFIG_MODULE_SIG_KEY="certs/signing_key.pem"`
 
@@ -122,7 +130,9 @@ Placeholder path: the kernel build's stock default. The actual signing key is ma
 
 ### `CONFIG_MODULE_COMPRESS_XZ=y`, `# CONFIG_MODULE_COMPRESS_ZSTD is not set`
 
-Module compression: XZ, not ZSTD. anthraxx ships ZSTD; we use XZ. Both compress; neither affects security posture. The choice matters for `tools/strip-signatures.sh`: a compressed module's signature lives *inside* the compressed stream and can't be stripped by the rfind-trailer approach the helper uses today. That's a known caveat (tracked separately as the strip-signatures fix); the compression algorithm choice doesn't make it better or worse, but pinning *some* explicit choice means future repro-check diffs are deterministic on the compression boundary.
+Module compression: XZ. Neither choice affects security posture, but pinning *some* explicit choice means repro-check diffs are deterministic on the compression boundary.
+
+This entry used to say a compressed module's signature "can't be stripped by the rfind-trailer approach the helper uses today", calling it a known caveat. That is no longer true: `tools/strip-signatures.sh` decompresses `.ko.xz` / `.ko.gz` / `.ko.zst` and strips the signature from the inner stream, so the compression algorithm is not a reproducibility constraint either way.
 
 ### `CONFIG_SECURITY_LOCKDOWN_LSM=y`, `CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y`, `CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y`
 
@@ -246,7 +256,17 @@ These symbols are all set identically by anthraxx's seed and appear in the shipp
 
 ### `CONFIG_LSM="landlock,lockdown,yama,integrity,bpf"`, `CONFIG_SECURITY_YAMA=y`, `CONFIG_SECURITY_LANDLOCK=y`, `CONFIG_SECURITY_LOADPIN=y`, `CONFIG_SECURITY_LOADPIN_ENFORCE=y`, `CONFIG_SECURITY_SAFESETID=y`
 
-Pins the active LSM set and ordering plus the stacked LSMs: Yama (ptrace scope), Landlock (unprivileged sandboxing), LoadPin + enforce (pin kernel-file loads to one verified filesystem), and SafeSetID (constrain set*id transitions). The lockdown LSM is pinned separately under Module + kernel integrity. Matches anthraxx.
+Pins the active LSM list and ordering, plus the individual LSM symbols so a seed bump cannot silently drop one. The lockdown LSM is pinned separately under Module + kernel integrity. Matches anthraxx.
+
+Be precise about what is **active**, because compiled-in and active are different things. The kernel initialises only the LSMs named in `CONFIG_LSM`; per its own help text, any LSM left off that list (other than the `LSM_ORDER_FIRST`/`LSM_ORDER_LAST` ones) is *ignored*. So of the symbols pinned here:
+
+- **Active:** Yama (ptrace scope) and Landlock (unprivileged sandboxing) — both named in `CONFIG_LSM`.
+- **Compiled in but NOT active:** LoadPin (with `LOADPIN_ENFORCE`) and SafeSetID. They are built, but absent from `CONFIG_LSM`, so the kernel never initialises them and they enforce nothing. They stay pinned so the symbols cannot silently vanish from a seed bump, and so activating them later is a one-line `CONFIG_LSM` edit rather than config archaeology — not because they are protecting anything today.
+- **Inert:** `integrity` is named in the list, but it is a no-op here. The integrity subsystem is built (inherited from the seed, not pinned), while `CONFIG_IMA` and `CONFIG_EVM` are both off in the shipped config — so there is no policy for it to enforce. Harmless, matches anthraxx, and keeping it in the list means enabling IMA later needs no `CONFIG_LSM` change.
+
+Activating LoadPin is deliberately **not** treated as a documentation fix. With `LOADPIN_ENFORCE=y` the kernel pins kernel-file loads (modules, firmware) to the filesystem of the first such load and refuses any from elsewhere; combined with `MODULE_SIG_FORCE=y` there is no soft-fail path. On unknown user hardware — initramfs→root transitions, a separate `/usr`, firmware or modules on a distinct mount, DKMS modules built after boot — the failure mode ranges from "a module refuses to load" to "does not boot", and this project has no boot-test farm. Turning it on is a feature with a rollout (boot matrix, an `docs/users/incompatibilities.md` entry, a release-note warning), tracked as an open decision in `DECISIONS.md`, not a side effect of correcting this paragraph.
+
+Note that `tools/check-hardening-drift.sh` cannot protect the `CONFIG_LSM` string at all — it only compares `=y`/`=m` symbols and skips value-only ones by design. The fidelity assertion is the only thing holding that value.
 
 ### `CONFIG_X86_KERNEL_IBT=y`, `CONFIG_X86_USER_SHADOW_STACK=y`
 
