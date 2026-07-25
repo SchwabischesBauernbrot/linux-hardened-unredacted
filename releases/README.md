@@ -13,12 +13,23 @@ The byte-identical rebuild contract applies to the **unsigned** `.deb`s. An inde
 
 The signing layer is attested separately by `signing_cert_sha256` in the manifest. Anyone with a released `.deb` can verify that `sbverify` against the manifest's `signing_cert_sha256` succeeds; that's the proof the signing key is the one we say it is.
 
+## Schema versions
+
+`schema_version` records which fields a reader may rely on. Because manifests are append-only, a release built under an older schema can never gain the newer fields — so a verifier must branch on this value rather than assume.
+
+| `schema_version` | Releases | Contract |
+| ---------------- | -------- | -------- |
+| *absent* (legacy) | `v7.0.10-hardened1` … `v7.1.4-hardened1` | Every field below except `schema_version` and `ci_run_number`. **Not fully verifiable by rebuild:** these builds compiled the CI run number into `KBUILD_BUILD_VERSION` (hence into `UTS_VERSION` inside `vmlinux`) without recording it, so the value is unrecoverable and no independent rebuild can match the kernel image or the `-dbg` package. `tools/repro-check.sh` reports these as *partially* verifiable, not failed. Two of them (`v7.0.10-hardened1`, `v7.0.10-hardened1.2`) additionally carry `null` for `kernel_version`/`hardened_revision` and cannot be checked at all. |
+| `2` | from `v7.1.5-hardened1` | Adds `schema_version` and `ci_run_number`. The build no longer derives anything shipped from the CI run number, so `ci_run_number` is provenance only and a rebuild does not need it. |
+
 ## Schema
 
 ```json
 {
+  "schema_version": 2,
   "kernel_version": "7.0.10",
   "hardened_revision": "1",
+  "ci_run_number": "58",
   "source_date_epoch": "1780034773",
   "container_image": "debian:trixie@sha256:<digest>",
   "signing_cert_sha256": "<sha256 of the X.509 cert that signed this build>",

@@ -413,6 +413,13 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
           SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
           WORKDIR: ${{ runner.temp }}/work
+          # Which CI run produced this release. Recorded for traceability: the
+          # build used to compile github.run_number into KBUILD_BUILD_VERSION
+          # (so into UTS_VERSION inside vmlinux) while repro-check.sh hard-coded
+          # REVISION=1, which made a byte-identical rebuild impossible and left
+          # no way to recover the real value. Manifests are append-only, so a
+          # release built without this field can never gain it.
+          CI_RUN_NUMBER: ${{ github.run_number }}
           # Keep this digest in sync with the job container image above.
           CONTAINER_IMAGE: debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
         run: |
@@ -442,6 +449,7 @@ jobs:
             --hardened-revision "$HARDENED_REVISION" \
             --container-image "$CONTAINER_IMAGE" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --ci-run-number "$CI_RUN_NUMBER" \
             --distro "$DISTRO" --release "$RELEASE" --arch "$ARCH" \
             --signing-cert "$SIGNING_CERT" \
             --sbom "$WORKDIR/sbom.json" \
