@@ -46,6 +46,8 @@ One `[[line]]` block per tracked line is the single source of truth: `series`, `
 
 Each line's seed lives in `configs/seeds/<series>.toml`; `build/fetch-seed.sh` selects it from the tag-derived `SERIES`. The stable line's seed is anthraxx's Arch `config.x86_64`, signed-commit + sha256 verified (see [Trust chain](#trust-chain)) — Arch tracks current stable, so it auto-adopts new mainline hardening anthraxx picks up. `tools/bump-seed.sh` and `seed-bump.yml` keep it current.
 
+**If the tag's series has no seed pin, the build hard-fails.** `fetch-seed.sh` refuses to fall back to another line's seed, because doing so silently turns off *both* safety nets at once: the fidelity assertion still passes (`configs/intent.config` is satisfied by either seed) and the hardening-drift guard finds no same-line baseline in `releases/`, so it skips. The result would be one series' kernel built from another series' config, in a green log. Stand the line up properly instead (add `configs/seeds/<X.Y>.toml`, repoint the `configs/upstream-seed.toml` symlink, update `configs/lines.toml`). For a deliberate one-off cross-series build, set the repo variable **`ALLOW_CROSS_SERIES_SEED=1`**, which downgrades the failure to a warning — unset it again afterwards, or the next genuine mistake passes silently.
+
 ### How the mechanisms scope per line
 
 - **Meta-packages** (`build/build-debs.sh`): each line emits a versioned `linux-image-hardened-unredacted-<X.Y>-amd64`; the stable line additionally emits the unversioned umbrella `linux-image-hardened-unredacted-amd64` (Depends `>=` the stable versioned meta), so the umbrella tracks current stable and follows a 7.0 → 7.1 transition automatically.
