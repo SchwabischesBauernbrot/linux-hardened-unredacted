@@ -22,6 +22,24 @@ version="${1:?usage: repro-check.sh VERSION}"
 manifest="releases/${version}/manifest.json"
 [[ -f $manifest ]] || { echo "missing $manifest" >&2; exit 1; }
 
+# Parse the release tag into its parts. The manifest records kernel_version and
+# hardened_revision but NOT the optional trailing packaging revision (.P), so it
+# has to come from the tag -- and it must, because it shapes the .deb version
+# (7.0.10-hardened1.5) and, since the KBUILD_BUILD_VERSION change, `uname -v`
+# too. Omitting it made every .P release structurally unverifiable: the rebuild
+# emitted ...-hardened1 .debs and the verdict loop reported MISSING for every
+# file, which reads like tampering rather than a missing input. Five of the
+# releases in releases/ are .P releases.
+#
+# Same grammar as build-kernel.yml's derive-version step; keep them in sync.
+if [[ ! $version =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
+    echo "not a release tag: $version (want vX.Y.Z-hardenedN[.P])" >&2
+    exit 2
+fi
+tag_kernel="${BASH_REMATCH[1]}"
+tag_hardened="${BASH_REMATCH[2]}"
+packaging_revision="${BASH_REMATCH[4]:-}"
+
 command -v jq >/dev/null || { echo "jq required" >&2; exit 1; }
 if ! command -v diffoscope >/dev/null; then
     echo "diffoscope not installed; reports will be sha256 mismatches only" >&2
@@ -102,6 +120,21 @@ verify_input "$(jq -r '.inputs.hardened_patch.url // empty' "$manifest")" \
 # `git -C <repo> checkout <tag>` first if you haven't.
 kernel_version=$(jq -r '.kernel_version' "$manifest")
 hardened_revision=$(jq -r '.hardened_revision' "$manifest")
+# Cross-check the manifest against the tag it is filed under. A mismatch means
+# the release directory is misnamed or the manifest belongs to another build --
+# either way, rebuilding would compare the wrong things. Two early releases
+# carry null here and cannot be checked at all; say so rather than proceeding
+# with "null" as a version string.
+if [[ $kernel_version == null || $hardened_revision == null ]]; then
+    echo "$manifest records null kernel_version/hardened_revision (a pre-schema" >&2
+    echo "release); it is not verifiable. See releases/README.md." >&2
+    exit 2
+fi
+if [[ $kernel_version != "$tag_kernel" || $hardened_revision != "$tag_hardened" ]]; then
+    echo "manifest/tag mismatch: tag $version implies ${tag_kernel}-hardened${tag_hardened}," >&2
+    echo "but $manifest records ${kernel_version}-hardened${hardened_revision}." >&2
+    exit 2
+fi
 distro=$(jq -r '.outputs[0].distro' "$manifest")
 release=$(jq -r '.outputs[0].release' "$manifest")
 arch=$(jq -r '.outputs[0].arch' "$manifest")
@@ -143,7 +176,7 @@ docker run --rm \
     -e KERNEL_VERSION="$kernel_version" \
     -e HARDENED_REVISION="$hardened_revision" \
     -e DISTRO="$distro" -e RELEASE="$release" -e ARCH="$arch" \
-    -e REVISION=1 \
+    -e PACKAGING_REVISION="$packaging_revision" \
     -e SOURCE_DATE_EPOCH="$source_date_epoch" \
     "${seed_env[@]}" \
     "$container_image" \
@@ -170,6 +203,28 @@ docker run --rm \
         /repo/build/fetch-sources.sh
         /repo/build/apply-patches.sh
         /repo/build/fetch-seed.sh
+        # CONFIG_MODULE_SIG_ALL=y means make signs every module, so the build
+        # needs a key+cert PEM. A third-party verifier does not have the
+        # project key, so generate a throwaway. RSA + SHA-256 matches
+        # CONFIG_MODULE_SIG_KEY_TYPE_RSA / CONFIG_MODULE_SIG_SHA256.
+        #
+        # This makes the rebuild WORK but not byte-identical on the artifacts
+        # that embed the certificate: kbuild links the cert DER into
+        # .builtin_trusted_keys, so boot/vmlinuz-*, boot/System.map-* and the
+        # -dbg package differ by the certificate. That is inherent -- signing
+        # needs the PRIVATE half, so handing over the published .der cannot
+        # help -- and localizing it (rather than pretending it away) is the
+        # follow-up work on the comparison itself. Set REPRO_SIGNING_KEY_PATH
+        # to compare those artifacts too, if you hold the real key.
+        if [ -n "${REPRO_SIGNING_KEY_PATH:-}" ]; then
+            cp "$REPRO_SIGNING_KEY_PATH" /work/verifier-signing.pem
+        else
+            openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 36500 \
+                -batch -subj "/CN=repro-check throwaway module-signing key/" \
+                -outform PEM -out /work/verifier-signing.pem \
+                -keyout /work/verifier-signing.pem 2>/dev/null
+        fi
+        export MODULE_SIG_KEY_PATH=/work/verifier-signing.pem
         /repo/build/configure-kernel.sh
         /repo/build/build-debs.sh
     '
