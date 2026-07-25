@@ -63,8 +63,20 @@ Arch packages only the current stable line, so an older LTS (e.g. a 6.x LTS) has
 Most upstream bumps don't require touching the seed. Tag the new kernel, push:
 
 ```
+git switch main && git pull --ff-only
 git tag v7.0.11-hardened1
 git push origin v7.0.11-hardened1
+```
+
+**Pull before you tag.** `main` moves without you: `seed-bump.yml` opens PRs that get merged, and every successful build appends a `publish: <tag>` commit with the release manifest. A tag cut from a stale checkout is a valid tag on an old commit — the build succeeds, but against the *previous* seed pin, and nothing in the pipeline complains. `--ff-only` is deliberate: if the pull isn't a fast-forward you have local commits and should sort that out before tagging a release.
+
+If you notice after pushing, delete the tag on both sides and re-cut it — the tag push is the only build trigger, so re-tagging re-runs the build:
+
+```
+git push origin :refs/tags/v7.0.11-hardened1
+git tag -d v7.0.11-hardened1
+git pull --ff-only
+git tag v7.0.11-hardened1 && git push origin v7.0.11-hardened1
 ```
 
 If the seed's pinned config is still compatible with the new kernel tree, the fidelity assertion passes and the build proceeds. Most of the time this is what happens — anthraxx changes `config.x86_64` in only ~1 in 4–5 tags.

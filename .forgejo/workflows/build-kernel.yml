@@ -114,6 +114,65 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # A tag cut from a stale checkout is a perfectly valid tag on an old
+      # commit, and the build goes GREEN while silently losing two properties:
+      #
+      #   1. It uses whatever configs/seeds/<X.Y>.toml pin existed at that
+      #      commit, not the current one. Seed bumps land on main as merged
+      #      PRs (seed-bump.yml) between builds, so a stale tag can build the
+      #      previous baseline — or, worse, a cross-series fallback seed after
+      #      main has already advanced to a real same-line seed. The seed sets
+      #      every UN-pinned hardening default, so this is a real config delta,
+      #      not a cosmetic one; the fidelity assertion won't catch it because
+      #      configs/intent.config is still satisfied.
+      #   2. It skips the hardening-drift guard entirely. That step picks its
+      #      baseline from releases/ *in the tag's own tree*, and each release
+      #      dir is added by the `publish:` commit that follows its build. A
+      #      tag predating the first publish of its line finds no baseline and
+      #      logs "skipping" — so the one check that would have caught (1)
+      #      is itself disabled by the same mistake.
+      #
+      # Both failures are invisible in a green log, so this is a hard failure
+      # rather than a warning: a WARNING here scrolls past in a 40-minute
+      # build. Set the repo variable ALLOW_STALE_TAG=1 to downgrade it to a
+      # warning for a deliberate rebuild of an old commit (same escape-hatch
+      # pattern as REQUIRE_NET_ISOLATION below, inverted).
+      - name: assert tag is current with main
+        env:
+          ALLOW_STALE_TAG: ${{ vars.ALLOW_STALE_TAG }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME:-${{ github.ref_name }}}"
+          # The checkout above fetched tags but not necessarily the main
+          # branch ref. Fetch it with an EXPLICIT destination refspec rather
+          # than `git fetch origin main`: when checkout runs against a tag it
+          # may configure a tag-only fetch refspec on the remote, in which
+          # case the bare form updates only FETCH_HEAD and leaves
+          # refs/remotes/origin/main absent (making every comparison below
+          # fail on an unknown revision).
+          git fetch -q --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          # --is-ancestor origin/main <tag> is true when the tag contains
+          # every commit on main, i.e. the tag is AT or AHEAD of main. The
+          # stale case is exactly when that's false.
+          if git merge-base --is-ancestor origin/main "$tag^{commit}"; then
+            echo "tag $tag is current with origin/main"
+            exit 0
+          fi
+          echo "commits on origin/main missing from $tag:" >&2
+          git log --oneline "$tag..origin/main" >&2
+          if [[ "${ALLOW_STALE_TAG:-}" == "1" ]]; then
+            echo "::warning::tag $tag is behind origin/main; building anyway (ALLOW_STALE_TAG=1)"
+            exit 0
+          fi
+          echo "::error::tag $tag was cut from a stale checkout and is behind origin/main." >&2
+          echo "::error::This build would use the seed pin from the tagged commit and may skip" >&2
+          echo "::error::the hardening-drift check. Delete the tag, pull, and re-cut it:" >&2
+          echo "::error::  git push origin :refs/tags/$tag && git tag -d $tag" >&2
+          echo "::error::  git switch main && git pull --ff-only" >&2
+          echo "::error::  git tag $tag && git push origin $tag" >&2
+          echo "::error::To build this commit deliberately, set the repo variable ALLOW_STALE_TAG=1." >&2
+          exit 1
+
       - name: derive version
         id: ver
         run: |
