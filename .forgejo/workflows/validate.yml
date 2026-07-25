@@ -227,6 +227,93 @@ jobs:
           if (( fails > 0 )); then exit 1; fi
           echo "dep-list parity OK ($(echo "$bk" | wc -l | xargs) pkgs; repro-check omits: $EXPECTED_OMITTED)"
 
+  seed-pins-well-formed:
+    # Each configs/seeds/<X.Y>.toml pins one upstream config seed. Three
+    # invariants that nothing else checks, all cheap and all deterministic:
+    #
+    #   1. The pinned `tag` belongs to the SAME series as the filename. This is
+    #      the check that would have caught the cross-series pin: seeds/7.1.toml
+    #      spent four releases pinned to a 7.0.12 config while its own header
+    #      comment claimed anthraxx had not published a 7.1 config yet. A
+    #      cross-series seed is sometimes legitimate (a line stood up before
+    #      upstream packages it), so the escape hatch is a marker comment in the
+    #      file rather than a workflow variable -- it belongs with the pin.
+    #   2. All six keys present, `commit` 40 hex, `sha256` 64 hex. A truncated
+    #      or half-edited pin should fail here, not deep in a build.
+    #   3. configs/upstream-seed.toml resolves to the stable line's seed file.
+    #      Repointing that symlink is a documented manual step when advancing
+    #      the line (configs/lines.toml's header says so) and was unchecked.
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y --no-install-recommends python3
+      - name: seed pins are well-formed
+        run: |
+          set -euo pipefail
+          fails=0
+          examined=0
+          for f in configs/seeds/*.toml; do
+              [[ -f $f ]] || continue
+              examined=$((examined+1))
+              series=$(basename "$f" .toml)
+              get() { sed -nE "s/^$1[[:space:]]*=[[:space:]]*\"([^\"]*)\".*/\1/p" "$f" | head -n1; }
+              for k in url commit tag config_path sha256 signer_fpr; do
+                  if [[ -z $(get "$k") ]]; then
+                      echo "  $f: missing or unparseable key '$k'" >&2
+                      fails=$((fails+1))
+                  fi
+              done
+              [[ $(get commit) =~ ^[0-9a-f]{40}$ ]] || {
+                  echo "  $f: commit is not a 40-hex sha1: $(get commit)" >&2; fails=$((fails+1)); }
+              [[ $(get sha256) =~ ^[0-9a-f]{64}$ ]] || {
+                  echo "  $f: sha256 is not 64 hex: $(get sha256)" >&2; fails=$((fails+1)); }
+              # Series agreement, unless the file explicitly declares itself a
+              # cross-series stopgap with a `# cross-series-seed: <reason>` line.
+              tag=$(get tag)
+              if [[ $tag != "$series".* ]] && ! grep -qE '^# cross-series-seed:' "$f"; then
+                  echo "  $f: pinned tag '$tag' is not from series $series." >&2
+                  echo "    A cross-series seed sets every UN-pinned hardening default from" >&2
+                  echo "    the wrong line. If that is intended (the line was stood up before" >&2
+                  echo "    anthraxx packaged a config for it), add a line to $f reading:" >&2
+                  echo "      # cross-series-seed: <why, and when it can be bumped>" >&2
+                  fails=$((fails+1))
+              fi
+          done
+          # Vacuity guard: a glob that matched nothing would report success.
+          if (( examined == 0 )); then
+              echo "  no configs/seeds/*.toml examined — wrong path, or the glob did not expand" >&2
+              fails=$((fails+1))
+          fi
+          # The legacy symlink must track the stable line.
+          stable=$(python3 tools/lines.py stable-series)
+          want="seeds/${stable}.toml"
+          got=$(readlink configs/upstream-seed.toml || true)
+          if [[ $got != "$want" ]]; then
+              echo "  configs/upstream-seed.toml -> '${got:-<not a symlink>}', expected '$want'" >&2
+              echo "    Repointing it is a manual step when advancing the stable line." >&2
+              fails=$((fails+1))
+          fi
+          # And every registered line's declared seed must satisfy lines.py's
+          # convention + existence assertions (tools/lines.py seed_path_for).
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          import lines
+          bad = 0
+          for ln in lines.load():
+              try:
+                  lines.seed_path_for(ln["series"])
+              except ValueError as e:
+                  print(f"  {e}", file=sys.stderr)
+                  bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+          if (( fails > 0 )); then
+              echo "$fails seed-pin problem(s)" >&2
+              exit 1
+          fi
+          echo "seed pins OK ($examined file(s) examined; symlink -> $want)"
+
   no-placeholder-digests:
     # Pin placeholders must be replaced with concrete digests on main.
     # This job runs on push to main only; feature branches can carry the

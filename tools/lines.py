@@ -99,7 +99,44 @@ def keep_for_series(series: str, path: Path | None = None) -> int | None:
 
 
 def seed_path_for(series: str, path: Path | None = None) -> str:
-    return _by_series(series, path)["seed"]
+    """Repo-relative seed pin path for `series`, validated.
+
+    build/fetch-seed.sh resolves the seed BY CONVENTION -- it computes
+    configs/seeds/$SERIES.toml and never reads lines.toml -- so a `seed` value
+    pointing anywhere else is silently ignored by the build while
+    seed-bump.yml (which does go through here) would faithfully bump the wrong
+    file. A copy-paste slip when advancing the line, e.g.
+
+        series = "7.2"
+        seed   = "configs/seeds/7.1.toml"
+
+    would otherwise pass every existing check and keep proposing bumps to the
+    old line's pin. Assert both the convention and existence.
+
+    Deliberately NOT validated in load(): tools/prune.py calls load() for
+    retention bucketing and must keep working for a line whose seed file has
+    been removed.
+    """
+    seed = _by_series(series, path)["seed"]
+    expected = f"configs/seeds/{series}.toml"
+    if seed != expected:
+        raise ValueError(
+            f"line {series!r} declares seed {seed!r}, but build/fetch-seed.sh "
+            f"resolves the seed by convention as {expected!r} and never reads "
+            f"this registry. Rename the file or fix configs/lines.toml so they "
+            f"agree."
+        )
+    # Resolve the repo-relative seed against the registry's OWN root
+    # (configs/lines.toml -> repo root), not the installed _REPO_ROOT, so an
+    # injected fixture registry validates against its own tree.
+    root = (path.resolve().parent.parent if path else _REPO_ROOT)
+    if not (root / seed).is_file():
+        raise ValueError(
+            f"line {series!r} declares seed {seed!r}, which does not exist "
+            f"under {root}. Create it with: "
+            f"tools/bump-seed.sh --pin-file {seed} <ref>"
+        )
+    return seed
 
 
 def series_for_version(version: str) -> str:
