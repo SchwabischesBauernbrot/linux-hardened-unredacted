@@ -39,6 +39,8 @@ from publish import purge_fastly, upload_deb
 # import is side-effect-free; the TOML is read only when its functions run.
 import lines as line_registry
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
 FORGEJO_BASE = "https://git.unredacted.org"
 DEFAULT_KEEP_IN_MAIN = 3
 # Retention rotates `main`; archived versions land in `archive`.
@@ -157,6 +159,59 @@ def _arch_from_filename(filename: str) -> str:
     return stem.rsplit("_", 1)[-1]
 
 
+def component_index(releases_dir: Path | None = None) -> dict[str, str]:
+    """Map each published .deb filename to the component it was uploaded to.
+
+    Why this is needed: a rotation must download from the component the file
+    ACTUALLY lives in. `SOURCE_COMPONENT` ("main") used to be hardcoded, but
+    publishes span two components -- publish.yml splits the `-dbg` package into
+    `debug` and everything else into `main` (verified against every manifest in
+    releases/: {'main': 8, 'debug': 1}). So the `-dbg` file's `main` coordinate
+    404s, `download_file` raised SystemExit, and the rotation aborted PARTWAY
+    THROUGH: after some packages had been archived-and-deleted, and before the
+    Fastly purge. That leaves `main`'s Packages index advertising pool files
+    that no longer exist, and apt 404s mid-install for users.
+
+    releases/<tag>/manifest.json's publishes[] is the authoritative record of
+    where each file went, written by tools/publish.py at publish time.
+    """
+    root = releases_dir or (_REPO_ROOT / "releases")
+    index: dict[str, str] = {}
+    if not root.is_dir():
+        return index
+    for manifest in sorted(root.glob("*/manifest.json")):
+        try:
+            data = json.loads(manifest.read_text())
+        except (OSError, json.JSONDecodeError):
+            # A malformed or unreadable manifest must not abort the rotation;
+            # the name-rule fallback below still covers its files.
+            continue
+        for pub in data.get("publishes") or []:
+            comp = pub.get("component")
+            if not comp:
+                continue
+            for up in pub.get("uploads") or []:
+                fname = up.get("file")
+                if fname:
+                    index[fname] = comp
+    return index
+
+
+def component_for(fname: str, index: dict[str, str]) -> str:
+    """Component for one .deb: the manifest record, else the naming rule.
+
+    The fallback mirrors publish.yml's split (a `*-dbg_*` package goes to
+    `debug`, everything else to `main`) for files published before manifests
+    recorded it, or by a run whose manifest is unreadable. KEEP IN SYNC with
+    publish.yml's asset-splitting step.
+    """
+    if fname in index:
+        return index[fname]
+    stem = fname[:-4] if fname.endswith(".deb") else fname
+    pkg = stem.split("_", 1)[0]
+    return "debug" if pkg.endswith("-dbg") else SOURCE_COMPONENT
+
+
 def archive_package(
     owner: str,
     distribution: str,
@@ -165,6 +220,7 @@ def archive_package(
     user: str,
     token: str,
     dry_run: bool,
+    comp_index: dict[str, str] | None = None,
 ) -> dict:
     """Move every file of one (name, version) from `main` to `archive`.
 
@@ -181,34 +237,70 @@ def archive_package(
     if dry_run:
         return {"package": name, "version": version, "actions": ["dry-run"]}
 
+    comp_index = comp_index if comp_index is not None else {}
     files = package_files(owner, name, version, user, token)
     for frec in files:
         fname = frec.get("name", "")
         if not fname.endswith(".deb"):
             continue
         arch = _arch_from_filename(fname)
+        source_component = component_for(fname, comp_index)
         coord = (
             f"pool/{quote(distribution)}/{{component}}/"
             f"{quote(name)}/{quote(version)}/{quote(arch)}"
         )
-        src = f"{FORGEJO_BASE}/api/packages/{quote(owner)}/debian/" + coord.format(
-            component=SOURCE_COMPONENT
+        url = f"{FORGEJO_BASE}/api/packages/{quote(owner)}/debian/" + coord.format(
+            component=quote(source_component)
         )
-        with tempfile.TemporaryDirectory() as td:
-            local = Path(td) / fname
-            download_file(src, user, token, local)
-            # conflict_ok: a resumed rotation may re-upload a file already
-            # archived by an earlier interrupted run; treat 409 as
-            # already-moved and proceed to delete from main.
-            upload_deb(
-                local, owner, distribution, ARCHIVE_COMPONENT, user, token, False,
-                conflict_ok=True,
-            )
-        del_url = f"{FORGEJO_BASE}/api/packages/{quote(owner)}/debian/" + coord.format(
-            component=SOURCE_COMPONENT
-        )
-        status = http_delete(del_url, user, token)
-        actions.append({"file": fname, "arch": arch, "delete_status": status})
+        # Per-file error containment. Every step below can raise SystemExit
+        # (download_file / http_delete / upload_deb all do on an API error), and
+        # letting that propagate aborted the whole rotation mid-way -- after
+        # some files were already archived-and-deleted and before the purge.
+        # Record the failure, keep going, and let main() purge and then report a
+        # non-zero exit with the full picture.
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                local = Path(td) / fname
+                download_file(url, user, token, local)
+                got = os.stat(local).st_size
+                expect = frec.get("size")
+                # download_file writes whatever arrives and checks nothing, so a
+                # connection dropped at 180 MB of a 227 MB image yields a
+                # truncated file that upload_deb would then faithfully store
+                # (Content-Length comes from os.stat, so the request is
+                # internally consistent) -- and the good copy in main would then
+                # be deleted. Compare against the size the registry reports.
+                if isinstance(expect, int) and expect > 0 and got != expect:
+                    raise ValueError(
+                        f"truncated download: got {got} bytes, registry reports "
+                        f"{expect}"
+                    )
+                # conflict_ok: a resumed rotation may re-upload a file already
+                # archived by an earlier interrupted run; treat 409 as
+                # already-moved and proceed to delete.
+                upload_deb(
+                    local, owner, distribution, ARCHIVE_COMPONENT, user, token,
+                    False, conflict_ok=True,
+                )
+        except (SystemExit, ValueError, OSError) as e:
+            actions.append({
+                "file": fname, "arch": arch, "component": source_component,
+                "error": f"archive step failed, NOT deleted from "
+                         f"{source_component}: {type(e).__name__}: {e}",
+            })
+            continue
+        # Only delete once the archive copy is in place.
+        try:
+            status = http_delete(url, user, token)
+        except SystemExit as e:
+            actions.append({
+                "file": fname, "arch": arch, "component": source_component,
+                "error": f"archived but delete failed (file still in "
+                         f"{source_component}): {e}",
+            })
+            continue
+        actions.append({"file": fname, "arch": arch,
+                        "component": source_component, "delete_status": status})
     return {"package": name, "version": version, "actions": actions}
 
 
@@ -312,6 +404,53 @@ def select_versions_to_archive(
     `main` and older `.P` rebuilds archive. Cores beyond the newest N archive
     in full. Versions that don't parse are left in `main` and logged for
     operator review (prune does not auto-archive a version it can't interpret).
+
+    Doctests. This function decides what gets DELETED, and had none until now;
+    `parse_version` above already carried them, so the convention existed.
+    Run them with `python3 -m doctest tools/prune.py`. Note the returned order
+    is newest-first within each bucket (it is a delete list, so order carries no
+    meaning -- but the expectations below have to match it).
+
+    Keeping the newest N cores of one line:
+
+    >>> select_versions_to_archive(
+    ...     ["7.1.1-hardened1", "7.1.2-hardened1", "7.1.3-hardened1",
+    ...      "7.1.4-hardened1"], 3)
+    ['7.1.1-hardened1']
+
+    A `.P` rebuild is not a separate core: within a kept core only the newest
+    rebuild stays, and the older ones archive.
+
+    >>> select_versions_to_archive(
+    ...     ["7.1.4-hardened1", "7.1.4-hardened1.2", "7.1.4-hardened1.3"], 3)
+    ['7.1.4-hardened1.2', '7.1.4-hardened1']
+
+    Lines are independent: 7.1 churn must not evict a still-maintained 7.0.
+
+    >>> select_versions_to_archive(
+    ...     ["7.0.12-hardened1", "7.1.1-hardened1", "7.1.2-hardened1",
+    ...      "7.1.3-hardened1", "7.1.4-hardened1"],
+    ...     3, {(7, 0): 3, (7, 1): 3})
+    ['7.1.1-hardened1']
+
+    Per-line `keep_in_main = 0` is the explicit sunset knob: that line archives
+    entirely, while others are untouched.
+
+    >>> select_versions_to_archive(
+    ...     ["7.0.11-hardened1", "7.0.12-hardened1", "7.1.4-hardened1"],
+    ...     3, {(7, 0): 0, (7, 1): 3})
+    ['7.0.12-hardened1', '7.0.11-hardened1']
+
+    Nothing to do when a line is within its window:
+
+    >>> select_versions_to_archive(["7.1.4-hardened1"], 3)
+    []
+
+    An unparseable version is LEFT IN MAIN, never archived (it also logs to
+    stderr, which doctest does not capture):
+
+    >>> select_versions_to_archive(["not-a-version", "7.1.4-hardened1"], 3)
+    []
     """
     keep_per_line = keep_per_line or {}
     # line(major,minor) -> core(tuple of 4 ints) -> [(version, parsed_key), ...]
@@ -368,8 +507,28 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--owner", default="unredacted",
     )
+    def positive_keep(raw: str) -> int:
+        """--keep must be >= 1.
+
+        0 would archive the ENTIRE history of every line not registered in
+        configs/lines.toml -- and 7.0 is no longer registered, so a `0` typed
+        into a dispatch box would sweep eight releases out of main. Per-line
+        `keep_in_main = 0` stays the reviewed sunset knob: it lives in a
+        committed file that gets read in review, not in a workflow input box.
+        """
+        try:
+            v = int(raw)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"not an integer: {raw!r}") from None
+        if v < 1:
+            raise argparse.ArgumentTypeError(
+                f"--keep must be >= 1 (got {v}); to sunset a line, set "
+                f"keep_in_main = 0 for it in configs/lines.toml"
+            )
+        return v
+
     parser.add_argument(
-        "--keep", type=int, default=DEFAULT_KEEP_IN_MAIN,
+        "--keep", type=positive_keep, default=DEFAULT_KEEP_IN_MAIN,
         help="default cores to keep in main per kernel line, for lines not "
              f"listed in configs/lines.toml (default: {DEFAULT_KEEP_IN_MAIN}); "
              "registered lines use their keep_in_main",
@@ -434,25 +593,38 @@ def main(argv: list[str]) -> int:
     if args.dry_run:
         return 0
 
-    # Perform the rotation: move each selected package from main to
-    # archive (download, re-upload to archive, delete from main).
+    # Perform the rotation: move each selected package to archive (download
+    # from whichever component it lives in, re-upload to archive, delete).
+    comp_index = component_index()
     results = [
         archive_package(
-            args.owner, args.distribution, p["name"], p["version"], user, token, False,
+            args.owner, args.distribution, p["name"], p["version"], user, token,
+            False, comp_index=comp_index,
         )
         for p in pkgs_to_archive
     ]
+    # Components actually touched, so the purge below covers them. Purging a
+    # hardcoded (main, archive) pair would leave `debug`'s index stale after a
+    # -dbg deletion, and a stale index pointing at deleted pool files is the
+    # failure this whole step exists to avoid.
+    touched = {a.get("component") for r in results for a in r["actions"]
+               if isinstance(a, dict) and a.get("component")}
+    failures = [a for r in results for a in r["actions"]
+                if isinstance(a, dict) and a.get("error")]
 
     # Purge both components' apt metadata so the change rolls forward.
     service_id = os.environ.get("FASTLY_SERVICE_ID", "")
     fastly_token = os.environ.get("FASTLY_PURGE_TOKEN", "")
+    # ALWAYS purge, even on partial failure: a rotation that deleted from a
+    # component and then skipped the purge is the worst outcome available.
     purges = {
         component: purge_fastly(
             args.distribution, component, service_id, fastly_token, False,
         )
-        for component in (SOURCE_COMPONENT, ARCHIVE_COMPONENT)
+        for component in sorted(touched | {SOURCE_COMPONENT, ARCHIVE_COMPONENT})
     }
-    print(json.dumps({"archived": results, "purges": purges}, indent=2, sort_keys=True))
+    print(json.dumps({"archived": results, "purges": purges,
+                      "failures": failures}, indent=2, sort_keys=True))
 
     # Same rationale as publish.py: a rotation that deleted from main but
     # failed to purge can leave a Packages index referencing now-deleted
@@ -470,6 +642,16 @@ def main(argv: list[str]) -> int:
     if creds_missing:
         print("WARNING: Fastly creds unset — apt metadata NOT purged after "
               "rotation.", file=sys.stderr)
+    if failures:
+        print(f"ERROR: {len(failures)} file(s) failed during rotation:",
+              file=sys.stderr)
+        for a in failures:
+            print(f"  {a['file']}: {a['error']}", file=sys.stderr)
+        print("The purge above still ran, so the apt indexes reflect whatever "
+              "was actually moved. Re-run to retry the failures; the rotation "
+              "is idempotent (409 on archive upload and 404 on delete are both "
+              "treated as already-done).", file=sys.stderr)
+        return 1
     return 0
 
 
