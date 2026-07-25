@@ -35,9 +35,17 @@ jobs:
             echo "no releases/ directory — nothing to check"
             exit 0
           fi
-          ver=$(find releases -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort -V | tail -n1)
+          # Restrict to release-tag-shaped directory names. releases/ also holds
+          # a README.md (not a dir, so already excluded), but an unfiltered
+          # `find` would happily hand any directory name straight to
+          # repro-check.sh as $version -- including one with whitespace or a
+          # leading dash. Same grammar as build-kernel.yml's derive-version and
+          # publish.yml's resolve-target steps; KEEP THE THREE IN SYNC.
+          ver=$(find releases -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$' \
+              | sort -V | tail -n1 || true)
           if [[ -z $ver ]]; then
-            echo "releases/ is empty — nothing to check"
+            echo "releases/ has no release-tag-shaped directories — nothing to check"
             exit 0
           fi
           echo "version=$ver" >> "$GITHUB_OUTPUT"
@@ -66,7 +74,13 @@ jobs:
       - name: run repro check
         id: repro
         if: steps.rel.outputs.version != ''
-        run: ./tools/repro-check.sh "${{ steps.rel.outputs.version }}"
+        # Via env: rather than spliced into the run: line -- a template is
+        # substituted into the script text before bash parses it, so the
+        # quotes around it are no protection. See validate.yml's
+        # workflow-expressions job.
+        env:
+          VERSION: ${{ steps.rel.outputs.version }}
+        run: ./tools/repro-check.sh "$VERSION"
 
       # Only upload when the repro step itself produced a diff. If an
       # earlier step (install, checkout) failed there is no diff to

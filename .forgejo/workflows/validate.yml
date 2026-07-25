@@ -48,6 +48,32 @@ jobs:
             echo "::error::expression template inside a comment above; reword it" >&2
             fails=1
           fi
+          # A template anywhere inside a run: script body. The preprocessor
+          # splices the VALUE into the script text before bash parses it, so a
+          # value containing a double quote, backtick, $(...) or ; is executable
+          # shell -- in jobs that hold KERNEL_SIGNING_KEY (build-kernel.yml) or
+          # every publish credential and the push-to-main token (publish.yml).
+          # Pass values through env: and reference them as shell variables; an
+          # env var's value is never re-scanned by the shell parser.
+          #
+          # Rule: a template may appear ONLY as a YAML mapping value. So find
+          # every templated line and subtract the ones shaped like `key: value`
+          # or `- key: value`; whatever is left sits in a run: body. A shell
+          # line such as `echo "tag: $X"` does not match the subtraction
+          # pattern, because that requires the colon immediately after a
+          # leading identifier.
+          tmpl='\$\{\{'
+          if grep -RnE "$tmpl" .forgejo/workflows/ \
+              | grep -vE ':[0-9]+:[[:space:]]*(-[[:space:]]+)?[A-Za-z_][A-Za-z0-9_.-]*:[[:space:]]'; then
+            echo "::error::expression template inside a run: body above; pass it via env: instead" >&2
+            fails=1
+          fi
+          # ...and a one-line `run: echo <template>` satisfies the rule above
+          # (it IS a mapping value), so reject that shape explicitly.
+          if grep -RnE "^[[:space:]]*run:.*$tmpl" .forgejo/workflows/; then
+            echo "::error::expression template on a run: line above; pass it via env: instead" >&2
+            fails=1
+          fi
           if [[ $fails -ne 0 ]]; then exit 1; fi
           echo "workflow expressions OK"
 
@@ -56,6 +82,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m py_compile tools/*.py
+      # py_compile only proves the files parse. The doctests in prune.py cover
+      # parse_version and select_versions_to_archive -- the function that
+      # decides what gets DELETED, including the .P-rebuild handling and the
+      # per-line sunset knob. They existed (for parse_version) and had never
+      # been run by anything.
+      - run: python3 -m doctest tools/prune.py tools/lines.py
+      # Smoke-test the line registry: py_compile does not prove
+      # configs/lines.toml parses, and lines.py raises on a malformed registry
+      # (two stable lines, a bad series). Without this, a broken registry
+      # surfaces only when seed-bump.yml or a build runs.
+      - run: python3 tools/lines.py stable-series
 
   intent-matches-policy:
     # Bidirectional parity between configs/intent.config (the project's

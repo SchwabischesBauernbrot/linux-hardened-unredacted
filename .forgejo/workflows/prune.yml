@@ -68,9 +68,23 @@ jobs:
           DRY_RUN: ${{ steps.mode.outputs.dry_run }}
         run: |
           set -euo pipefail
-          args="--distribution $DIST --keep $KEEP"
-          if [ "$DRY_RUN" = "true" ]; then
-            args="$args --dry-run"
-          fi
-          # shellcheck disable=SC2086
-          python3 tools/prune.py $args
+          # Validate, then build an ARRAY. The previous form assembled a string
+          # and relied on word-splitting to pass it (`python3 tools/prune.py
+          # $args`), so an operator-supplied value containing a space injected
+          # flags into a destructive tool: keep="3 --owner someoneelse", or
+          # distribution="trixie --keep 0". The SC2086 suppression that used to
+          # sit here silenced the warning about exactly that -- and never did
+          # anything anyway, since shellcheck does not lint workflow YAML.
+          case "$DIST" in
+            trixie|bookworm|noble|jammy) ;;
+            *) echo "::error::unknown distribution: $DIST" >&2; exit 1 ;;
+          esac
+          # prune.py enforces >= 1 as well; check here too so a bad dispatch
+          # fails before any credential is used.
+          [[ $KEEP =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::keep must be a positive integer, got: $KEEP" >&2
+            exit 1
+          }
+          cmd=(python3 tools/prune.py --distribution "$DIST" --keep "$KEEP")
+          [ "$DRY_RUN" = "true" ] && cmd+=(--dry-run)
+          "${cmd[@]}"
