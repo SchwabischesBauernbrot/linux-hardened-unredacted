@@ -336,17 +336,49 @@ echo "captured final.config from $patched_dir/.config"
 # twelve releases. Assert them equal so it cannot recur silently: whatever is in
 # /boot/config-<rel> (identical bytes to /proc/config.gz, via CONFIG_IKCONFIG)
 # must equal releases/<tag>/final.config.
-img_deb=$(printf '%s\n' "${image_debs[@]}" | head -n1)
-if ! dpkg-deb --fsys-tarfile "$img_deb" \
-        | tar -xO --wildcards './boot/config-*' 2>/dev/null \
-        | cmp -s - "$WORKDIR/final.config"; then
+#
+# Pick the CONCRETE image .deb, not the -dbg variant. The glob above matches
+# both, and because '-' (0x2D) sorts before '_' (0x5F) the -dbg package expands
+# FIRST -- so selecting with `head -n1` picked exactly the wrong one, and the
+# -dbg package ships no /boot/config-* at all (its payload lives under
+# usr/lib/debug/). That is the same skip the kernelrelease derivation below
+# already performs; both need it, for the same reason.
+img_deb=""
+for deb in "${image_debs[@]}"; do
+    case "$deb" in *-dbg_*) continue;; esac
+    img_deb=$deb
+    break
+done
+[[ -n $img_deb ]] || {
+    echo "no non-dbg linux-image .deb among: ${image_debs[*]}" >&2
+    exit 1
+}
+# Extract to a file and compare files: piping through a command substitution
+# would strip trailing newlines, and this is a byte-exact comparison.
+shipped_config=$(mktemp)
+dpkg-deb --fsys-tarfile "$img_deb" \
+    | tar -xO --wildcards './boot/config-*' > "$shipped_config" 2>/dev/null || true
+# An empty extraction must never be *compared*. cmp on two empty inputs
+# succeeds, so a wrong package selection (or a renamed path) would make this
+# assertion pass vacuously -- the same failure class this change set exists to
+# remove. Fail on "cannot evaluate" instead.
+if [[ ! -s $shipped_config ]]; then
+    rm -f "$shipped_config"
+    echo "found no ./boot/config-* inside $(basename "$img_deb")," >&2
+    echo "so the config-parity assertion cannot be evaluated. Refusing to pass." >&2
+    exit 1
+fi
+if ! cmp -s "$shipped_config" "$WORKDIR/final.config"; then
     echo "the .config shipped in $(basename "$img_deb") differs from the captured" >&2
     echo "final.config. These must be byte-identical: final.config is the public" >&2
     echo "record and the hardening-drift baseline, and /boot/config-* plus" >&2
     echo "/proc/config.gz are what users can actually inspect." >&2
+    diff <(head -50 "$shipped_config") <(head -50 "$WORKDIR/final.config") >&2 || true
+    rm -f "$shipped_config"
     exit 1
 fi
-echo "  shipped /boot/config-* matches final.config"
+rm -f "$shipped_config"
+echo "  shipped /boot/config-* in $(basename "$img_deb") matches final.config"
 
 # --- Meta-packages -------------------------------------------------------
 # bindeb-pkg names its packages after the kernelrelease
