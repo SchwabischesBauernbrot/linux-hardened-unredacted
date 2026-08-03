@@ -28,8 +28,8 @@
 # Pinning model + bump procedure: docs/operators/config-architecture.md.
 
 url         = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
-commit      = "e7dd7be0e11a483e9cbb5a225b3a9771e879549f"
-tag         = "7.1.4.hardened1-1"
+commit      = "284a871e22fbd4c01d17a3ce6b84cc2a6d8347d8"
+tag         = "7.1.5.hardened1-2"
 config_path = "config.x86_64"
-sha256      = "dfb67aa3ad8e87b9657988e1df626a092b3b948c6514aa2b5f27ecaf67c2e40e"
+sha256      = "a7a51a8956c22335e6fed694e27881d6cf9b1613fc5576c2443c908ed3309c51"
 signer_fpr  = "E240B57E2C4630BA768E2F26FC1B547C8D8172C8"
