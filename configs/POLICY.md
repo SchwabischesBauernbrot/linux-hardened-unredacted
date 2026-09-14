@@ -291,9 +291,9 @@ Strict mode flushes the IOMMU TLB before a page can be reused, closing the windo
 
 Compile-time backstops for the `kernel.unprivileged_bpf_disabled=1` and `kernel.unprivileged_userns_clone=0` sysctls, so the restriction holds even without the `unredacted-hardened-defaults` package installed. Matches anthraxx.
 
-### `CONFIG_RANDOM_KMALLOC_CACHES=y`, `CONFIG_SLAB_BUCKETS=y`, `CONFIG_HARDENED_USERCOPY_DEFAULT_ON=y`
+### `CONFIG_KMALLOC_PARTITION_CACHES=y`, `CONFIG_KMALLOC_PARTITION_RANDOM=y`, `CONFIG_SLAB_BUCKETS=y`, `CONFIG_HARDENED_USERCOPY_DEFAULT_ON=y`
 
-Heap-hardening companions to the already-pinned slab options: randomized kmalloc cache selection (heap-grooming / use-after-free mitigation), separate caches for user-controlled allocation sizes, and the default-on switch that makes hardened usercopy active. Match anthraxx.
+Heap-hardening companions to the already-pinned slab options: partitioned kmalloc caches (heap-grooming / use-after-free mitigation), separate caches for user-controlled allocation sizes, and the default-on switch that makes hardened usercopy active. Upstream 7.2 renamed `CONFIG_RANDOM_KMALLOC_CACHES` to `CONFIG_KMALLOC_PARTITION_CACHES` and split the mechanism into a mode choice: `KMALLOC_PARTITION_RANDOM` (per-boot random cache selection by call site, the former behaviour) or `KMALLOC_PARTITION_TYPED` (deterministic type-based selection via Clang ≥ 22 allocation tokens). The old symbol survives only as a transitional stub, which is why the fidelity assertion failed on the first 7.2 build. We pin the random mode explicitly: the choice defaults to TYPED whenever the compiler advertises alloc-token support, and we build with GCC, so an implicit default could flip the mode with a toolchain change rather than a reviewed decision. Match anthraxx (7.2.5.hardened1-1 sets both).
 
 ### `CONFIG_STACKPROTECTOR=y`, `CONFIG_X86_UMIP=y`, `CONFIG_RESET_ATTACK_MITIGATION=y`
 
