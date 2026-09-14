@@ -34,7 +34,7 @@ Fail-fast happens at the fidelity assertion (~2 min after the build container st
 
 ## Kernel lines (single stable line, multi-line capable)
 
-The project tracks kernel **lines** — a *line* is a kernel `major.minor` (the `series`, e.g. `7.0`), derived from a build's tag in `build-kernel.yml`. Today we track **one rolling stable line** (7.0, advancing to 7.1). The machinery below is line-parameterized, so tracking additional lines later is largely a config change rather than a rewrite.
+The project tracks kernel **lines** — a *line* is a kernel `major.minor` (the `series`, e.g. `7.0`), derived from a build's tag in `build-kernel.yml`. Today we track **one rolling stable line** (7.2; previously 7.0 and 7.1). The machinery below is line-parameterized, so tracking additional lines later is largely a config change rather than a rewrite.
 
 ### The registry: `configs/lines.toml`
 
