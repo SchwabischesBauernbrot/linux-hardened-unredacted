@@ -72,10 +72,8 @@ elif [[ -n "${SERIES:-}" ]]; then
         echo "still pass and the hardening-drift guard would find no $SERIES baseline" >&2
         echo "and skip, so the wrong config would ship in a green build." >&2
         echo "" >&2
-        echo "To stand up the $SERIES line:" >&2
-        echo "  1. tools/bump-seed.sh --pin-file configs/seeds/${SERIES}.toml <ref>" >&2
-        echo "  2. repoint the configs/upstream-seed.toml symlink at it" >&2
-        echo "  3. update configs/lines.toml (series + seed)" >&2
+        echo "To stand up the $SERIES line (new seed file, symlink, lines.toml, in one step):" >&2
+        echo "  tools/advance-line.sh $SERIES <anthraxx $SERIES packaging ref>" >&2
         echo "" >&2
         echo "For a deliberate one-off cross-series build, set the repo variable" >&2
         echo "ALLOW_CROSS_SERIES_SEED=1." >&2

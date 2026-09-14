@@ -13,7 +13,9 @@
 #
 # --pin-file defaults to configs/upstream-seed.toml (a symlink to the stable
 # line's configs/seeds/<X.Y>.toml); the symlink is resolved before rewriting
-# so the real file is edited, not the symlink.
+# so the real file is edited, not the symlink. The pin file must already
+# exist: to stand up a NEW line (7.1 -> 7.2), use tools/advance-line.sh,
+# which creates the file from tools/seed-header.tmpl and then calls this.
 #
 # What it does:
 #   1. Clones anthraxx's Arch packaging repo at the given ref.
@@ -75,6 +77,12 @@ old_tag=$(toml_get tag)
 old_sha=$(toml_get sha256)
 config_path=$(toml_get config_path)
 signer=$(toml_get signer_fpr)
+# Fail loudly on a half-formed pin file. Without this, an empty value trips
+# `set -e` inside the $(...) pipeline above and the script exits 1 with no
+# message at all (old_tag may legitimately be empty for a commit-only pin).
+for k in url commit sha256 config_path signer_fpr; do
+    [[ -n $(toml_get "$k") ]] || { echo "$rel_pin: missing or empty key '$k'" >&2; exit 1; }
+done
 
 # Kernel line (X.Y) of an anthraxx packaging tag like 7.1.4.hardened1-1.
 # Empty for a commit-only pin, which the caller must tolerate.
