@@ -1,39 +1,38 @@
-# Upstream kernel config seed pin — STABLE line (7.2).
+# Upstream kernel config seed pin — line 7.2.
+#
+# GENERATED HEADER: tools/advance-line.sh wrote this file from
+# tools/seed-header.tmpl when the 7.2 line was stood up. tools/bump-seed.sh
+# rewrites only the pin VALUES below and never this prose, so keep anything
+# that goes stale on a bump (the pinned tag, dates) out of this comment.
 #
 # We seed our build's .config from anthraxx's (Levente Polyak's) own Arch
 # Linux packaging repo for linux-hardened, signed-commit-verified against his
-# key (E240B57E…) + sha256.
+# key (E240B57E…) + sha256 of config.x86_64 at the pinned commit.
 #
-# The pin below is a SAME-LINE 7.2 config (anthraxx's 7.2.5.hardened1-1) —
-# this line was stood up directly from a same-line seed, with no cross-series
-# stopgap. It still routinely lags the kernel we build by a patch level —
-# anthraxx changes config.x86_64 in only ~1 in 4–5 tags, so his newest
-# published config is usually a few releases behind the tag being built. That
-# is expected and handled, not gated: the seed is only a baseline. `make
-# olddefconfig` reconciles it to the tree being built, the fidelity assertion
-# enforces every configs/intent.config pin, and tools/check-hardening-drift.sh
-# diffs the result against the most recent published 7.2 final.config in
-# releases/ — so a symbol we INHERIT from the seed (rather than pin in intent)
-# cannot silently regress across a seed bump.
+# The pin is a SAME-LINE 7.2 config. It routinely lags the kernel we build
+# by a patch level — anthraxx changes config.x86_64 in only ~1 in 4–5 tags, so
+# his newest published config is usually a few releases behind the tag being
+# built. That is expected and handled, not gated: the seed is only a baseline.
+# `make olddefconfig` reconciles it to the tree being built, the fidelity
+# assertion enforces every configs/intent.config pin, and
+# tools/check-hardening-drift.sh diffs the result against the most recent
+# published 7.2 final.config in releases/ — so a symbol we INHERIT from the
+# seed (rather than pin in intent) cannot silently regress across a seed bump.
 #
 # The FIRST 7.2 build has no same-line drift baseline yet: build-kernel.yml
 # logs a "hardening-drift guard SKIPPED" warning for it rather than comparing
-# against a 7.1 final.config. Once that release publishes, its final.config
-# becomes the baseline for every later 7.2 build. If you need a one-time
-# cross-line sanity check before then, run tools/check-hardening-drift.sh by
-# hand against the last 7.1 release and read the result as advisory.
+# against the previous line's final.config. Once that release publishes, its
+# final.config becomes the baseline for every later 7.2 build.
 #
-# History, retained because it applies to any newly stood-up line: 7.1 was
-# seeded CROSS-SERIES from the 7.0.12 config until anthraxx published his
-# first 7.1 config.x86_64. That fallback is the intended stopgap when a line
-# is stood up ahead of upstream packaging, but it is strictly worse than a
-# same-line seed — a cross-series config sets different UN-pinned hardening
-# defaults, and the drift guard cannot catch the difference until that line
-# has published a release to baseline against. Bump to a same-line config as
-# soon as one ships (tools/bump-seed.sh --pin-file configs/seeds/<X.Y>.toml
-# <ref>, or the weekly seed-bump PR).
+# If this line ever has to be seeded CROSS-SERIES (stood up before anthraxx
+# publishes a 7.2 config.x86_64), add a marker line to this file reading
+# `# cross-series-seed: <why, and when it can be bumped>` at column 0 so
+# validate.yml's seed-pins-well-formed job accepts the pin, and bump to a
+# same-line config as soon as one ships. A cross-series config sets different
+# UN-pinned hardening defaults and the drift guard cannot see the difference
+# until this line has a published release to baseline against.
 #
-# Pinning model + bump procedure: docs/operators/config-architecture.md.
+# Pinning model, bump procedure, line advance: docs/operators/config-architecture.md.
 
 url         = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
 commit      = "37b066fa9489d5c1e1859140d8e1008364bfe5cb"

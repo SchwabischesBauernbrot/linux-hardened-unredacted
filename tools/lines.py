@@ -133,8 +133,8 @@ def seed_path_for(series: str, path: Path | None = None) -> str:
     if not (root / seed).is_file():
         raise ValueError(
             f"line {series!r} declares seed {seed!r}, which does not exist "
-            f"under {root}. Create it with: "
-            f"tools/bump-seed.sh --pin-file {seed} <ref>"
+            f"under {root}. Stand the line up with: "
+            f"tools/advance-line.sh {series} <anthraxx ref>"
         )
     return seed
 

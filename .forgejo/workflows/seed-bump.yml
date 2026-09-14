@@ -25,6 +25,13 @@ on:
 #     commit-only bump (same config) is not worth a PR.
 #   - It bumps the stable line's seed (the only line tracked today). If more
 #     lines are added later (configs/lines.toml), extend it per line.
+#   - When anthraxx's packaging has moved to a NEW kernel series (his tag's
+#     X.Y is newer than our stable line), a same-file bump would be a
+#     cross-series pin that validate.yml's seed-pins-well-formed job rejects
+#     (that is exactly what happened at 7.1 -> 7.2, PR #55). Instead it runs
+#     tools/advance-line.sh, the same helper an operator uses, and the PR
+#     stands the new line up: new configs/seeds/<X.Y>.toml, symlink repoint,
+#     configs/lines.toml stable block. Still a PR, still human-merged.
 
 jobs:
   propose:
@@ -71,7 +78,35 @@ jobs:
           # the job (no PR).
           ./tools/bump-seed.sh --pin-file "$seed_file" "$ref" | tee /tmp/bump.log
           new_sha=$(sha_of)
+          new_tag=$(sed -nE 's/^tag[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file")
+          new_series=$(sed -nE 's/^([0-9]+\.[0-9]+)\..*/\1/p' <<<"$new_tag")
+          if [[ -n $new_series && $new_series != "$stable" ]]; then
+            # anthraxx has moved to a new series. Undo the in-place bump (it
+            # would be a cross-series pin in the OLD line's file) and stand
+            # the new line up with the shared helper, which re-runs
+            # bump-seed.sh against the NEW seed file (signature-verified) and
+            # refuses unless $ref really is a $new_series tag.
+            echo "anthraxx tag $new_tag is series $new_series; stable line is $stable -> advancing the line"
+            git checkout -- "$seed_file"
+            ./tools/advance-line.sh "$new_series" "$ref" | tee /tmp/bump.log
+            seed_file="configs/seeds/${new_series}.toml"
+            newcommit=$(sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file")
+            {
+              echo "changed=true"
+              echo "mode=advance"
+              echo "newcommit=$newcommit"
+              echo "new_tag=$new_tag"
+              echo "old_series=$stable"
+              echo "new_series=$new_series"
+              echo "seed_file=$seed_file"
+              # Everything the helper touched; the PR step adds exactly these.
+              echo "files=configs/lines.toml configs/upstream-seed.toml $seed_file"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "seed_file=$seed_file" >> "$GITHUB_OUTPUT"
+          echo "files=$seed_file" >> "$GITHUB_OUTPUT"
+          echo "mode=bump" >> "$GITHUB_OUTPUT"
           if [[ $old_sha == "$new_sha" ]]; then
             echo "config.x86_64 unchanged vs $ref (sha256 $new_sha); nothing to propose"
             # bump-seed may have rewritten the commit/tag pin for a commit-
@@ -91,6 +126,11 @@ jobs:
           FORGEJO_TOKEN: ${{ secrets.SEED_BUMP_TOKEN }}
           NEWCOMMIT: ${{ steps.bump.outputs.newcommit }}
           SEED_FILE: ${{ steps.bump.outputs.seed_file }}
+          FILES: ${{ steps.bump.outputs.files }}
+          MODE: ${{ steps.bump.outputs.mode }}
+          NEW_TAG: ${{ steps.bump.outputs.new_tag }}
+          OLD_SERIES: ${{ steps.bump.outputs.old_series }}
+          NEW_SERIES: ${{ steps.bump.outputs.new_series }}
         run: |
           set -euo pipefail
           if [[ -z "${FORGEJO_TOKEN:-}" ]]; then
@@ -112,19 +152,37 @@ jobs:
             exit 0
           fi
 
+          if [[ $MODE == advance ]]; then
+            title="lines: advance stable line ${OLD_SERIES} -> ${NEW_SERIES} (seed ${NEW_TAG})"
+          else
+            title="seed: bump to ${NEWCOMMIT:0:12}"
+          fi
+
           git config user.name "forgejo-runner"
           git config user.email "noreply@unredacted.org"
           git switch -c "$branch"
-          git add "$SEED_FILE"
-          git commit -m "seed: bump to ${NEWCOMMIT:0:12}"
+          # $FILES is a space-separated list of repo-relative paths from the
+          # bump step (one file for a bump; registry + symlink + new seed for
+          # an advance). Word-splitting is intended.
+          # shellcheck disable=SC2086
+          git add $FILES
+          git commit -m "$title"
           # Authorized by the checkout-configured credential (token above).
           git push origin "$branch"
 
-          body=$(printf 'Automated seed-bump proposal from `tools/bump-seed.sh` — the anthraxx commit signature was verified against `keys/anthraxx.gpg`.\n\n**Review before merging:** confirm the new seed targets the kernel version we build (the seed may legitimately lag) and that the hardening delta below is acceptable. Merging only updates the pinned config seed; the next kernel tag picks it up, and `build-kernel.yml`'"'"'s fidelity assertion + hardening-drift guard run on that build.\n\n```\n%s\n```\n' "$(cat /tmp/bump.log)")
+          if [[ $MODE == advance ]]; then
+            body=$(printf 'Automated **stable-line advance** (%s -> %s) from `tools/advance-line.sh`: anthraxx'"'"'s packaging moved to the %s series, so instead of a cross-series pin in `configs/seeds/%s.toml` this PR stands the %s line up. The anthraxx commit signature was verified against `keys/anthraxx.gpg`.\n\nWhat changes: new `%s` (header from `tools/seed-header.tmpl`), `configs/upstream-seed.toml` repointed, `configs/lines.toml` stable block -> %s (the %s block stays registered as `kind = "previous"` for retention). The %s seed file is untouched.\n\n**Review before merging:**\n- Merge this TOGETHER with pushing the first `v%s.x` tag. Once merged, a %s tag still builds but no longer emits the unversioned umbrella metas, so umbrella users would not see a %s point release until %s ships.\n- The first %s build has no same-line drift baseline in `releases/`; `build-kernel.yml` logs a *hardening-drift guard SKIPPED* warning for it (expected). Later %s builds baseline against that release.\n- Check the hardening delta below (seed %s -> %s).\n\n```\n%s\n```\n' \
+              "$OLD_SERIES" "$NEW_SERIES" "$NEW_SERIES" "$OLD_SERIES" "$NEW_SERIES" \
+              "$SEED_FILE" "$NEW_SERIES" "$OLD_SERIES" "$OLD_SERIES" \
+              "$NEW_SERIES" "$OLD_SERIES" "$OLD_SERIES" "$NEW_SERIES" \
+              "$NEW_SERIES" "$NEW_SERIES" "$OLD_SERIES" "$NEW_SERIES" "$(cat /tmp/bump.log)")
+          else
+            body=$(printf 'Automated seed-bump proposal from `tools/bump-seed.sh` — the anthraxx commit signature was verified against `keys/anthraxx.gpg`.\n\n**Review before merging:** confirm the new seed targets the kernel version we build (the seed may legitimately lag) and that the hardening delta below is acceptable. Merging only updates the pinned config seed; the next kernel tag picks it up, and `build-kernel.yml`'"'"'s fidelity assertion + hardening-drift guard run on that build.\n\n```\n%s\n```\n' "$(cat /tmp/bump.log)")
+          fi
           code=$(curl -sS -o /tmp/pr.json -w '%{http_code}' -X POST \
               -H "Authorization: token $FORGEJO_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "$(jq -n --arg t "seed: bump to ${NEWCOMMIT:0:12}" --arg b "$body" --arg h "$branch" \
+              -d "$(jq -n --arg t "$title" --arg b "$body" --arg h "$branch" \
                   '{title: $t, body: $b, head: $h, base: "main"}')" \
               "$api/pulls")
           if [[ $code -ge 400 ]]; then

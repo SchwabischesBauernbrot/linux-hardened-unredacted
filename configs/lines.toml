@@ -19,11 +19,31 @@
 # Arch packaging no longer carries (e.g. a 6.x LTS) would need a seed sourced
 # from the distro that maintains that LTS — see docs/operators/config-architecture.md.
 #
-# Advancing the stable line (e.g. 7.0 -> 7.1): add configs/seeds/7.1.toml,
-# repoint the configs/upstream-seed.toml symlink to it, then change the block
-# below's `series` + `seed`. The umbrella meta, prune buckets, and drift scope
-# all follow automatically. Old minors are retained per line until you retire
-# them by setting keep_in_main = 0 (explicit sunset).
+# `kind` is one of:
+#   stable    exactly one; gets the unversioned umbrella metas and the weekly
+#             seed bumps, and is the line new tags are normally cut from.
+#   previous  a line we no longer advance but still retain packages for
+#             (its keep_in_main keeps prune honest); no umbrella metas.
+#
+# Advancing the stable line (e.g. 7.1 -> 7.2) is ONE command:
+#     tools/advance-line.sh 7.2 <anthraxx 7.2 packaging ref>
+# It creates configs/seeds/7.2.toml (header from tools/seed-header.tmpl,
+# signature-verified pin), repoints the configs/upstream-seed.toml symlink,
+# demotes the current stable block here to kind = "previous", and appends the
+# new stable block. seed-bump.yml runs the same helper automatically when
+# anthraxx's packaging moves to a new series, and proposes it as a PR. The
+# umbrella meta, prune buckets, and drift scope all follow. Merge the advance
+# together with the first tag of the new series: after it lands, an old-line
+# tag still builds but no longer emits the umbrella metas.
+#
+# Old minors are retained per line until you retire a line by setting its
+# keep_in_main = 0 (explicit sunset); delete the block once nothing remains.
+
+[[line]]
+series       = "7.1"
+kind         = "previous"
+keep_in_main = 3
+seed         = "configs/seeds/7.1.toml"
 
 [[line]]
 series       = "7.2"
