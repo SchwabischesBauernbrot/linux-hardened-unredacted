@@ -26,7 +26,7 @@
 # them by setting keep_in_main = 0 (explicit sunset).
 
 [[line]]
-series       = "7.1"
+series       = "7.2"
 kind         = "stable"
 keep_in_main = 3
-seed         = "configs/seeds/7.1.toml"
+seed         = "configs/seeds/7.2.toml"
