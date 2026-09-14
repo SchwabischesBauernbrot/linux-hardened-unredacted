@@ -192,9 +192,15 @@ else
     # Same heuristic regex tools/reconcile-vs-anthraxx.sh uses to filter
     # signal from noise. Show only ON/OFF flips on symbols matching the
     # hardening-suspect prefix set.
-    HARDEN='^(CONFIG_)?(SECURITY|LSM|HARDEN|FORTIFY|INIT_ON_|INIT_STACK|SLAB_|SLUB_|SHUFFLE|RANDOMIZE|STACKPROT|VMAP_STACK|MODULE_SIG|MODULE_COMPRESS|LOCKDOWN|LOCK_DOWN|LEGACY_|MODIFY_LDT|KFENCE|KSTACK|GCC_PLUGIN|STACKLEAK|BUG_ON_DATA|MSEAL|DEVMEM|DEVPORT|PROC_KCORE|KEXEC|HIBERNATION|CHECKPOINT_RESTORE|DEBUG_WX|DEBUG_LIST|DEBUG_SG|DEBUG_NOTIFIERS|PANIC_ON_OOPS|SCHED_STACK|STRICT_KERNEL|STRICT_MODULE|LIST_HARDENED|RETPOLINE|SPECTRE|CFI_|USERFAULTFD|BPF_UNPRIV|PERF_EVENTS_RESTRICT|YAMA_|TOMOYO|APPARMOR|SELINUX_|SMACK)'
+    HARDEN='^(CONFIG_)?(SECURITY|LSM|HARDEN|FORTIFY|INIT_ON_|INIT_STACK|SLAB_|SLUB_|KMALLOC_PARTITION|RANDOM_KMALLOC|SHUFFLE|RANDOMIZE|STACKPROT|VMAP_STACK|MODULE_SIG|MODULE_COMPRESS|LOCKDOWN|LOCK_DOWN|LEGACY_|MODIFY_LDT|KFENCE|KSTACK|GCC_PLUGIN|STACKLEAK|BUG_ON_DATA|MSEAL|DEVMEM|DEVPORT|PROC_KCORE|KEXEC|HIBERNATION|CHECKPOINT_RESTORE|DEBUG_WX|DEBUG_LIST|DEBUG_SG|DEBUG_NOTIFIERS|PANIC_ON_OOPS|SCHED_STACK|STRICT_KERNEL|STRICT_MODULE|LIST_HARDENED|RETPOLINE|SPECTRE|CFI_|USERFAULTFD|BPF_UNPRIV|PERF_EVENTS_RESTRICT|YAMA_|TOMOYO|APPARMOR|SELINUX_|SMACK)'
+    # HARDEN is anchored at line start for bare .config lines; diff output
+    # carries a +/- marker (and "# " for is-not-set lines) first, so match
+    # through those. Before this, the anchor never matched a diff line and
+    # this summary said "no hardening-relevant changes" on EVERY bump --
+    # including the 7.1 -> 7.2 one that dropped RANDOM_KMALLOC_CACHES.
     diff -u "$old_config" "$new_config" | grep -E "^[+-]CONFIG_|^[+-]# CONFIG_" \
-        | grep -E "$HARDEN" || echo "  (no hardening-relevant changes; only drivers/CC_HAS_*/fs etc.)"
+        | grep -E "^[+-](# )?${HARDEN#^}" \
+        || echo "  (no hardening-relevant changes; only drivers/CC_HAS_*/fs etc.)"
 fi
 
 echo
