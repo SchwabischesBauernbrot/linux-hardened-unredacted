@@ -8,7 +8,7 @@
 # refresh of Debian's base image) so the build picks up patched base
 # layers. Each pin should be recorded in the matching release's
 # manifest.json under `container_image`.
-FROM debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
+FROM debian:trixie@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8 \

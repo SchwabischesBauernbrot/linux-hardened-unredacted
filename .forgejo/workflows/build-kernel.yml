@@ -31,7 +31,7 @@ jobs:
       # namespace into a hard failure. Granting the runner container
       # CAP_SYS_ADMIN (what `unshare -n` requires) and setting that variable
       # is the operator step in docs/operators/runner-setup.md.
-      image: debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
+      image: debian:trixie@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
     strategy:
       matrix:
         target:
@@ -480,7 +480,7 @@ jobs:
           # release built without this field can never gain it.
           CI_RUN_NUMBER: ${{ github.run_number }}
           # Keep this digest in sync with the job container image above.
-          CONTAINER_IMAGE: debian:trixie@sha256:4ae67669760b807c19f23902a3fd7c121a6a70cf2ae709035674b23e712e4d62
+          CONTAINER_IMAGE: debian:trixie@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
         run: |
           set -euo pipefail
           repo="$(pwd)"
