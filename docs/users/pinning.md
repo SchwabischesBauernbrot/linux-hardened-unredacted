@@ -36,12 +36,22 @@ Pin-Priority: 600
 
 ## Track latest stable, or pin to a series
 
-Two tiers of meta-package name (mirroring Debian's `linux-image-amd64` vs `linux-image-6.1-amd64`):
+Two tiers of meta-package name:
 
-- `linux-image-hardened-unredacted-amd64` — the **umbrella**; tracks the current stable line and follows it forward, including across a series transition (e.g. 7.0 → 7.1).
-- `linux-image-hardened-unredacted-<X.Y>-amd64` — a **per-series** meta (e.g. `…-7.0-amd64`); stays on that kernel series across upgrades and won't jump to a newer series.
+- `linux-image-hardened-unredacted-amd64` — the **umbrella**; tracks the current stable line and follows it forward, including across a series transition (e.g. 7.1 → 7.2).
+- `linux-image-hardened-unredacted-<X.Y>-amd64` — a **per-series** meta (e.g. `…-7.2-amd64`); stays on that kernel series across upgrades and won't jump to a newer series.
 
-Most users want the umbrella. Install the per-series name if you'd rather stay on a specific series (e.g. keep 7.0 when 7.1 ships). Both can be installed at once; they resolve to different kernels and coexist.
+Most users want the umbrella. Install the per-series name if you'd rather stay on a specific series (e.g. keep 7.2 when 7.3 ships). Both can be installed at once; they resolve to different kernels and coexist. A per-series meta you install yourself keeps its kernel installed even after the umbrella moves to a newer series. apt's automatic kernel cleanup leaves it alone because you installed it by hand.
+
+### One-time cleanup if you installed the umbrella at v7.2.8-hardened1 or earlier
+
+Up to and including v7.2.8-hardened1, the umbrella went *through* the per-series meta, so installing it also installed `linux-image-hardened-unredacted-<X.Y>-amd64` (and the matching `linux-headers-…`) as an automatic dependency. Newer umbrellas depend on the kernel directly. After you upgrade past v7.2.8-hardened1, apt lists that per-series meta as *automatically installed and no longer required*. Remove it once:
+
+```
+sudo apt autoremove
+```
+
+If it stays, a later series change can make `apt full-upgrade` fail with "AutoRemover broke stuff" (see [recovery.md](recovery.md#apt-full-upgrade-fails-with-autoremover-broke-stuff)). If you actually want to stay on that series, keep it instead with `sudo apt-mark manual linux-image-hardened-unredacted-<X.Y>-amd64`.
 
 ## Pin to a specific hardened version
 

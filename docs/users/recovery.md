@@ -42,3 +42,20 @@ sudo reboot
 3. `apt install` the distro's stock kernel.
 4. `update-grub`.
 5. Reboot.
+
+## `apt full-upgrade` fails with "AutoRemover broke stuff"
+
+```
+Unsatisfied dependencies:
+ linux-image-hardened-unredacted-7.1-amd64 : Depends: linux-image-7.1.13-hardened-unredacted-amd64 (= 7.1.13-hardened1) but it is not going to be installed
+Error: Internal Error, AutoRemover broke stuff
+```
+
+This is a packaging bug in releases up to v7.2.8-hardened1, not an apt bug, and apt has not changed anything on your system. Those umbrella packages installed the per-series meta (`linux-image-hardened-unredacted-<X.Y>-amd64`) as an automatic dependency. After a series change, the kernel cleanup that `apt full-upgrade` (or `dist-upgrade`) runs removes the old kernel but not that meta, which still depends on it, so apt refuses the upgrade. Plain `apt upgrade` doesn't run that cleanup and still works. Remove the unused meta along with its kernel, then upgrade:
+
+```
+sudo apt autoremove
+sudo apt full-upgrade
+```
+
+If you meant to stay on that series, run `sudo apt-mark manual linux-image-hardened-unredacted-<X.Y>-amd64` instead of `apt autoremove`. Use the package name from the error. Newer releases don't install the per-series meta automatically, so this happens only once. See [pinning.md](pinning.md#track-latest-stable-or-pin-to-a-series).
