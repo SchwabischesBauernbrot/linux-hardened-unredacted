@@ -52,7 +52,7 @@ Each line's seed lives in `configs/seeds/<series>.toml`; `build/fetch-seed.sh` s
 
 ### How the mechanisms scope per line
 
-- **Meta-packages** (`build/build-debs.sh`): each line emits a versioned `linux-image-hardened-unredacted-<X.Y>-amd64`; the stable line additionally emits the unversioned umbrella `linux-image-hardened-unredacted-amd64` (Depends `>=` the stable versioned meta), so the umbrella tracks current stable and follows a 7.0 → 7.1 transition automatically.
+- **Meta-packages** (`build/build-debs.sh`): each line emits a versioned `linux-image-hardened-unredacted-<X.Y>-amd64`; the stable line additionally emits the unversioned umbrella `linux-image-hardened-unredacted-amd64`. Both depend directly on the concrete `linux-image-<kernelrelease>` (`=` version), so the umbrella tracks current stable and follows a 7.1 → 7.2 transition automatically. The umbrella must never depend on the per-line meta: it used to, and after each line advance the kernel autoremoval that apt ≥ 3.0 runs during `full-upgrade` deleted the old kernel but kept the old line's unused meta, so `apt full-upgrade` failed with "AutoRemover broke stuff". The comment above the meta-packages in `build-debs.sh` has the details.
 - **Retention** (`tools/prune.py`): buckets by `(major, minor)` with each line's own `keep_in_main`; old minors are retained per line until you retire one by setting `keep_in_main = 0` (explicit sunset).
 - **Drift baseline** (`build-kernel.yml`): scoped to the same line, so advancing 7.0 → 7.1 doesn't false-fail against a cross-series `final.config`.
 

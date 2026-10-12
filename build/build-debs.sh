@@ -384,22 +384,35 @@ echo "  shipped /boot/config-* in $(basename "$img_deb") matches final.config"
 # bindeb-pkg names its packages after the kernelrelease
 # (linux-image-7.0.9-hardened-unredacted-amd64), which changes on every
 # kernel bump. Users want stable names to install and track, so we emit tiny
-# (~3 KB) meta-packages, in Debian's two-tier scheme (so the same names keep
-# working if we ever track more than one line):
+# (~3 KB) meta-packages in two tiers. BOTH depend directly on this build's
+# concrete package (= version):
 #
-#   PER-LINE (always):
-#     linux-image-hardened-unredacted-<X.Y>-amd64   -> the concrete kernel of
-#     linux-headers-hardened-unredacted-<X.Y>-amd64     that line (= version)
 #   UMBRELLA (stable line only):
-#     linux-image-hardened-unredacted-amd64   -> the stable line's per-line meta
-#     linux-headers-hardened-unredacted-amd64    (>= version), so it floats fwd
+#     linux-image-hardened-unredacted-amd64         -> linux-image-<kr>
+#     linux-headers-hardened-unredacted-amd64       -> linux-headers-<kr>
+#   PER-LINE (always; an opt-in series pin):
+#     linux-image-hardened-unredacted-<X.Y>-amd64   -> linux-image-<kr>
+#     linux-headers-hardened-unredacted-<X.Y>-amd64 -> linux-headers-<kr>
 #
 # So `apt install linux-image-hardened-unredacted-amd64` tracks current stable
-# and follows it across a 7.0->7.1 transition automatically, while the per-line
-# `...-<X.Y>-amd64` name pins a specific line. The stable line is read from
-# configs/lines.toml via tools/lines.py, so publishing a non-stable line would
-# never hijack the umbrella. Mirrors Debian's linux-image-<ver>-amd64 +
-# linux-image-amd64.
+# and follows it across a 7.1->7.2 transition automatically, while the per-line
+# `...-<X.Y>-amd64` name, installed by hand, pins a specific line. The stable
+# line is read from configs/lines.toml via tools/lines.py, so publishing a
+# non-stable line never hijacks the umbrella.
+#
+# The umbrella must NOT go through the per-line meta. It used to
+# (umbrella -> <X.Y> meta -> concrete), and every line advance then broke
+# `apt full-upgrade` with "Internal Error, AutoRemover broke stuff".
+# apt >= 3.0 (trixie) removes old kernels during full-upgrade, but only
+# packages named after an old kernelrelease (APT::VersionedKernelPackages:
+# `^linux-.*-<kr>$`).
+# After an advance the old line's meta was auto-installed and unused, but its
+# name carries no kernelrelease, so apt removed the old kernel and kept the
+# meta that depends on it. With nothing between umbrella and kernel, no
+# auto-installed package is left depending on an old kernel. A per-line meta
+# is only ever installed by hand, and a manually installed package keeps its
+# kernel out of autoremoval. This is Debian's shape too: linux-image-amd64
+# depends straight on linux-image-<abi>-amd64.
 
 # Derive the concrete kernelrelease from the produced image .deb rather
 # than reconstructing it, so the Depends can never point at a name the
@@ -445,26 +458,34 @@ _build_meta() {
     echo "  emitted ${meta_pkg}_${new_version}_${ARCH}.deb -> Depends ${depends}"
 }
 
+# Depends clause shared by both tiers: this build's concrete package at exactly
+# this version, plus an optional extra (the defaults package). $1=kind,
+# $2=optional extra Depends.
+_meta_depends() {
+    local kind=$1 extra_dep=${2:-}
+    local depends="linux-${kind}-${kernelrelease} (= ${new_version})"
+    [[ -n $extra_dep ]] && depends="${depends}, ${extra_dep}"
+    echo "$depends"
+}
+
 # Per-line meta: linux-<kind>-hardened-unredacted-<X.Y>-amd64 -> concrete (= ver).
 # $1=kind, $2=short desc, $3=optional extra Depends (e.g. the defaults pkg).
 emit_versioned_meta() {
     local kind=$1 short=$2 extra_dep=${3:-}
     local meta_pkg="linux-${kind}-hardened-unredacted-${series}-${ARCH}"
-    local concrete="linux-${kind}-${kernelrelease}"
-    local depends="${concrete} (= ${new_version})"
-    [[ -n $extra_dep ]] && depends="${depends}, ${extra_dep}"
-    _build_meta "$meta_pkg" "$depends" "$short" \
+    _build_meta "$meta_pkg" "$(_meta_depends "$kind" "$extra_dep")" "$short" \
         "Meta-package pinning the ${series} hardened ${kind} line built and signed by Unredacted. Tracks ${series} point releases; stays on ${series} across upgrades."
 }
 
-# Umbrella meta (stable line only): unversioned name -> the stable per-line
-# meta (>= ver), so `apt upgrade` follows current stable forward (incl. across
-# a stable-line transition). $1=kind, $2=short desc.
+# Umbrella meta (stable line only): unversioned name -> concrete (= ver), the
+# same target as the per-line meta but never via it (see the block comment
+# above). Each new stable build re-points it, so `apt upgrade` follows current
+# stable forward, across a stable-line transition too. $1=kind, $2=short desc,
+# $3=optional extra Depends.
 emit_umbrella_meta() {
-    local kind=$1 short=$2
+    local kind=$1 short=$2 extra_dep=${3:-}
     local meta_pkg="linux-${kind}-hardened-unredacted-${ARCH}"
-    local versioned="linux-${kind}-hardened-unredacted-${series}-${ARCH}"
-    _build_meta "$meta_pkg" "${versioned} (>= ${new_version})" "$short" \
+    _build_meta "$meta_pkg" "$(_meta_depends "$kind" "$extra_dep")" "$short" \
         "Meta-package that tracks the current stable hardened ${kind} built and signed by Unredacted. Install this name to follow the latest stable kernel as new versions publish; apt upgrades follow it forward automatically."
 }
 
@@ -522,7 +543,8 @@ series="${KERNEL_VERSION%.*}"   # X.Y line key (7.0.12 -> 7.0)
 stable_series=$(python3 "$repo_root/tools/lines.py" stable-series)
 echo "  line series: $series (stable line: $stable_series)"
 
-# Per-line metas (always). The image meta pulls in the defaults package.
+# Per-line metas (always). Both image metas pull in the defaults package
+# themselves, now that the umbrella no longer reaches it via the per-line meta.
 emit_versioned_meta image   "Hardened Linux kernel image for ${ARCH} (${series} line)" \
     "${defaults_pkg} (>= ${new_version})"
 emit_versioned_meta headers "Hardened Linux kernel headers for ${ARCH} (${series} line)"
@@ -530,7 +552,8 @@ emit_versioned_meta headers "Hardened Linux kernel headers for ${ARCH} (${series
 # Umbrella metas only for the stable line, so publishing a non-stable (LTS)
 # line never moves the unversioned name off current stable.
 if [[ $series == "$stable_series" ]]; then
-    emit_umbrella_meta image   "Hardened Linux kernel image for ${ARCH} (latest stable)"
+    emit_umbrella_meta image   "Hardened Linux kernel image for ${ARCH} (latest stable)" \
+        "${defaults_pkg} (>= ${new_version})"
     emit_umbrella_meta headers "Hardened Linux kernel headers for ${ARCH} (latest stable)"
 else
     echo "  series $series != stable $stable_series: skipping unversioned umbrella metas"
