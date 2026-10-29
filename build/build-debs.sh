@@ -32,6 +32,8 @@
 #   SOURCE_DATE_EPOCH     reproducible-build timestamp
 #
 # Optional:
+#   HARDENED_BASE_VERSION forward-port mode (see fetch-sources.sh): changes
+#                         only the .deb version, never the kernelrelease
 #   KBUILD_BUILD_USER     default: hardened
 #   KBUILD_BUILD_HOST     default: builder
 #   KBUILD_BUILD_TIMESTAMP   default: derived from SOURCE_DATE_EPOCH
@@ -124,7 +126,23 @@ patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 # upgrade (dpkg: revision "hardened1.1" > "hardened1"). The kernelrelease
 # and package name are unchanged — only the .deb version moves — so the
 # rebuilt kernel upgrades in place.
-new_version="${KERNEL_VERSION}-hardened${HARDENED_REVISION}"
+#
+# A FORWARD-PORT (anthraxx's signed vB-hardenedN patch on a newer kernel.org
+# K tarball, built while anthraxx has not tagged K yet) is versioned
+#   K-hardened0~fwdB.N[.P]      e.g. 7.2.13-hardened0~fwd7.2.10.1
+# which dpkg sorts above every older K (7.2.12-*) and BELOW every genuine
+# K-hardenedM (M >= 1): "hardened0" < "hardened1" settles it before the "~"
+# is even reached. So when anthraxx catches up and we build the real
+# v7.2.13-hardened1, apt replaces the forward-port in place. A newer base
+# (fwd7.2.11) and a higher base revision both sort higher, and the trailing
+# .P packaging revision works the same as on a normal build. The
+# kernelrelease and package name are unchanged; only this string differs.
+base_version="${HARDENED_BASE_VERSION:-$KERNEL_VERSION}"
+if [[ $base_version != "$KERNEL_VERSION" ]]; then
+    new_version="${KERNEL_VERSION}-hardened0~fwd${base_version}.${HARDENED_REVISION}"
+else
+    new_version="${KERNEL_VERSION}-hardened${HARDENED_REVISION}"
+fi
 if [[ -n "${PACKAGING_REVISION:-}" ]]; then
     new_version="${new_version}.${PACKAGING_REVISION}"
 fi

@@ -23,6 +23,8 @@ The signing layer is attested separately by `signing_cert_sha256` in the manifes
 | `2` | (superseded before release) | Added `schema_version` and `ci_run_number`. The build no longer derives anything shipped from the CI run number, so `ci_run_number` is provenance only. |
 | `3` | from `v7.1.5-hardened1` | Adds `canonical_sha256`, `key_independent_sha256` and `repro_class` per `.deb`. `unsigned_deb_sha256` is retained as an alias of `canonical_sha256` for older readers — note it is **not** the old value, which was the sha256 of a `dpkg-deb` repack and therefore depended on the machine that recorded it. This is the first schema a third party can verify without the project signing key. |
 
+A **forward-port** release (`releases/v7.2.13-fwd-v7.2.10-hardened1/`, see [cve-policy.md](../docs/users/cve-policy.md#forward-ports)) is an ordinary schema-3 manifest plus one field, `hardened_base_version`: the kernel version whose signed `linux-hardened` patch was applied to `kernel_version`'s tarball (`inputs.hardened_patch.url` names the same patch). It is absent on every other release. `hardened_revision` is the base patch's revision. `tools/repro-check.sh` takes the base from the tag and refuses a manifest whose `hardened_base_version` disagrees with it.
+
 ## Schema
 
 ```json

@@ -10,7 +10,16 @@ tools/repro-check.sh reads back:
     inputs.{kernel_tarball,hardened_patch}.{url,sha256}  (from inputs.json),
     outputs[].{distro,release,arch, deb_files[].{name, canonical_sha256,
         key_independent_sha256, repro_class, unsigned_deb_sha256}},
-    ci_run_number (optional), signing_cert_sha256 (optional), sbom (optional).
+    ci_run_number (optional), signing_cert_sha256 (optional), sbom (optional),
+    hardened_base_version (forward-port builds only).
+
+hardened_base_version is present only on a FORWARD-PORT: the kernel version
+whose signed linux-hardened patch was applied to the newer kernel_version
+tarball (see docs/users/cve-policy.md). The patch actually used is also in
+inputs.hardened_patch.url; this field states it outright so a reader of the
+manifest cannot mistake the release for a genuine upstream tag. Additive and
+absent from normal builds, so schema_version is unchanged: repro-check derives
+the base from the release tag, the same way it derives the packaging revision.
 
 ci_run_number records the CI run that produced the release. It is recorded for
 TRACEABILITY, not because a rebuild needs it: for twelve releases the build
@@ -69,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
                          "accepted so an old workflow keeps working.")
     ap.add_argument("--kernel-version", required=True)
     ap.add_argument("--hardened-revision", required=True)
+    ap.add_argument("--hardened-base-version", default="",
+                    help="forward-port builds: the kernel version whose "
+                         "linux-hardened patch was applied. Empty, or equal "
+                         "to --kernel-version, for a normal build.")
     ap.add_argument("--container-image", required=True,
                     help="image ref WITH digest (debian:trixie@sha256:...)")
     ap.add_argument("--source-date-epoch", required=True)
@@ -151,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
             "deb_files": deb_files,
         }],
     }
+    if args.hardened_base_version and args.hardened_base_version != args.kernel_version:
+        manifest["hardened_base_version"] = args.hardened_base_version
     if args.ci_run_number:
         manifest["ci_run_number"] = args.ci_run_number
     if args.signing_cert:

@@ -136,7 +136,13 @@ Set these in the Forgejo UI under **Settings → Actions → Variables** (repo *
 | `ALLOW_STALE_TAG` | hard-fail a tag that is behind `origin/main` | Downgrade to a warning and build anyway. For a deliberate rebuild of an old commit only — a stale tag builds an old seed pin and skips the drift guard. |
 | `ALLOW_HARDENING_REGRESSION` | hard-fail on an inherited hardening symbol that regressed | Downgrade to a warning and continue. For a **reviewed** drop only (e.g. upstream removed the symbol); that release's `final.config` then becomes the new baseline. |
 
-Leave all three unset for normal operation: each default is the safe one. `ALLOW_STALE_TAG` and `ALLOW_HARDENING_REGRESSION` are single-build overrides — unset them again once the build you needed them for has run, or the next genuine regression passes silently.
+One variable is a number rather than a switch:
+
+| Variable | Default when unset | Effect |
+| -------- | ------------------ | ------ |
+| `HARDENED_LAG_GRACE_DAYS` | `3` | Days the oldest kernel.org release on our line may go without an anthraxx tag before `cve-watch.yml` files the *behind kernel.org* issue. `0` alerts the hour kernel.org ships. See [cve-policy.md](../users/cve-policy.md#lag-alerts). |
+
+Leave all three switches unset for normal operation: each default is the safe one. `ALLOW_STALE_TAG` and `ALLOW_HARDENING_REGRESSION` are single-build overrides — unset them again once the build you needed them for has run, or the next genuine regression passes silently.
 
 ## Secret scoping
 

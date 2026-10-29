@@ -44,13 +44,17 @@ manifest="releases/${version}/manifest.json"
 # releases in releases/ are .P releases.
 #
 # Same grammar as build-kernel.yml's derive-version step; keep them in sync.
-if [[ ! $version =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
-    echo "not a release tag: $version (want vX.Y.Z-hardenedN[.P])" >&2
+# The optional -fwd-vB infix marks a forward-port (kernel.org K tarball +
+# anthraxx's signed vB-hardenedN patch); like .P, the base is needed to
+# rebuild and comes from the tag.
+if [[ ! $version =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-fwd-v([0-9]+\.[0-9]+\.[0-9]+))?-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
+    echo "not a release tag: $version (want vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P])" >&2
     exit 2
 fi
 tag_kernel="${BASH_REMATCH[1]}"
-tag_hardened="${BASH_REMATCH[2]}"
-packaging_revision="${BASH_REMATCH[4]:-}"
+tag_base="${BASH_REMATCH[3]:-}"
+tag_hardened="${BASH_REMATCH[4]}"
+packaging_revision="${BASH_REMATCH[6]:-}"
 
 command -v jq >/dev/null || { echo "jq required" >&2; exit 1; }
 # diffoscope is no longer used: a mismatch now emits per-member JSON from
@@ -144,6 +148,14 @@ if [[ $kernel_version != "$tag_kernel" || $hardened_revision != "$tag_hardened" 
     echo "but $manifest records ${kernel_version}-hardened${hardened_revision}." >&2
     exit 2
 fi
+# A forward-port manifest records its base; a normal one has none. Either way
+# it must agree with the tag, or we would rebuild with the wrong patch.
+manifest_base=$(jq -r '.hardened_base_version // empty' "$manifest")
+if [[ $manifest_base != "$tag_base" ]]; then
+    echo "manifest/tag mismatch: tag $version implies forward-port base '${tag_base:-<none>}'," >&2
+    echo "but $manifest records '${manifest_base:-<none>}'." >&2
+    exit 2
+fi
 distro=$(jq -r '.outputs[0].distro' "$manifest")
 release=$(jq -r '.outputs[0].release' "$manifest")
 arch=$(jq -r '.outputs[0].arch' "$manifest")
@@ -184,6 +196,7 @@ docker run --rm \
     -e WORKDIR=/work \
     -e KERNEL_VERSION="$kernel_version" \
     -e HARDENED_REVISION="$hardened_revision" \
+    -e HARDENED_BASE_VERSION="$tag_base" \
     -e DISTRO="$distro" -e RELEASE="$release" -e ARCH="$arch" \
     -e PACKAGING_REVISION="$packaging_revision" \
     -e SOURCE_DATE_EPOCH="$source_date_epoch" \
