@@ -166,7 +166,7 @@ Note that `tools/check-hardening-drift.sh` cannot guard the `CONFIG_LSM` string 
 
 ## When to suspect this model is wrong for a situation
 
-- **You need to ship a kernel for which Arch has no current seed.** Arch packages only the current stable line. An older LTS line would be seeded from the distro that maintains it (not wired in today — see [Adding an LTS line later](#adding-an-lts-line-later)). For a brand-new mainline release within hours of upstream (before anthraxx packages it), you'll have to wait for them or bootstrap a one-off seed.
+- **You need to ship a kernel for which Arch has no current seed.** Arch packages only the current stable line. An older LTS line would be seeded from the distro that maintains it (not wired in today — see [Adding an LTS line later](#adding-an-lts-line-later)). For a brand-new mainline release within hours of upstream (before anthraxx packages it), you'll have to wait for them or bootstrap a one-off seed. (A newer *point* release on the same line is different: the seed is per line, so a [forward-port](../users/cve-policy.md#forward-ports) builds with the line's existing seed and needs nothing here.)
 - **You need a non-x86_64 target.** anthraxx's `config.x86_64` is x86_64-only. The `73946f6` "prepare for multi-arch" commit is scaffolding only. Other arches need an alternate seed source — Phase 2 territory.
 - **You need to ship without network at build time.** The seed fetch needs network. Mirror anthraxx's repo to your own Forgejo if upstream availability becomes a concern.
 

@@ -98,13 +98,14 @@ jobs:
           # (which already uses env: correctly) inherits the guarantee.
           #
           # Same grammar as build-kernel.yml's derive-version step:
-          # vX.Y.Z-hardenedN[.P], N and P >= 1 with no leading zeros. Kept as a
-          # deliberate duplicate rather than shared, because publish can be
-          # dispatched by hand for a tag this workflow never watched get built.
-          # KEEP THE TWO REGEXES IN SYNC.
-          if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$ ]]; then
+          # vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P], N and P >= 1 with no leading
+          # zeros (the -fwd- infix is a forward-port). Kept as a deliberate
+          # duplicate rather than shared, because publish can be dispatched by
+          # hand for a tag this workflow never watched get built. KEEP THE TWO
+          # REGEXES IN SYNC.
+          if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-fwd-v[0-9]+\.[0-9]+\.[0-9]+)?-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$ ]]; then
             echo "::error::not a release tag: $tag" >&2
-            echo "::error::expected vX.Y.Z-hardenedN[.P] (N,P >=1, no leading zeros)" >&2
+            echo "::error::expected vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P] (N,P >=1, no leading zeros)" >&2
             exit 1
           fi
           # Allowlist, not a regex: $dist is also a path/URL component, and the

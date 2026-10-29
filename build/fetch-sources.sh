@@ -17,6 +17,12 @@
 # Optional:
 #   KERNEL_ORG_KEYRING    default: keys/kernel-org.gpg
 #   ANTHRAXX_KEYRING      default: keys/anthraxx.gpg
+#   HARDENED_BASE_VERSION forward-port mode: the kernel version whose signed
+#                         linux-hardened patch is applied to the (newer)
+#                         KERNEL_VERSION tarball, e.g. 7.2.10 under a 7.2.13
+#                         build. Unset or equal to KERNEL_VERSION is the
+#                         normal build. Must be the same X.Y series and
+#                         strictly older. See docs/users/cve-policy.md.
 #
 # Exits non-zero on any signature failure. No graceful fallback — a
 # pinned-key check that silently degrades is worse than no check.
@@ -68,9 +74,27 @@ signature="linux-${KERNEL_VERSION}.tar.sign"
 tarball_url="https://cdn.kernel.org/pub/linux/kernel/v${major}.x/${tarball}"
 signature_url="https://cdn.kernel.org/pub/linux/kernel/v${major}.x/${signature}"
 
-hardened_patch="linux-hardened-v${KERNEL_VERSION}-hardened${HARDENED_REVISION}.patch"
+# Forward-port mode reuses anthraxx's signed patch for an OLDER point release
+# of the same series. Every input is still signature-verified exactly as below;
+# the only thing that changes is which signed patch we fetch. Refuse anything
+# but "same series, strictly older": a cross-series patch is a real port, not
+# a mechanical re-apply, and a newer base makes no sense.
+base_version="${HARDENED_BASE_VERSION:-$KERNEL_VERSION}"
+if [[ $base_version != "$KERNEL_VERSION" ]]; then
+    if [[ ${base_version%.*} != "${KERNEL_VERSION%.*}" ]]; then
+        echo "forward-port base $base_version is not in the ${KERNEL_VERSION%.*} series" >&2
+        exit 1
+    fi
+    if [[ $(printf '%s\n%s\n' "$base_version" "$KERNEL_VERSION" | sort -V | head -n1) != "$base_version" ]]; then
+        echo "forward-port base $base_version is not older than $KERNEL_VERSION" >&2
+        exit 1
+    fi
+    echo "FORWARD-PORT: applying the v${base_version}-hardened${HARDENED_REVISION} patch to linux-${KERNEL_VERSION}"
+fi
+
+hardened_patch="linux-hardened-v${base_version}-hardened${HARDENED_REVISION}.patch"
 hardened_sig="${hardened_patch}.sig"
-hardened_base="https://github.com/anthraxx/linux-hardened/releases/download/v${KERNEL_VERSION}-hardened${HARDENED_REVISION}"
+hardened_base="https://github.com/anthraxx/linux-hardened/releases/download/v${base_version}-hardened${HARDENED_REVISION}"
 
 cd "$WORKDIR"
 

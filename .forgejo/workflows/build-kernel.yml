@@ -210,13 +210,32 @@ jobs:
           # .deb version that dpkg sorts ABOVE the bare -hardenedN (a
           # non-empty revision beats an absent one), which is never
           # intended. X.Y.Z stays [0-9]+ (the "0" in 7.0.10 is legitimate).
-          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
-            echo "tag does not match vX.Y.Z-hardenedN[.P] (N,P >=1, no leading zeros): $tag" >&2
+          #
+          # The optional -fwd-vB infix is a FORWARD-PORT: v7.2.13-fwd-v7.2.10-
+          # hardened1 builds the kernel.org 7.2.13 tarball with anthraxx's
+          # signed v7.2.10-hardened1 patch, for when kernel.org has shipped
+          # stable releases anthraxx has not tagged yet (docs/users/cve-
+          # policy.md). The suffix after -fwd- is literally the upstream tag
+          # whose patch is used, so the tag says exactly what went in. Groups:
+          # 1 kernel, 3 base kernel, 4 hardened revision, 6 packaging.
+          if [[ ! $tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-fwd-v([0-9]+\.[0-9]+\.[0-9]+))?-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
+            echo "tag does not match vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P] (N,P >=1, no leading zeros): $tag" >&2
             exit 1
           fi
           kernel="${BASH_REMATCH[1]}"
-          hardened="${BASH_REMATCH[2]}"
-          packaging="${BASH_REMATCH[4]:-}"
+          base="${BASH_REMATCH[3]:-}"
+          hardened="${BASH_REMATCH[4]}"
+          packaging="${BASH_REMATCH[6]:-}"
+          if [[ -n $base ]]; then
+            # fetch-sources.sh enforces the same rule; failing here as well
+            # keeps a bad tag from getting as far as a download.
+            if [[ ${base%.*} != "${kernel%.*}" ]] \
+                || [[ $(printf '%s\n%s\n' "$base" "$kernel" | sort -V | head -n1) != "$base" ]] \
+                || [[ $base == "$kernel" ]]; then
+              echo "forward-port base v$base must be an OLDER release of the ${kernel%.*} series than $kernel: $tag" >&2
+              exit 1
+            fi
+          fi
           # Tagger date is stable across rebase/amend; commit timestamp
           # is not. Lightweight tags have no tagger date, in which case
           # taggerdate:unix yields empty and we fall back, with a log
@@ -232,14 +251,42 @@ jobs:
           series="${kernel%.*}"
           echo "kernel=$kernel"             >> "$GITHUB_OUTPUT"
           echo "hardened=$hardened"         >> "$GITHUB_OUTPUT"
+          echo "base=$base"                 >> "$GITHUB_OUTPUT"
           echo "packaging=$packaging"       >> "$GITHUB_OUTPUT"
           echo "series=$series"             >> "$GITHUB_OUTPUT"
           echo "source_date_epoch=$sde"     >> "$GITHUB_OUTPUT"
+
+      # A forward-port exists to bridge the gap until anthraxx tags the same
+      # kernel. Once he has, building the stand-in would ship a weaker
+      # artifact than the one available (his tag may carry real changes for
+      # that release), so refuse and point at the genuine tag. An unreachable
+      # GitHub API is a warning, not a failure: availability during upstream
+      # trouble is the whole point of this mode, and every input is still
+      # signature-verified in the next step either way.
+      - name: forward-port only while upstream has not tagged this kernel
+        if: steps.ver.outputs.base != ''
+        env:
+          KERNEL: ${{ steps.ver.outputs.kernel }}
+        run: |
+          set -euo pipefail
+          if ! tags=$(curl -fsSL "https://api.github.com/repos/anthraxx/linux-hardened/tags?per_page=100"); then
+            echo "::warning::could not list anthraxx tags; cannot confirm v$KERNEL-hardened* is still untagged"
+            exit 0
+          fi
+          esc=${KERNEL//./\\.}
+          genuine=$(jq -r '.[].name' <<<"$tags" | grep -E "^v${esc}-hardened[0-9]+$" | sort -V | tail -n1 || true)
+          if [[ -n $genuine ]]; then
+            echo "::error::anthraxx has tagged $genuine; build that instead of a forward-port:" >&2
+            echo "::error::  git tag $genuine && git push origin $genuine" >&2
+            exit 1
+          fi
+          echo "no upstream v$KERNEL-hardened* tag yet; forward-port is warranted"
 
       - name: fetch sources
         env:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
           DISTRO: ${{ matrix.target.distro }}
           RELEASE: ${{ matrix.target.release }}
           ARCH: ${{ matrix.target.arch }}
@@ -271,12 +318,14 @@ jobs:
           WORKDIR: ${{ runner.temp }}/work
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
         run: ./build/apply-patches.sh
 
       - name: configure + build
         env:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
           PACKAGING_REVISION: ${{ steps.ver.outputs.packaging }}
           DISTRO: ${{ matrix.target.distro }}
           RELEASE: ${{ matrix.target.release }}
@@ -466,6 +515,7 @@ jobs:
         env:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
+          HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
           DISTRO: ${{ matrix.target.distro }}
           RELEASE: ${{ matrix.target.release }}
           ARCH: ${{ matrix.target.arch }}
@@ -510,6 +560,7 @@ jobs:
             --deb-hashes "$WORKDIR/deb-hashes.tsv" \
             --kernel-version "$KERNEL_VERSION" \
             --hardened-revision "$HARDENED_REVISION" \
+            --hardened-base-version "$HARDENED_BASE_VERSION" \
             --container-image "$CONTAINER_IMAGE" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --ci-run-number "$CI_RUN_NUMBER" \

@@ -274,4 +274,4 @@ The workflow reuses the publish credentials (`REGISTRY_USER`/`REGISTRY_TOKEN`, `
 
 ## When something goes wrong months later
 
-The runbook above is the path through unfamiliar territory once. After that, the `cve-watch.yml` job tells you when upstream moves; you push a matching local tag; CI does the rest. The same failure modes (Debian source version drift, Pangolin/Fastly secret rotation expiry, runner image staleness) will recur. Keep this doc updated when you hit a new one.
+The runbook above is the path through unfamiliar territory once. After that, the `cve-watch.yml` job tells you when upstream moves; you push a matching local tag; CI does the rest. It also tells you when upstream *doesn't* move while kernel.org does; that issue carries a forward-port dry run and the tag to push (see [cve-policy.md](../users/cve-policy.md#forward-ports)). The same failure modes (Debian source version drift, Pangolin/Fastly secret rotation expiry, runner image staleness) will recur. Keep this doc updated when you hit a new one.

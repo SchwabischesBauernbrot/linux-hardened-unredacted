@@ -328,7 +328,11 @@ _VERSION_RE = re.compile(
     r"""
     ^
     (?P<kernel>\d+\.\d+\.\d+)        # upstream kernel: 7.0.9
-    -hardened(?P<hardened>\d+)       # hardened revision: 1
+    -hardened
+    (?:
+        0~fwd(?P<base>\d+\.\d+\.\d+)\.  # forward-port: 0~fwd7.2.10.
+    )?
+    (?P<hardened>\d+)                # hardened revision: 1
     (?:\.(?P<rebuild>\d+))?          # optional packaging rebuild: .1
     $
     """,
@@ -347,8 +351,15 @@ def parse_version(v: str) -> tuple[int, ...]:
     build sorts distinctly and the oldest lands in `to_archive` when
     retention bites.
 
+    A forward-port (`7.2.13-hardened0~fwd7.2.10.1`: kernel 7.2.13 built
+    with the v7.2.10-hardened1 patch) keys as (major, minor, patch, 0,
+    *base, hardened, rebuild). The 0 in the hardened slot puts it below
+    every genuine build of the same kernel (hardened >= 1) and above every
+    older kernel, which is exactly how dpkg orders the two strings.
+
     This MUST match the version string build-debs.sh stamps via
-    KDEB_PKGVERSION (`${KERNEL_VERSION}-hardened${HARDENED_REVISION}`).
+    KDEB_PKGVERSION (`${KERNEL_VERSION}-hardened${HARDENED_REVISION}`, or
+    the forward-port form above).
     The earlier scheme (`6.12.8.hardened1-deb13.1~hardened1`) is gone;
     if you change build-debs.sh's new_version, change this regex too.
 
@@ -368,6 +379,13 @@ def parse_version(v: str) -> tuple[int, ...]:
         (7, 0, 9, 2, 0)
         >>> parse_version("7.0.10-hardened1")
         (7, 0, 10, 1, 0)
+        >>> parse_version("7.2.13-hardened0~fwd7.2.10.1")
+        (7, 2, 13, 0, 7, 2, 10, 1, 0)
+        >>> parse_version("7.2.13-hardened0~fwd7.2.10.1.2")
+        (7, 2, 13, 0, 7, 2, 10, 1, 2)
+        >>> sorted(["7.2.13-hardened1", "7.2.13-hardened0~fwd7.2.10.1",
+        ...         "7.2.12-hardened1"], key=parse_version)
+        ['7.2.12-hardened1', '7.2.13-hardened0~fwd7.2.10.1', '7.2.13-hardened1']
         >>> parse_version("not-a-hardened-version")
         ()
     """
@@ -376,6 +394,9 @@ def parse_version(v: str) -> tuple[int, ...]:
         return ()
     k = tuple(int(p) for p in m["kernel"].split("."))
     rebuild = int(m["rebuild"]) if m["rebuild"] else 0
+    if m["base"]:
+        base = tuple(int(p) for p in m["base"].split("."))
+        return (*k, 0, *base, int(m["hardened"]), rebuild)
     return (*k, int(m["hardened"]), rebuild)
 
 
@@ -451,6 +472,20 @@ def select_versions_to_archive(
 
     >>> select_versions_to_archive(["not-a-version", "7.1.4-hardened1"], 3)
     []
+
+    A forward-port is a stand-in for a genuine build of the same kernel. It
+    holds a retention slot like any core while it is the newest thing we have
+    for that kernel; once the genuine build lands it archives outright and
+    frees the slot, so it cannot push a real release out of the window.
+
+    >>> select_versions_to_archive(
+    ...     ["7.2.11-hardened1", "7.2.12-hardened1",
+    ...      "7.2.13-hardened0~fwd7.2.10.1"], 3)
+    []
+    >>> select_versions_to_archive(
+    ...     ["7.2.11-hardened1", "7.2.12-hardened1",
+    ...      "7.2.13-hardened0~fwd7.2.10.1", "7.2.13-hardened1"], 3)
+    ['7.2.13-hardened0~fwd7.2.10.1']
     """
     keep_per_line = keep_per_line or {}
     # line(major,minor) -> core(tuple of 4 ints) -> [(version, parsed_key), ...]
@@ -462,11 +497,20 @@ def select_versions_to_archive(
                   file=sys.stderr)
             continue
         line_key = parts[:2]  # (major, minor) — the kernel line
-        core = parts[:4]  # (major, minor, patch, hardened); drop the .P rebuild
+        # (major, minor, patch, hardened); drop the .P rebuild. A forward-port
+        # has hardened 0 here, so every forward-port of one kernel (whatever
+        # its base) is one core, and only its newest build stays.
+        core = parts[:4]
         by_line.setdefault(line_key, {}).setdefault(core, []).append((v, parts))
 
     archive_candidates: list[str] = []
     for line_key, cores in by_line.items():
+        # A forward-port core whose kernel now has a genuine build is obsolete:
+        # archive it in full before counting slots (see the doctest above).
+        superseded = [c for c in cores if c[3] == 0
+                      and any(o[:3] == c[:3] and o[3] > 0 for o in cores)]
+        for c in superseded:
+            archive_candidates.extend(v for v, _ in cores.pop(c))
         keep = keep_per_line.get(line_key, default_keep)
         # Newest cores first; keep the first `keep`, archive the rest.
         for idx, core in enumerate(sorted(cores, reverse=True)):

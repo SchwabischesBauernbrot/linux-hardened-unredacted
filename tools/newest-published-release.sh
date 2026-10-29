@@ -49,19 +49,23 @@ fi
 [[ -d $releases_dir ]] || exit 0
 
 # Release dirs are named for the tag and carry the optional .P packaging
-# revision (releases/v7.0.10-hardened1.5/), same grammar as build-kernel.yml's
+# revision (releases/v7.0.10-hardened1.5/) and the optional forward-port infix
+# (releases/v7.2.13-fwd-v7.2.10-hardened1/), same grammar as build-kernel.yml's
 # derive-version step. Only directories holding a manifest.json count as
 # published; a bare directory is not evidence of anything.
 #
 # `sort -V | tail -n1` matches the discipline build-kernel.yml uses to pick the
-# hardening-drift baseline -- keep the two consistent.
-pattern='^v[0-9]+\.[0-9]+\.[0-9]+-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$'
+# hardening-drift baseline -- keep the two consistent. It also orders a
+# forward-port correctly: v7.2.13-fwd-... sorts above v7.2.12-* and below the
+# genuine v7.2.13-hardened1 ("-fwd" < "-hardened"), as the .deb versions do.
+fwd='(-fwd-v[0-9]+\.[0-9]+\.[0-9]+)?'
+pattern="^v[0-9]+\.[0-9]+\.[0-9]+${fwd}-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$"
 if [[ -n $series ]]; then
     [[ $series =~ ^[0-9]+\.[0-9]+$ ]] || {
         echo "--series must be X.Y, got: $series" >&2; exit 2; }
     # Escape the dot so --series 7.0 does not also match v7.10.*.
     esc=${series//./\\.}
-    pattern="^v${esc}\.[0-9]+-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$"
+    pattern="^v${esc}\.[0-9]+${fwd}-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$"
 fi
 
 newest=""
