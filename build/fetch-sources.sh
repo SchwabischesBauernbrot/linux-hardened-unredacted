@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Fetch and verify upstream sources for a single
-# (distro, release, arch, kernel_version) target.
+# Fetch and verify upstream sources for a single (flavor, kernel_version)
+# target. The flavor descriptor (configs/flavors/$FLAVOR.toml) names the
+# source type and the distro/release/arch it is built for.
 #
 # Outputs are placed in $WORKDIR. Hashes of fetched inputs are recorded in
 # $WORKDIR/input-hashes.txt; tools/publish.py rolls these into the release
@@ -9,9 +10,7 @@
 # Required env:
 #   KERNEL_VERSION        e.g. 6.12.8
 #   HARDENED_REVISION     e.g. 1 (i.e. -hardened1)
-#   DISTRO                debian
-#   RELEASE               trixie
-#   ARCH                  amd64
+#   FLAVOR                build flavor, configs/flavors/<FLAVOR>.toml (e.g. amd64)
 #   WORKDIR               absolute path to a writable empty directory
 #
 # Optional:
@@ -32,12 +31,22 @@ umask 022
 
 : "${KERNEL_VERSION:?KERNEL_VERSION required}"
 : "${HARDENED_REVISION:?HARDENED_REVISION required}"
-: "${DISTRO:?DISTRO required}"
-: "${RELEASE:?RELEASE required}"
-: "${ARCH:?ARCH required}"
+: "${FLAVOR:?FLAVOR required (a configs/flavors/<FLAVOR>.toml)}"
 : "${WORKDIR:?WORKDIR required}"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+
+flavor_get() { python3 "$repo_root/tools/flavors.py" get "$FLAVOR" "$1"; }
+source_type=$(flavor_get source)
+distro=$(flavor_get distro)
+release=$(flavor_get release)
+arch=$(flavor_get arch)
+# Only the signed kernel.org tarball is implemented. tools/flavors.py's
+# validate refuses a descriptor asking for anything else; this is the backstop.
+case "$source_type" in
+    kernelorg-tarball) ;;
+    *) echo "flavor $FLAVOR: source '$source_type' is not implemented by fetch-sources.sh" >&2; exit 2 ;;
+esac
 kernel_org_keyring="${KERNEL_ORG_KEYRING:-$repo_root/keys/kernel-org.gpg}"
 anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
 
@@ -182,10 +191,10 @@ fi
 # The actual `apt-get source linux` happens inside the build container,
 # where the matching distro release is configured. Record the expectation
 # here so the publish-time manifest can cross-reference it.
-cat > "distro-source.${DISTRO}-${RELEASE}.txt" <<EOF
-distro=$DISTRO
-release=$RELEASE
-arch=$ARCH
+cat > "distro-source.${distro}-${release}.txt" <<EOF
+distro=$distro
+release=$release
+arch=$arch
 fetch_command=apt-get source linux
 recorded_at=$(date -u +%FT%TZ)
 EOF

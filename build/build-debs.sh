@@ -25,7 +25,9 @@
 #   WORKDIR
 #   KERNEL_VERSION
 #   HARDENED_REVISION
-#   ARCH
+#   FLAVOR                build flavor, configs/flavors/<FLAVOR>.toml (e.g.
+#                         amd64): arch, kernel arch, LOCALVERSION, package
+#                         names, pre-build symbol checks and line set
 #   PACKAGING_REVISION    optional trailing .N from the tag; also becomes
 #                         KBUILD_BUILD_VERSION (uname -v), so `uname -v` is
 #                         derivable from the tag alone
@@ -44,27 +46,16 @@ umask 022
 : "${WORKDIR:?WORKDIR required}"
 : "${KERNEL_VERSION:?KERNEL_VERSION required}"
 : "${HARDENED_REVISION:?HARDENED_REVISION required}"
-: "${ARCH:?ARCH required}"
+: "${FLAVOR:?FLAVOR required (a configs/flavors/<FLAVOR>.toml)}"
 : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH required for reproducible builds}"
 
-# DISTRO and RELEASE flow through the workflow for traceability but
-# aren't read here — the apt repo we publish to is per-distro, so the
-# .deb itself doesn't need a distro tag in its name or version. The
-# matrix in build-kernel.yml gates which DISTRO/RELEASE pairs we
-# accept.
+# The flavor's distro and release (its descriptor) aren't read here — the
+# apt repo we publish to is per-distro, so the .deb itself doesn't need a
+# distro tag in its name or version.
 
 export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-hardened}"
 export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-builder}"
 export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-$(date -u -d "@$SOURCE_DATE_EPOCH" +"%a %b %d %T UTC %Y")}"
-
-# Translate the Debian/dpkg arch name (amd64, arm64) to the kernel
-# build's arch name (x86_64, arm64). The kernel has arch/x86/ and
-# arch/arm64/; there is no arch/amd64/.
-case "$ARCH" in
-    amd64) kernel_arch=x86_64 ;;
-    arm64) kernel_arch=arm64 ;;
-    *) echo "unsupported ARCH: $ARCH" >&2; exit 2 ;;
-esac
 
 # Absolute path to the repo root, captured now while the CWD is still the
 # repo root (the workflow invokes ./build/build-debs.sh from there). We cd
@@ -74,9 +65,21 @@ esac
 # this, so it must be an absolute path fixed before the cd.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Every flavor-dependent value comes from the descriptor, read once here
+# (tools/flavors.py validates it on every read).
+flavor_get() { python3 "$repo_root/tools/flavors.py" get "$FLAVOR" "$1"; }
+# The Debian/dpkg arch name (amd64, arm64): the .deb Architecture field and
+# filename suffix.
+deb_arch=$(flavor_get arch)
+# The kernel build's arch name (x86_64, arm64). The kernel has arch/x86/ and
+# arch/arm64/; there is no arch/amd64/.
+kernel_arch=$(flavor_get kernel_arch)
+# The configs/lines.toml line set whose stable series gets the umbrella metas.
+line_set=$(flavor_get lines)
+
 # Must match build/configure-kernel.sh's MODULE_SIG_KEY_BASENAME and the value
-# configs/intent.config pins for CONFIG_MODULE_SIG_KEY. Not the kernel's stock
-# `signing_key.pem` -- see the intent.config comment for why.
+# configs/intent.common.config pins for CONFIG_MODULE_SIG_KEY. Not the kernel's
+# stock `signing_key.pem` -- see the comment there for why.
 MODULE_SIG_KEY_BASENAME="unredacted-signing.pem"
 
 patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
@@ -151,14 +154,15 @@ fi
 # therefore part of the package name and the modules path:
 #   /lib/modules/${KERNEL_VERSION}${local_version}/
 #   linux-image-${KERNEL_VERSION}${local_version}_${new_version}_amd64.deb
+# It is the descriptor's `localversion` (amd64: -hardened-unredacted-amd64).
 #
-# "hardened-unredacted-${ARCH}" identifies both the patchset (anthraxx's
+# "hardened-unredacted-<flavor>" identifies both the patchset (anthraxx's
 # linux-hardened) and the distributor (Unredacted). Without the
 # -unredacted marker, our package name would collide visually with
 # anthraxx's own `linux-hardened` Arch package and the various
 # community linux-hardened ports — users couldn't tell which build
 # they have installed.
-local_version="-hardened-unredacted-${ARCH}"
+local_version=$(flavor_get localversion)
 
 cd "$patched_dir"
 
@@ -190,23 +194,24 @@ find . -maxdepth 1 -name 'localversion*' -print | sed 's|^|  |' \
     || echo "  (none — clean)"
 
 # Pre-flight: sanity-check the merged .config that configure-kernel.sh
-# produced. If CONFIG_EFI or CONFIG_EFI_STUB isn't =y, the resulting
-# kernel won't be PE-format and sbsign will reject it with "Invalid
-# DOS header magic" 30+ minutes from now. Abort here instead.
-#
-# Similarly, on amd64 we need CONFIG_X86_64=y; without it we'd build
-# a 32-bit kernel and the .deb naming + sign assumptions all break.
-#
-# These checks are intentionally strict — we always want
-# Secure-Boot-signable kernels. Loosen if/when we add non-EFI build
-# targets (VM appliances, embedded).
+# produced against the descriptor's `required_y`. For a flavor whose image
+# is sbsign'ed (amd64), CONFIG_EFI and CONFIG_EFI_STUB must be =y, or the
+# resulting kernel won't be PE-format and sbsign will reject it with
+# "Invalid DOS header magic" 30+ minutes from now -- tools/flavors.py refuses
+# an sbsign descriptor that omits them. The arch symbol (CONFIG_X86_64 on
+# amd64) guards against building a 32-bit kernel, which breaks the .deb
+# naming and signing assumptions. Abort here instead.
 echo "=== pre-build sanity ==="
 echo "  .config size: $(stat -c %s .config) bytes, lines: $(wc -l < .config)"
-required_y=(CONFIG_EFI CONFIG_EFI_STUB)
-case "$ARCH" in
-    amd64) required_y+=(CONFIG_X86_64) ;;
-    arm64) required_y+=(CONFIG_ARM64) ;;
-esac
+required_list=$(flavor_get required_y)
+required_y=()
+while IFS= read -r sym; do
+    [[ -n $sym ]] && required_y+=("$sym")
+done <<<"$required_list"
+(( ${#required_y[@]} > 0 )) || {
+    echo "flavor $FLAVOR lists no required_y symbols; refusing to skip the pre-build check" >&2
+    exit 5
+}
 missing=()
 for sym in "${required_y[@]}"; do
     if grep -q "^${sym}=y" .config; then
@@ -227,13 +232,13 @@ under UEFI / not sbsign-able / wrong arch — and the failure would
 only surface 30+ minutes from now in the sign step.
 
 Most likely causes:
-  - configs/intent.config doesn't pin them =y (or pins them off), and
-    the upstream seed (anthraxx config.x86_64) doesn't either. Pin them
-    in configs/intent.config + add POLICY entries.
+  - the flavor's intent fragments don't pin them =y (or pin them off),
+    and the upstream seed doesn't either. Pin them in the right
+    configs/intent.*.config fragment + add POLICY entries.
   - olddefconfig defaulted them off because a transitive dependency is
     missing. configure-kernel.sh's fidelity assertion should have caught
-    this earlier; if it didn't, the symbol isn't in intent.config -- add
-    it so it can't get lost again.
+    this earlier; if it didn't, the symbol isn't pinned in the intent --
+    add it so it can't get lost again.
 
 EOF
     exit 5
@@ -279,7 +284,7 @@ make \
 # produced nothing useful and the sign step would fail later with a
 # less helpful error.
 shopt -s nullglob
-image_debs=( "$WORKDIR"/linux-image-*_"${ARCH}".deb )
+image_debs=( "$WORKDIR"/linux-image-*_"${deb_arch}".deb )
 shopt -u nullglob
 if (( ${#image_debs[@]} == 0 )); then
     echo "no linux-image .debs landed in $WORKDIR after bindeb-pkg" >&2
@@ -299,7 +304,7 @@ fi
 # trust root for every module signature this kernel will accept. Assert it
 # matches our PEM's certificate. This is what converts a wrong assumption about
 # kbuild's key handling (e.g. if it had regenerated the key, which is precisely
-# why intent.config avoids the stock `certs/signing_key.pem` name) from a
+# why the intent avoids the stock `certs/signing_key.pem` name) from a
 # silently mis-keyed kernel into an aborted build.
 key_src="certs/$MODULE_SIG_KEY_BASENAME"
 extracted_der="certs/signing_key.x509"
@@ -339,7 +344,7 @@ shred -u "$key_src" 2>/dev/null || rm -f "$key_src"
 # stays in the patched tree.
 #
 # A plain copy: no normalization needed any more. CONFIG_MODULE_SIG_KEY is now a
-# constant in-tree path (see configs/intent.config), so what the fidelity
+# constant in-tree path (see configs/intent.common.config), so what the fidelity
 # assertion checked, what the build used, and what ships are the same value.
 # This used to `sed` the value back to a placeholder, because
 # configure-kernel.sh had repointed it at a per-build `mktemp -d` path -- but
@@ -415,8 +420,11 @@ echo "  shipped /boot/config-* in $(basename "$img_deb") matches final.config"
 # So `apt install linux-image-hardened-unredacted-amd64` tracks current stable
 # and follows it across a 7.1->7.2 transition automatically, while the per-line
 # `...-<X.Y>-amd64` name, installed by hand, pins a specific line. The stable
-# line is read from configs/lines.toml via tools/lines.py, so publishing a
-# non-stable line never hijacks the umbrella.
+# line is read from configs/lines.toml via tools/lines.py, for the flavor's
+# own line set, so publishing a non-stable line (or another flavor's line)
+# never hijacks the umbrella. The trailing name component is the FLAVOR
+# (amd64 here; a flavor's packages are named after it, while their
+# Architecture field is the descriptor's dpkg arch).
 #
 # The umbrella must NOT go through the per-line meta. It used to
 # (umbrella -> <X.Y> meta -> concrete), and every line advance then broke
@@ -460,7 +468,7 @@ _build_meta() {
         echo "Package: ${meta_pkg}"
         echo "Source: linux-hardened-unredacted"
         echo "Version: ${new_version}"
-        echo "Architecture: ${ARCH}"
+        echo "Architecture: ${deb_arch}"
         echo "Maintainer: Unredacted <security@unredacted.org>"
         echo "Depends: ${depends}"
         echo "Section: kernel"
@@ -471,9 +479,9 @@ _build_meta() {
     # --root-owner-group keeps the .deb owner-independent; SOURCE_DATE_EPOCH
     # (exported above) clamps mtimes so the meta is reproducible.
     dpkg-deb --build --root-owner-group "$metadir" \
-        "$WORKDIR/${meta_pkg}_${new_version}_${ARCH}.deb" >/dev/null
+        "$WORKDIR/${meta_pkg}_${new_version}_${deb_arch}.deb" >/dev/null
     rm -rf "$metadir"
-    echo "  emitted ${meta_pkg}_${new_version}_${ARCH}.deb -> Depends ${depends}"
+    echo "  emitted ${meta_pkg}_${new_version}_${deb_arch}.deb -> Depends ${depends}"
 }
 
 # Depends clause shared by both tiers: this build's concrete package at exactly
@@ -490,7 +498,7 @@ _meta_depends() {
 # $1=kind, $2=short desc, $3=optional extra Depends (e.g. the defaults pkg).
 emit_versioned_meta() {
     local kind=$1 short=$2 extra_dep=${3:-}
-    local meta_pkg="linux-${kind}-hardened-unredacted-${series}-${ARCH}"
+    local meta_pkg="linux-${kind}-hardened-unredacted-${series}-${FLAVOR}"
     _build_meta "$meta_pkg" "$(_meta_depends "$kind" "$extra_dep")" "$short" \
         "Meta-package pinning the ${series} hardened ${kind} line built and signed by Unredacted. Tracks ${series} point releases; stays on ${series} across upgrades."
 }
@@ -502,7 +510,7 @@ emit_versioned_meta() {
 # $3=optional extra Depends.
 emit_umbrella_meta() {
     local kind=$1 short=$2 extra_dep=${3:-}
-    local meta_pkg="linux-${kind}-hardened-unredacted-${ARCH}"
+    local meta_pkg="linux-${kind}-hardened-unredacted-${FLAVOR}"
     _build_meta "$meta_pkg" "$(_meta_depends "$kind" "$extra_dep")" "$short" \
         "Meta-package that tracks the current stable hardened ${kind} built and signed by Unredacted. Install this name to follow the latest stable kernel as new versions publish; apt upgrades follow it forward automatically."
 }
@@ -537,7 +545,7 @@ cp "$sysctl_src" "$ddir/usr/lib/sysctl.d/99-hardened.conf"
     echo " documented in the project's POLICY.md: unprivileged user"
     echo " namespaces, ptrace, BPF, and perf restricted to root. Admins"
     echo " override individual values with a higher-numbered file in"
-    echo " /etc/sysctl.d/. Pulled in by linux-image-hardened-unredacted-${ARCH}."
+    echo " /etc/sysctl.d/. Pulled in by linux-image-hardened-unredacted-${FLAVOR}."
 } > "$ddir/DEBIAN/control"
 # Apply the sysctls on install so a reboot isn't required. `|| true`
 # because a key may not exist on the running (possibly stock) kernel;
@@ -558,21 +566,21 @@ echo "  emitted ${defaults_pkg}_${new_version}_all.deb"
 
 echo "generating meta-packages"
 series="${KERNEL_VERSION%.*}"   # X.Y line key (7.0.12 -> 7.0)
-stable_series=$(python3 "$repo_root/tools/lines.py" stable-series)
-echo "  line series: $series (stable line: $stable_series)"
+stable_series=$(python3 "$repo_root/tools/lines.py" stable-series "$line_set")
+echo "  line series: $series (stable line of the $line_set line set: $stable_series)"
 
 # Per-line metas (always). Both image metas pull in the defaults package
 # themselves, now that the umbrella no longer reaches it via the per-line meta.
-emit_versioned_meta image   "Hardened Linux kernel image for ${ARCH} (${series} line)" \
+emit_versioned_meta image   "Hardened Linux kernel image for ${deb_arch} (${series} line)" \
     "${defaults_pkg} (>= ${new_version})"
-emit_versioned_meta headers "Hardened Linux kernel headers for ${ARCH} (${series} line)"
+emit_versioned_meta headers "Hardened Linux kernel headers for ${deb_arch} (${series} line)"
 
 # Umbrella metas only for the stable line, so publishing a non-stable (LTS)
 # line never moves the unversioned name off current stable.
 if [[ $series == "$stable_series" ]]; then
-    emit_umbrella_meta image   "Hardened Linux kernel image for ${ARCH} (latest stable)" \
+    emit_umbrella_meta image   "Hardened Linux kernel image for ${deb_arch} (latest stable)" \
         "${defaults_pkg} (>= ${new_version})"
-    emit_umbrella_meta headers "Hardened Linux kernel headers for ${ARCH} (latest stable)"
+    emit_umbrella_meta headers "Hardened Linux kernel headers for ${deb_arch} (latest stable)"
 else
     echo "  series $series != stable $stable_series: skipping unversioned umbrella metas"
 fi

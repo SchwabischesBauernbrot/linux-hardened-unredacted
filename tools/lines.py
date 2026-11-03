@@ -6,17 +6,25 @@ and their per-line metadata. The `series` (kernel major.minor, e.g. "7.0") is
 the line key used for seed selection, meta-package naming, prune retention
 buckets, and drift-baseline scoping.
 
+Each line belongs to a line set, named by its optional `flavor` field; a block
+without one belongs to "amd64", which is every line registered today. A flavor
+descriptor's `lines` key (configs/flavors/<flavor>.toml) names the set it
+builds. Each set has exactly one stable line, so the umbrella meta-packages of
+one flavor never follow another flavor's stable series.
+
 Python consumers import this module:
 
     import lines
-    lines.stable_series()          -> "7.0"
-    lines.all_series()             -> ["7.0"]
-    lines.keep_for_series("7.0")   -> 3   (or None if unregistered)
+    lines.stable_series()                -> "7.0"   (the amd64 set)
+    lines.stable_series(flavor="pi5")    -> that set's stable series
+    lines.all_series()                   -> ["7.0"]
+    lines.keep_for_series("7.0")         -> 3   (or None if unregistered)
 
 Shell consumers (build-debs.sh, the workflows) invoke it as a CLI:
 
     python3 tools/lines.py series             # all series, space-separated
-    python3 tools/lines.py stable-series      # the single stable series
+    python3 tools/lines.py stable-series      # the amd64 set's stable series
+    python3 tools/lines.py stable-series pi5  # another set's stable series
     python3 tools/lines.py kinds              # "series=kind" pairs, one per line
     python3 tools/lines.py seed-path 7.0      # seed pin path for a series
     python3 tools/lines.py keep 7.0           # keep_in_main for a series
@@ -36,15 +44,27 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_REGISTRY = _REPO_ROOT / "configs" / "lines.toml"
 
 _SERIES_RE = re.compile(r"^\d+\.\d+$")
+_FLAVOR_RE = re.compile(r"^[a-z0-9]+$")
+
+# The line set of a [[line]] block that has no `flavor` field.
+DEFAULT_FLAVOR = "amd64"
+
+
+def flavor_of(ln: dict) -> str:
+    return ln.get("flavor", DEFAULT_FLAVOR)
 
 
 def load(path: Path | None = None) -> list[dict]:
     """Parse configs/lines.toml into a list of line dicts.
 
     Validates the minimal invariants the rest of the system relies on:
-    every line has a well-formed `series`, exactly one line is `stable`,
-    and series are unique. A malformed registry is a build-stopping error,
-    not something to paper over.
+    every line has a well-formed `series` and `flavor`, each flavor has
+    exactly one `stable` line, and series are unique. A malformed registry
+    is a build-stopping error, not something to paper over.
+
+    Series stay unique ACROSS flavors for now: keep_for_series() and
+    seed_path_for() are keyed on the series alone, and prune buckets by it.
+    Two flavors on one series is a Phase 2 change (docs/operators/flavors.md).
     """
     path = path or _DEFAULT_REGISTRY
     with open(path, "rb") as fh:
@@ -53,7 +73,7 @@ def load(path: Path | None = None) -> list[dict]:
     if not out:
         raise ValueError(f"{path}: no [[line]] entries")
     seen: set[str] = set()
-    stable = 0
+    stable: dict[str, int] = {}
     for ln in out:
         series = ln.get("series", "")
         if not _SERIES_RE.match(str(series)):
@@ -61,10 +81,16 @@ def load(path: Path | None = None) -> list[dict]:
         if series in seen:
             raise ValueError(f"{path}: duplicate series {series!r}")
         seen.add(series)
+        flavor = flavor_of(ln)
+        if not _FLAVOR_RE.match(str(flavor)):
+            raise ValueError(f"{path}: line {series!r} has bad flavor {flavor!r}")
+        stable.setdefault(flavor, 0)
         if ln.get("kind") == "stable":
-            stable += 1
-    if stable != 1:
-        raise ValueError(f"{path}: expected exactly one kind=stable line, got {stable}")
+            stable[flavor] += 1
+    for flavor, n in sorted(stable.items()):
+        if n != 1:
+            raise ValueError(f"{path}: expected exactly one kind=stable line for "
+                             f"flavor {flavor!r}, got {n}")
     return out
 
 
@@ -79,11 +105,17 @@ def all_series(path: Path | None = None) -> list[str]:
     return [ln["series"] for ln in load(path)]
 
 
-def stable_series(path: Path | None = None) -> str:
+def stable_series(path: Path | None = None, flavor: str = DEFAULT_FLAVOR) -> str:
+    """The stable series of one line set (default: amd64's).
+
+    A flavor with no registered line is an error, not a fallback to another
+    set's stable line: build-debs.sh would otherwise publish umbrella metas
+    keyed on the wrong series.
+    """
     for ln in load(path):
-        if ln.get("kind") == "stable":
+        if flavor_of(ln) == flavor and ln.get("kind") == "stable":
             return ln["series"]
-    raise ValueError("no stable line in registry")  # unreachable: load() enforces it
+    raise ValueError(f"no stable line for flavor {flavor!r} in registry")
 
 
 def keep_for_series(series: str, path: Path | None = None) -> int | None:
@@ -160,7 +192,7 @@ def _cli(argv: list[str]) -> int:
         if cmd == "series":
             print(" ".join(all_series()))
         elif cmd == "stable-series":
-            print(stable_series())
+            print(stable_series(flavor=rest[0]) if rest else stable_series())
         elif cmd == "kinds":
             print("\n".join(f"{ln['series']}={ln.get('kind', '')}" for ln in load()))
         elif cmd == "seed-path":

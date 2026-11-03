@@ -5,13 +5,18 @@ Run from the build job (.forgejo/workflows/build-kernel.yml) after the .debs
 are produced, signed, and stripped-and-hashed. It records, in the schema
 tools/repro-check.sh reads back:
 
-    schema_version, kernel_version, hardened_revision, container_image,
+    schema_version, flavor, kernel_version, hardened_revision, container_image,
     source_date_epoch,
     inputs.{kernel_tarball,hardened_patch}.{url,sha256}  (from inputs.json),
     outputs[].{distro,release,arch, deb_files[].{name, canonical_sha256,
         key_independent_sha256, repro_class, unsigned_deb_sha256}},
     ci_run_number (optional), signing_cert_sha256 (optional), sbom (optional),
     hardened_base_version (forward-port builds only).
+
+flavor names the build flavor (configs/flavors/<flavor>.toml) the release was
+built from. Additive, so schema_version is unchanged: a manifest without it
+predates flavors and is amd64, which is how tools/repro-check.sh and
+tools/flavors.py (the drift-baseline lookup) read it.
 
 hardened_base_version is present only on a FORWARD-PORT: the kernel version
 whose signed linux-hardened patch was applied to the newer kernel_version
@@ -89,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="the CI run number that produced this release "
                          "(github.run_number). Traceability only — see the "
                          "module docstring for why it is recorded.")
+    ap.add_argument("--flavor", required=True,
+                    help="build flavor (configs/flavors/<flavor>.toml)")
     ap.add_argument("--distro", required=True)
     ap.add_argument("--release", required=True)
     ap.add_argument("--arch", required=True)
@@ -152,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         # failures, because they lack fields no rebuild can reconstruct. See
         # releases/README.md for what each version promises.
         "schema_version": 3,
+        "flavor": args.flavor,
         "kernel_version": args.kernel_version,
         "hardened_revision": args.hardened_revision,
         "container_image": args.container_image,

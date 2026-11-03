@@ -95,9 +95,9 @@ else
     echo "  1. Decide which changes (if any) to adopt. New hardening symbols"
     echo "     anthraxx enabled are auto-inherited the moment the seed is"
     echo "     bumped -- you only need to act on intent overrides."
-    echo "  2. If any new symbol warrants explicit pinning in"
-    echo "     configs/intent.config (defense-in-depth), add it + a"
-    echo "     configs/POLICY.md entry."
+    echo "  2. If any new symbol warrants explicit pinning (defense-in-depth),"
+    echo "     add it to configs/intent.common.config (or intent.x86_64.config"
+    echo "     if x86-only) + a configs/POLICY.md entry."
     echo "  3. tools/bump-seed.sh $ref"
 fi
 

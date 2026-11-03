@@ -87,22 +87,35 @@ jobs:
       # decides what gets DELETED, including the .P-rebuild handling and the
       # per-line sunset knob. They existed (for parse_version) and had never
       # been run by anything.
-      - run: python3 -m doctest tools/prune.py tools/lines.py
+      - run: python3 -m doctest tools/prune.py tools/lines.py tools/flavors.py
       # Smoke-test the line registry: py_compile does not prove
       # configs/lines.toml parses, and lines.py raises on a malformed registry
       # (two stable lines, a bad series). Without this, a broken registry
       # surfaces only when seed-bump.yml or a build runs.
       - run: python3 tools/lines.py stable-series
+      # Same for the flavor descriptors (configs/flavors/*.toml): schema,
+      # intent fragments (exist, start with the common one, no symbol pinned
+      # twice within a flavor, none merged by no flavor), cross-flavor
+      # uniqueness of tag prefix and localversion, each flavor's line set has a
+      # stable line, and nothing this pipeline cannot build yet. build-kernel.yml
+      # runs the same check before it builds.
+      - run: python3 tools/flavors.py validate
 
   intent-matches-policy:
-    # Bidirectional parity between configs/intent.config (the project's
-    # pinned kconfig overrides layered over anthraxx's seed) and
-    # configs/POLICY.md (the prose audit trail). Every kconfig assertion
-    # in POLICY must appear as a setting line in intent.config with the
-    # declared value; every setting line in intent.config must have its
-    # symbol mentioned (as a CONFIG_ token) in POLICY. A mismatch means
-    # the docs and the operational intent drifted -- one or the other
-    # needs updating before merge.
+    # Bidirectional parity between the intent fragments (the project's
+    # pinned kconfig overrides layered over the seed: configs/intent.common.config
+    # plus the per-architecture configs/intent.<arch>.config, as the flavor
+    # descriptors in configs/flavors/ list them) and configs/POLICY.md (the
+    # prose audit trail). Every kconfig assertion in POLICY must appear as a
+    # setting line in one of the fragments with the declared value; every
+    # setting line in every fragment must have its symbol mentioned (as a
+    # CONFIG_ token) in POLICY. A mismatch means the docs and the operational
+    # intent drifted -- one or the other needs updating before merge.
+    #
+    # The fragments are checked as their UNION, the same set the build's
+    # fidelity assertion checks for a flavor. (Which fragment holds a pin is
+    # tools/flavors.py's concern: it rejects a symbol pinned twice within a
+    # flavor, and a fragment no flavor merges.)
     #
     # The seed itself is never checked here (the seed is what it is; the
     # build's fidelity assertion handles "did our intent actually land"
@@ -110,17 +123,34 @@ jobs:
     runs-on: linux-hardened
     steps:
       - uses: actions/checkout@v4
-      - name: intent.config and POLICY.md agree
+      - name: intent fragments and POLICY.md agree
         run: |
           set -euo pipefail
-          INTENT=configs/intent.config
           POLICY=configs/POLICY.md
-          [[ -f $INTENT ]] || { echo "missing $INTENT" >&2; exit 1; }
           [[ -f $POLICY ]] || { echo "missing $POLICY" >&2; exit 1; }
+          # Every fragment any flavor merges. A failing flavors.py fails the
+          # step here (command substitution in an assignment), rather than
+          # yielding an empty list that a loop would silently skip.
+          frag_list=$(python3 tools/flavors.py fragments)
+          frags=()
+          while IFS= read -r f; do
+              [[ -n $f ]] && frags+=("$f")
+          done <<<"$frag_list"
+          if (( ${#frags[@]} == 0 )); then
+              echo "no intent fragments listed by any flavor descriptor" >&2
+              exit 1
+          fi
+          for f in "${frags[@]}"; do
+              [[ -f $f ]] || { echo "missing $f" >&2; exit 1; }
+          done
+          echo "intent fragments: ${frags[*]}"
+          INTENT=$(mktemp)
+          trap 'rm -f "$INTENT"' EXIT
+          cat "${frags[@]}" > "$INTENT"
 
           fails=0
 
-          # --- Direction 1: every POLICY assertion exists in intent.config ---
+          # --- Direction 1: every POLICY assertion exists in the intent ---
           # POLICY uses backtick-wrapped kconfig assertions:
           #   `CONFIG_X=value`         -> expect that exact line in intent
           #   `# CONFIG_X is not set`  -> expect symbol off in intent
@@ -156,7 +186,7 @@ jobs:
               check_intent_off "$sym"
           done < <(grep -oE '`# CONFIG_[A-Z0-9_]+ is not set`' "$POLICY" | sort -u)
 
-          # --- Direction 2: every intent.config symbol mentioned in POLICY ---
+          # --- Direction 2: every intent symbol mentioned in POLICY ---
           # Catches the converse: we pinned a symbol in intent without a
           # POLICY rationale entry. Tolerates POLICY mentioning the symbol
           # ANYWHERE (heading or prose) since we only need the rationale
@@ -166,26 +196,26 @@ jobs:
               -e 's/^# (CONFIG_[A-Z0-9_]+) is not set$/\1/p' "$INTENT" | sort -u)
           policy_syms=$(grep -oE 'CONFIG_[A-Z0-9_]+' "$POLICY" | sort -u)
           # Guard against a vacuous pass: an empty intent_syms (malformed or
-          # empty intent.config) would make `comm` find no orphans and this
+          # empty fragments) would make `comm` find no orphans and this
           # direction pass silently. (The comparison itself is exact — comm
           # matches whole symbols, so CONFIG_X is never "covered" by a
           # longer CONFIG_X_Y.)
           if [[ -z $intent_syms ]]; then
-              echo "  no CONFIG_ symbols parsed from $INTENT (malformed/empty?)" >&2
+              echo "  no CONFIG_ symbols parsed from ${frags[*]} (malformed/empty?)" >&2
               fails=$((fails+1))
           fi
           orphans=$(comm -23 <(echo "$intent_syms") <(echo "$policy_syms"))
           if [[ -n $orphans ]]; then
-              echo "  intent.config symbols with no POLICY mention:" >&2
+              echo "  intent symbols with no POLICY mention:" >&2
               echo "$orphans" | sed 's/^/    /' >&2
               fails=$((fails+1))
           fi
 
           if (( fails > 0 )); then
-              echo "$fails parity check(s) failed between $INTENT and $POLICY" >&2
+              echo "$fails parity check(s) failed between ${frags[*]} and $POLICY" >&2
               exit 1
           fi
-          echo "intent.config and POLICY.md agree"
+          echo "intent fragments (${frags[*]}) and POLICY.md agree"
 
   dep-list-parity:
     # The kernel-build apt dep list is hand-maintained in THREE places that

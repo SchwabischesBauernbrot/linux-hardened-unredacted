@@ -38,6 +38,13 @@
 #
 # Old minors are retained per line until you retire a line by setting its
 # keep_in_main = 0 (explicit sunset); delete the block once nothing remains.
+#
+# Line sets per flavor: a block may carry `flavor = "<name>"`, naming the line
+# set it belongs to; a block without one belongs to "amd64" (every block below).
+# A flavor descriptor's `lines` key (configs/flavors/<flavor>.toml) names the
+# set it builds, and `kind = "stable"` is exactly-one PER SET, so one flavor's
+# umbrella metas never follow another's stable series. Series stay unique across
+# all sets for now (retention and seed lookup are keyed on the series alone).
 
 [[line]]
 series       = "7.1"

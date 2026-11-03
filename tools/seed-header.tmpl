@@ -14,7 +14,7 @@
 # his newest published config is usually a few releases behind the tag being
 # built. That is expected and handled, not gated: the seed is only a baseline.
 # `make olddefconfig` reconciles it to the tree being built, the fidelity
-# assertion enforces every configs/intent.config pin, and
+# assertion enforces every configs/intent.*.config pin, and
 # tools/check-hardening-drift.sh diffs the result against the most recent
 # published @SERIES@ final.config in releases/ — so a symbol we INHERIT from the
 # seed (rather than pin in intent) cannot silently regress across a seed bump.
