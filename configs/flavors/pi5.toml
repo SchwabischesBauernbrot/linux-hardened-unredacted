@@ -61,8 +61,12 @@ required_y    = ["CONFIG_ARM64", "CONFIG_ARM64_16K_PAGES", "CONFIG_ARCH_BCM2835"
 # build; this flavor's image metas depend on it without a version.
 defaults_package = false
 
-# Phase 3 adds unredacted-rpi5-boot (kernel staging, tryboot, promote/revert).
-boot_package  = ""
+# The Pi 5 boots from firmware in /boot/firmware, not GRUB or UEFI.
+# unredacted-rpi5-boot (packages/unredacted-rpi5-boot/, built by
+# build/build-boot-package.sh) stages each hardened kernel into its own
+# /boot/firmware/<kernelrelease>/ and boots it through os_prefix + tryboot,
+# keeping the stock kernel as the fallback. The image metas depend on it.
+boot_package  = "unredacted-rpi5-boot"
 
 # Boot the built kernel under qemu-system-aarch64 (virt, cortex-a76) before
 # signing: lockdown, LSMs, mmap ASLR bits and module-signature enforcement

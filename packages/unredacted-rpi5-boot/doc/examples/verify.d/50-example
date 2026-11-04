@@ -1,0 +1,21 @@
+#!/bin/sh
+# Example site check for 'unredacted-rpi5-boot verify'. Copy it to
+# /etc/unredacted-rpi5-boot/verify.d/ (executable; name of letters, digits,
+# - and _ only) and adapt it. verify runs every such file in name order on
+# every run; print one "  ok    ..." or "  FAIL  ..." line per check, and
+# exit non-zero if any check failed. verify counts a non-zero exit as one
+# failure and then refuses to record the trial as verified.
+fails=0
+check() {  # $1 = label, rest = command
+    label=$1; shift
+    if "$@" >/dev/null 2>&1; then echo "  ok    $label"; else echo "  FAIL  $label"; fails=$((fails + 1)); fi
+}
+
+# A service this machine exists to run.
+check "ssh active" systemctl is-active -q ssh
+# The address it must keep across kernels (DHCP reservations key on the MAC).
+# check "eth0 has 192.0.2.10" sh -c 'ip -4 addr show eth0 | grep -q "192.0.2.10/"'
+# A sysctl the machine depends on.
+check "tcp_congestion_control=bbr" test "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" = bbr
+
+[ "$fails" -eq 0 ]

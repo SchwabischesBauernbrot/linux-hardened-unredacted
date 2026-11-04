@@ -1,0 +1,10 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: linux-hardened-unredacted
+Upstream-Contact: Unredacted <security@unredacted.org>
+Source: https://git.unredacted.org/unredacted/linux-hardened-unredacted
+
+Files: *
+Copyright: Unredacted
+License: GPL-2
+ On Debian systems, the full text of the GNU General Public License
+ version 2 can be found in the file /usr/share/common-licenses/GPL-2.

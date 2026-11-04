@@ -1,0 +1,17 @@
+#!/bin/sh
+# /etc/kernel/postrm.d/z70-unredacted-rpi5-boot (unredacted-rpi5-boot)
+#
+# After a hardened Pi 5 kernel package is removed: remove its staged copy
+# from /boot/firmware. If it was the default boot, config.txt goes back to
+# the stock kernel. Not on an upgrade of the same package (dpkg runs the old
+# package's postrm with "upgrade"). Other kernels: nothing.
+set -e
+version="$1"
+case "$version" in *-hardened-unredacted-pi5) ;; *) exit 0 ;; esac
+tool="${UNREDACTED_RPI5_BOOT_ROOT:-}/usr/sbin/unredacted-rpi5-boot"
+[ -x "$tool" ] || exit 0
+if [ -n "${DEB_MAINT_PARAMS:-}" ]; then
+    eval set -- "$DEB_MAINT_PARAMS"
+    case "$1" in remove|purge) ;; *) exit 0 ;; esac
+fi
+exec "$tool" unstage "$version" </dev/null >&2

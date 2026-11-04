@@ -432,8 +432,9 @@ have_real_key=0
 # changelog that every kbuild package (linux-image, -dbg, linux-headers,
 # linux-libc-dev) ships with the build's WALL CLOCK, recorded nowhere, and the
 # schema-3 digest rules let module signatures into linux-image through
-# control/md5sums. So no rebuild can match those packages. The metas and the
-# defaults package are unaffected and must still match exactly.
+# control/md5sums. So no rebuild can match those packages. The metas, the
+# defaults package and a flavor's boot package (pi5's unredacted-rpi5-boot,
+# built by build-debs.sh like the metas) are unaffected and must match exactly.
 schema=$(jq -r '.schema_version // 0' "$manifest")
 legacy=0
 (( schema < 3 )) && legacy=1

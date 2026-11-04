@@ -1,6 +1,6 @@
 # Installing the hardened kernel
 
-Phase 1 ships Debian 13 (`trixie`) on amd64 only. Ubuntu (`noble`), Debian 12 (`bookworm`), and arm64 are planned for Phase 2 and are **not yet published**. The packages are distro-agnostic at the binary level, so Ubuntu is expected to work once we publish a `noble` suite — see [install-ubuntu.md](install-ubuntu.md) for the planned setup and current status.
+Phase 1 ships Debian 13 (`trixie`) on amd64 only. Ubuntu (`noble`), Debian 12 (`bookworm`), and arm64 are planned for Phase 2 and are **not yet published**. The packages are distro-agnostic at the binary level, so Ubuntu is expected to work once we publish a `noble` suite — see [install-ubuntu.md](install-ubuntu.md) for the planned setup and current status. The Raspberry Pi 5 kernel boots differently (from the Pi firmware, not GRUB) and has its own page, [install-rpi5.md](install-rpi5.md); it is not published yet either.
 
 > No warranty. This software is distributed under the GNU General Public License version 2. There is no warranty. Use at your own risk.
 

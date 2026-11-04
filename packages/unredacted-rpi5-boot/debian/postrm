@@ -1,0 +1,19 @@
+#!/bin/sh
+# unredacted-rpi5-boot postrm: on purge, drop the state directory and any
+# dead-man unit configuration a trial left behind.
+set -e
+case "$1" in
+    purge)
+        rm -rf /var/lib/unredacted-rpi5-boot
+        rm -rf /etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d
+        rm -f /etc/systemd/system/timers.target.wants/unredacted-rpi5-boot-deadman.timer
+        ;;
+esac
+case "$1" in
+    remove|purge)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+        fi
+        ;;
+esac
+exit 0

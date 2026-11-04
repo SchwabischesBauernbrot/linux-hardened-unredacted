@@ -63,8 +63,15 @@ PIPELINE_SUPPORTS = {
     "seed_type": {"arch-git", "apt-deb"},
     "image_signing": {"sbsign", "none"},
     "qemu_smoke": {False, True},
-    "boot_package": {""},
+    # build/build-boot-package.sh builds these, from packages/<name>/.
+    "boot_package": {"", "unredacted-rpi5-boot"},
 }
+
+# Where a boot package's sources live, and the line in its tool that names the
+# kernelreleases it manages (which must be the flavor's localversion, or it
+# would never stage the kernel it ships with).
+_BOOT_PKG_DIR = Path("packages")
+_KR_SUFFIX_LINE = re.compile(r"^KR_SUFFIX=(\S+)$", re.M)
 
 # Architectures tools/qemu-smoke.sh can boot. A descriptor asking for a smoke
 # test elsewhere would otherwise fail only when a tag is built.
@@ -191,6 +198,16 @@ def load(name: str, root: Path | None = None) -> dict:
     if d["qemu_smoke"] and d["arch"] not in QEMU_SMOKE_ARCHES:
         raise FlavorError(f"{where}: qemu_smoke = true, but tools/qemu-smoke.sh only "
                           f"boots {QEMU_SMOKE_ARCHES}")
+    if d["boot_package"]:
+        pkg = d["boot_package"]
+        tool = root / _BOOT_PKG_DIR / pkg / pkg
+        if not tool.is_file():
+            raise FlavorError(f"{where}: boot_package {pkg!r} has no {_BOOT_PKG_DIR}/{pkg}/{pkg}")
+        m = _KR_SUFFIX_LINE.search(tool.read_text())
+        if not m or m.group(1) != d["localversion"]:
+            raise FlavorError(f"{where}: {_BOOT_PKG_DIR}/{pkg}/{pkg} manages KR_SUFFIX="
+                              f"{m.group(1) if m else None!r}, not this flavor's localversion "
+                              f"{d['localversion']!r}")
     return d
 
 
@@ -224,6 +241,14 @@ def validate_all(root: Path | None = None) -> list[str]:
             if d[key] in by:
                 errors.append(f"flavors {by[d[key]]} and {d['name']} share {key} = {d[key]!r}")
             by[d[key]] = d["name"]
+    # A boot package is versioned from its flavor's kernel builds; two
+    # flavors building one would publish competing versions of it.
+    by_boot: dict[str, str] = {}
+    for d in loaded:
+        if d["boot_package"] and d["boot_package"] in by_boot:
+            errors.append(f"flavors {by_boot[d['boot_package']]} and {d['name']} share "
+                          f"boot_package = {d['boot_package']!r}")
+        by_boot.setdefault(d["boot_package"], d["name"])
     # A tag routes to the flavor whose prefix it carries (parse_tag). If one
     # prefix began with another ("pi-" and "pi-5-"), a tag could carry both;
     # forbid that rather than rely on the grammar to disambiguate. (The empty

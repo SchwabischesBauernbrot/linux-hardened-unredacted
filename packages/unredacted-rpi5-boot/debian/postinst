@@ -1,0 +1,14 @@
+#!/bin/sh
+# unredacted-rpi5-boot postinst: record the stock boot files, and stage every
+# hardened kernel already installed (a kernel configured before this package
+# was had no hook to stage it). Staging changes no boot.
+set -e
+case "$1" in
+    configure)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+        fi
+        /usr/sbin/unredacted-rpi5-boot pkg-configure
+        ;;
+esac
+exit 0

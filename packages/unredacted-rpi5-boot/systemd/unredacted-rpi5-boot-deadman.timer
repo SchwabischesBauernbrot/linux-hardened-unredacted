@@ -1,0 +1,19 @@
+# Dead-man switch for a hardened-kernel trial boot: reboot back to the default
+# boot unless someone runs 'unredacted-rpi5-boot confirm' in time. Covers a
+# trial that boots but leaves the machine unreachable; a kernel panic is
+# covered by panic=10 on the staged command line.
+#
+# Enabled only by 'unredacted-rpi5-boot try', which adds
+# unredacted-rpi5-boot-deadman.timer.d/50-trial.conf with
+# ConditionKernelVersion=<the trial kernel> and the delay. confirm, promote,
+# revert and the next normal boot disable it again.
+[Unit]
+Description=Hardened kernel trial dead-man (reboot unless confirmed)
+Documentation=file:/usr/share/doc/unredacted-rpi5-boot/README.md
+
+[Timer]
+OnBootSec=15min
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

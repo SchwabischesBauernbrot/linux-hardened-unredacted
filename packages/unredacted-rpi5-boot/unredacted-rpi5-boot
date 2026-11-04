@@ -1,0 +1,1106 @@
+#!/bin/bash
+# unredacted-rpi5-boot: boot the hardened Raspberry Pi 5 kernel from the Pi
+# firmware, with the stock Raspberry Pi OS kernel kept as a fallback that is
+# always one reboot away.
+#
+# The Pi 5 boots from firmware in /boot/firmware, not GRUB or UEFI. Each
+# hardened kernel is STAGED into its own directory there, named after its
+# kernelrelease (/boot/firmware/6.18.60-hardened-unredacted-pi5/), holding
+# kernel_2712.img, initramfs_2712, the bcm2712 DTBs, the kernel's own overlays
+# and a cmdline.txt. The firmware boots a staged kernel only when a config
+# file names that directory in os_prefix=:
+#
+#   try KR      writes tryboot.txt for ONE boot of KR (reboot '0 tryboot'),
+#               with panic=10 on its command line and a dead-man timer that
+#               reboots back to the default unless `confirm`ed in time.
+#   promote KR  makes KR the default: an os_prefix= block in config.txt.
+#               tryboot.txt then names the stock kernel, so the fallback is
+#               reboot '0 tryboot'.
+#   revert      removes the block; the default is the stock kernel again.
+#
+# The stock boot files are never written. Every command that changes
+# /boot/firmware fingerprints the stock files (everything outside the staged
+# directories and our tryboot.txt, with config.txt read minus our block)
+# before and after, and fails if anything changed. The firmware itself falls
+# back to the stock files when a prefix lacks the kernel or the DTB, so a
+# half-written stage boots stock, not nothing.
+#
+# Design: docs/operators/flavors.md ("Boot integration"). User guide:
+# docs/users/install-rpi5.md. Run `unredacted-rpi5-boot help` for usage.
+
+set -euo pipefail
+umask 022
+export LC_ALL=C
+
+# A fake filesystem root, for the package's own tests only. Every path below
+# hangs off it, including /proc and /sys, so the tests exercise the same code
+# as a real Pi.
+ROOT=${UNREDACTED_RPI5_BOOT_ROOT:-}
+
+ME=unredacted-rpi5-boot
+# The kernelrelease suffix of the kernels this tool manages: the pi5 flavor's
+# localversion (configs/flavors/pi5.toml). build/build-boot-package.sh refuses
+# to package this file if the two differ.
+KR_SUFFIX=-hardened-unredacted-pi5
+# What a managed kernelrelease looks like. Checked before a release is used
+# in a path: `rm -rf "$FW/$kr"` must never see anything else.
+KR_RE='^[0-9]+\.[0-9]+(\.[0-9]+)?-hardened-unredacted-pi5$'
+
+FW=$ROOT/boot/firmware
+BOOTDIR=$ROOT/boot
+DT=$ROOT/proc/device-tree
+STATE=$ROOT/var/lib/$ME
+UNITDIR=$ROOT/etc/systemd/system
+VERIFY_D=$ROOT/etc/$ME/verify.d
+# Overlays the administrator adds (a HAT vendor's .dtbo): copied into every
+# staged kernel's overlays/ after the kernel package's own.
+EXTRA_OVERLAYS=$ROOT/etc/$ME/overlays
+LOCKFILE=$ROOT/run/$ME.lock
+DEADMAN_TIMER=$ME-deadman.timer
+DEADMAN_DROPIN=$UNITDIR/$DEADMAN_TIMER.d/50-trial.conf
+
+# The Pi 5's firmware loads these names (os_prefix is prepended to each).
+KERNEL_NAME=kernel_2712.img
+INITRD_NAME=initramfs_2712
+# The DTB the firmware loads for a Pi 5 Model B (C1 stepping; D0 boards load
+# bcm2712d0-rpi-5-b.dtb). Every bcm2712*.dtb is staged; this one must exist.
+PI5_DTB=bcm2712-rpi-5-b.dtb
+
+BEGIN_MARK="# BEGIN $ME"
+END_MARK="# END $ME"
+TRYBOOT_MARK="# $ME:"
+TMP_SUFFIX=.$ME.tmp
+
+# Settings (/etc/default/unredacted-rpi5-boot).
+CMDLINE_APPEND="panic=10"
+DEADMAN_MINUTES=15
+VERIFY_IGNORE_FAILED_UNITS=""
+# shellcheck source=/dev/null
+[[ -r $ROOT/etc/default/$ME ]] && . "$ROOT/etc/default/$ME"
+[[ $DEADMAN_MINUTES =~ ^[1-9][0-9]*$ ]] || DEADMAN_MINUTES=15
+
+TMPD=""
+cleanup() { [[ -n $TMPD ]] && rm -rf "$TMPD"; return 0; }
+trap cleanup EXIT
+tmpdir() { [[ -n $TMPD ]] || TMPD=$(mktemp -d); }
+
+die()  { echo "$ME: $*" >&2; exit 1; }
+warn() { echo "$ME: WARNING: $*" >&2; }
+log()  { logger -t "$ME" -- "$*" 2>/dev/null || true; }
+
+usage() {
+    cat <<EOF
+usage: $ME COMMAND [ARGS]
+
+  status                  what is staged, what boots by default, what a
+                          tryboot would boot, the dead-man, the stock files
+  try KR|stock [--reboot] [--dry-run]
+                          boot KR (or the stock kernel) ONCE, on the next
+                          reboot '0 tryboot'; arms the dead-man for KR
+  confirm                 on a trial boot: stop the dead-man, stay up
+  verify                  check the running kernel and the boot setup; on a
+                          clean trial boot, records KR as verified
+  promote [KR] [--force] [--dry-run]
+                          make KR (default: the running kernel) the default
+                          boot; needs a verified trial unless --force
+  revert [--dry-run]      make the stock kernel the default boot again
+  stage KR|--all          (re)stage installed hardened kernels; the kernel
+                          hooks do this on install
+  unstage KR              remove a staged kernel; the hooks do this on removal
+  fingerprint             print the stock boot files' sha256 (the set every
+                          command proves it left unchanged)
+
+KR is a kernelrelease such as 6.18.60$KR_SUFFIX. Settings are in
+/etc/default/$ME. Guide: /usr/share/doc/$ME/README.md
+EOF
+}
+
+# --- Small queries ----------------------------------------------------------
+
+is_ours() { [[ $1 =~ $KR_RE ]]; }
+need_ours() { is_ours "$1" || die "'$1' is not a hardened Pi 5 kernelrelease (*$KR_SUFFIX)"; }
+
+running_kr() { cat "$ROOT/proc/sys/kernel/osrelease"; }
+
+# The bootloader's tryboot flag for this boot: 1 on a `reboot '0 tryboot'`
+# boot, else 0. A 4-byte big-endian cell.
+tryboot_flag() {
+    local f=$DT/chosen/bootloader/tryboot v
+    [[ -r $f ]] || { echo 0; return; }
+    v=$(od -An -tu4 --endian=big "$f" 2>/dev/null | tr -d ' \n')
+    echo "${v:-0}"
+}
+
+is_pi5() { [[ -r $DT/compatible ]] && tr '\0' '\n' < "$DT/compatible" | grep -qx 'raspberrypi,5-model-b'; }
+
+require_root() { [[ -n $ROOT || $(id -u) == 0 ]] || die "run as root"; }
+
+require_fw() {
+    [[ -d $FW && -f $FW/config.txt ]] || die "$FW/config.txt not found; is this Raspberry Pi OS?"
+    if ! ischroot 2>/dev/null && ! mountpoint -q "$FW"; then
+        die "$FW is not mounted"
+    fi
+}
+
+lock() {
+    mkdir -p "$(dirname "$LOCKFILE")"
+    exec 9>"$LOCKFILE"
+    flock -w 120 9 || die "another $ME is running (lock $LOCKFILE)"
+}
+
+sha() { sha256sum < "$1" | cut -d' ' -f1; }
+
+installed_krs() {
+    local f
+    for f in "$BOOTDIR"/vmlinuz-*"$KR_SUFFIX"; do
+        [[ -f $f ]] || continue
+        f=${f##*/vmlinuz-}
+        is_ours "$f" && echo "$f"
+    done | sort -V
+}
+
+staged_krs() {
+    local d
+    for d in "$FW"/*"$KR_SUFFIX"; do
+        [[ -d $d ]] || continue
+        d=${d##*/}
+        is_ours "$d" && echo "$d"
+    done | sort -V
+}
+
+pkg_version() { dpkg-query -W -f='${Version}' "$1" 2>/dev/null || true; }
+
+# --- config.txt and tryboot.txt ------------------------------------------------
+
+# config.txt minus our managed block, byte for byte: GNU sed leaves a missing
+# final newline missing, so stripping a block restores exactly what was there.
+strip_block() { sed "/^$BEGIN_MARK/,/^$END_MARK/d" "$1"; }
+
+# Refuse a block that `strip_block` would not remove exactly.
+check_block_intact() {
+    local f=$1 b e
+    b=$(grep -c "^$BEGIN_MARK" "$f" || true)
+    e=$(grep -c "^$END_MARK" "$f" || true)
+    if (( b == 0 && e == 0 )); then return 0; fi
+    if (( b == 1 && e == 1 )) &&
+       (( $(grep -n "^$BEGIN_MARK" "$f" | cut -d: -f1) < $(grep -n "^$END_MARK" "$f" | cut -d: -f1) )); then
+        return 0
+    fi
+    die "$f has a damaged $ME block ($b BEGIN, $e END lines); fix it by hand"
+}
+
+# The kernelrelease config.txt's block boots, or "" for the stock kernel.
+default_kr() {
+    check_block_intact "$FW/config.txt"
+    sed -n "/^$BEGIN_MARK/,/^$END_MARK/s|^os_prefix=\\(.*\\)/\$|\\1|p" "$FW/config.txt" | head -n1
+}
+
+block_for() {
+    cat <<EOF
+$BEGIN_MARK (boots the hardened kernel; remove with: $ME revert)
+[all]
+os_prefix=$1/
+kernel=$KERNEL_NAME
+initramfs $INITRD_NAME followkernel
+$END_MARK
+EOF
+}
+
+is_our_tryboot() { [[ -f $FW/tryboot.txt ]] && head -n1 "$FW/tryboot.txt" | grep -q "^$TRYBOOT_MARK"; }
+
+# What our tryboot.txt boots: a kernelrelease, or "stock".
+tryboot_target() {
+    is_our_tryboot || return 0
+    sed -n "/^$BEGIN_MARK/,/^$END_MARK/s|^os_prefix=\\(.*\\)/\$|\\1|p" "$FW/tryboot.txt" | head -n1 | grep . || echo stock
+}
+
+tryboot_for() {  # $1 = KR or "stock", $2 = why
+    local stripped
+    stripped=$(strip_block "$FW/config.txt"; echo x); stripped=${stripped%x}
+    printf '%s tryboot.txt for %s (%s). Regenerated by %s; do not edit.\n' \
+        "$TRYBOOT_MARK" "$1" "$2" "$ME"
+    cat <<'EOF'
+# The bootloader reads this file INSTEAD of config.txt only on a boot with the
+# tryboot flag set (reboot '0 tryboot'), and that boot consumes the flag. What
+# follows is config.txt without its unredacted-rpi5-boot block, plus, for a
+# hardened kernel, a block naming its directory.
+EOF
+    printf '%s' "$stripped"
+    [[ -z $stripped || $stripped == *$'\n' ]] || echo
+    [[ $1 == stock ]] || block_for "$1"
+}
+
+# config.txt keys that would change what a prefix boots, or how tryboot works,
+# in ways this tool does not model. Refused rather than half-handled. An
+# `include`d file is checked too.
+check_config_supported() {
+    local f bad=() key
+    [[ ! -e $FW/autoboot.txt ]] || die "$FW/autoboot.txt exists (partition A/B boot); $ME does not support it"
+    for f in "$FW/config.txt" $(sed -n 's/^[[:space:]]*include[[:space:]]\+\([^[:space:]#]\+\).*/\1/p' "$FW/config.txt"); do
+        [[ $f == /* ]] || f=$FW/$f
+        [[ -f $f ]] || continue
+        for key in os_prefix overlay_prefix cmdline device_tree tryboot_a_b; do
+            if strip_block "$f" | grep -qE "^[[:space:]]*${key}[[:space:]]*="; then
+                bad+=("$key= in ${f#"$ROOT"}")
+            fi
+        done
+    done
+    (( ${#bad[@]} == 0 )) || die "unsupported config.txt setting(s): ${bad[*]}"
+}
+
+# Write a file in /boot/firmware via a temporary file and a rename, so a power
+# cut leaves the old or the new file, never a torn one.
+write_fw_file() {  # $1 = destination, content on stdin
+    local tmp=$1$TMP_SUFFIX
+    cat > "$tmp"
+    sync -f "$tmp" 2>/dev/null || sync
+    mv -f "$tmp" "$1"
+    sync -f "$1" 2>/dev/null || sync
+}
+
+# --- Stock boot file fingerprints ---------------------------------------------
+
+# sha256 of every stock file under /boot/firmware, "<sha256>  ./<path>", sorted
+# by path. Not stock: the staged kernel directories (and their .new/.old
+# siblings while staging), our tryboot.txt, our temporary files, and macOS's
+# .Spotlight-V100/.fseventsd. config.txt is hashed without our block, so
+# promote/revert leave its fingerprint unchanged by construction and any
+# other edit shows.
+fingerprint() {
+    local rel files=()
+    while IFS= read -r -d '' rel; do
+        case $rel in
+            ./config.txt) ;;
+            ./tryboot.txt) is_our_tryboot || files+=("$rel") ;;
+            *) files+=("$rel") ;;
+        esac
+    done < <(cd "$FW" && find . \( -path ./.Spotlight-V100 -o -path ./.fseventsd \
+                -o -path "./*$KR_SUFFIX" -o -path "./.*$KR_SUFFIX.new" -o -path "./.*$KR_SUFFIX.old" \
+                -o -name "*$TMP_SUFFIX" \) -prune -o -type f -print0)
+    {
+        printf '%s  ./config.txt\n' "$(strip_block "$FW/config.txt" | sha256sum | cut -d' ' -f1)"
+        if (( ${#files[@]} )); then (cd "$FW" && sha256sum -- "${files[@]}"); fi
+    } | sort -k2
+}
+
+# Differences between two fingerprints: "changed|added|removed <path>".
+fp_changes() {
+    awk 'NR == FNR { old[substr($0, 67)] = substr($0, 1, 64); next }
+         { p = substr($0, 67); seen[p] = 1
+           if (!(p in old)) print "added " p
+           else if (old[p] != substr($0, 1, 64)) print "changed " p }
+         END { for (p in old) if (!(p in seen)) print "removed " p }' "$1" "$2" | sort -k2
+}
+
+# Run "$@" and fail if any stock boot file changed meanwhile. On success the
+# fingerprint becomes the baseline `status` compares against.
+guarded() {
+    local before after n
+    tmpdir
+    before=$(mktemp -p "$TMPD"); after=$(mktemp -p "$TMPD")
+    fingerprint > "$before"
+    "$@"
+    fingerprint > "$after"
+    if ! cmp -s "$before" "$after"; then
+        echo "$ME: stock boot files changed during '$*':" >&2
+        fp_changes "$before" "$after" | sed 's/^/  /' >&2
+        die "refusing to continue; the stock fallback may be affected"
+    fi
+    n=$(wc -l < "$after")
+    echo "  stock boot files unchanged ($n files)"
+    mkdir -p "$STATE"
+    { echo "# $(date -u +%FT%TZ) after: $*"; cat "$after"; } > "$STATE/stock.sha256"
+}
+
+# --- Staging -------------------------------------------------------------------
+
+staged_cmdline() {
+    local stock
+    stock=$(tr -d '\n' < "$FW/cmdline.txt")
+    printf '%s %s\n' "${stock%"${stock##*[![:space:]]}"}" "$CMDLINE_APPEND"
+}
+
+overlays_readme() {
+    cat <<EOF
+Device-tree overlays of $1, staged by $ME from
+/usr/lib/linux-image-$1/overlays/.
+
+The firmware loads overlays from this directory, instead of the stock
+/boot/firmware/overlays/, only because this README exists
+(os_prefix + overlay_prefix). They are built from the same tree as the kernel,
+so they always match it. The stock overlays are untouched and stay with the
+stock kernel. Overlays of your own go in /etc/$ME/overlays/; they are copied
+here, after the kernel's, on every stage.
+EOF
+}
+
+# The staged files a prefix must hold, relative to it, with sha256: what
+# `verify`, `status` and `promote` check the copy against. cmdline.txt is not
+# in it (it follows the stock one, see refresh_cmdline).
+MANIFEST=$ME.sha256
+
+write_manifest() {  # $1 = a prefix directory
+    local sums
+    sums=$(cd "$1" && find . -type f ! -name cmdline.txt ! -name "$MANIFEST" ! -name "*$TMP_SUFFIX" \
+        -printf '%P\n' | sort | xargs -d '\n' sha256sum)
+    printf '%s\n' "$sums" | write_fw_file "$1/$MANIFEST"
+}
+
+do_stage() {
+    local kr=$1 src=$BOOTDIR/vmlinuz-$1 initrd=$BOOTDIR/initrd.img-$1
+    local lib=$ROOT/usr/lib/linux-image-$1 dst=$FW/$1 new=$FW/.$1.new old=$FW/.$1.old
+    local dtbs=() ovls=() need avail f
+    [[ -f $src ]] || die "$src not found (is linux-image-$kr installed?)"
+    [[ -f $initrd ]] || die "$initrd not found; update-initramfs -c -k $kr (is initramfs-tools installed?)"
+    [[ -f $lib/broadcom/$PI5_DTB ]] || die "$lib/broadcom/$PI5_DTB not found"
+    [[ -f $lib/overlays/overlay_map.dtb ]] || die "$lib/overlays/overlay_map.dtb not found"
+    for f in "$lib"/broadcom/bcm2712*.dtb; do dtbs+=("$f"); done
+    for f in "$lib"/overlays/*.dtbo "$lib"/overlays/overlay_map.dtb; do [[ -f $f ]] && ovls+=("$f"); done
+    for f in "$EXTRA_OVERLAYS"/*.dtbo; do [[ -f $f ]] && ovls+=("$f"); done
+
+    rm -rf "$new" "$old"
+    need=$(( $(du -cb "$src" "$initrd" "${dtbs[@]}" "${ovls[@]}" | tail -n1 | cut -f1) * 11 / 10 + 1048576 ))
+    avail=$(df -B1 --output=avail "$FW" | tail -n1 | tr -d ' ')
+    (( avail > need )) || die "not enough space in $FW to stage $kr: need $need bytes, $avail free"
+
+    mkdir -p "$new/overlays"
+    cp "$src" "$new/$KERNEL_NAME"
+    cp "$initrd" "$new/$INITRD_NAME"
+    cp "${dtbs[@]}" "$new/"
+    cp "${ovls[@]}" "$new/overlays/"
+    overlays_readme "$kr" > "$new/overlays/README"
+    staged_cmdline > "$new/cmdline.txt"
+    write_manifest "$new"
+    # Read the copy back before it can be booted: an SD card that wrote
+    # garbage is caught here, not by the firmware.
+    if ! cmp -s "$src" "$new/$KERNEL_NAME" || ! cmp -s "$initrd" "$new/$INITRD_NAME"; then
+        die "the staged copy of $kr does not read back identical; not staging it"
+    fi
+    for f in "${dtbs[@]}"; do cmp -s "$f" "$new/${f##*/}" || die "staged ${f##*/} differs from $f"; done
+    for f in "${ovls[@]}"; do cmp -s "$f" "$new/overlays/${f##*/}" || die "staged overlays/${f##*/} differs from $f"; done
+
+    # Swap in. Between the two renames the prefix does not exist, and the
+    # firmware boots the stock files instead: never a mix of two builds.
+    [[ ! -d $dst ]] || mv "$dst" "$old"
+    mv "$new" "$dst"
+    rm -rf "$old"
+    rm -f "$STATE/verified/$kr"
+    sync -f "$dst/$MANIFEST" 2>/dev/null || sync
+    echo "  staged $kr in ${dst#"$ROOT"} (${#dtbs[@]} DTBs, ${#ovls[@]} overlay files)"
+    log "staged $kr"
+}
+
+# A staged prefix is complete when its manifest checks out and names the
+# files the firmware needs.
+check_staged() {  # $1 = KR; prints the problem and returns 1 if any
+    local d=$FW/$1
+    [[ -d $d ]] || { echo "not staged"; return 1; }
+    [[ -f $d/$MANIFEST && -f $d/cmdline.txt && -f $d/overlays/README ]] || { echo "incomplete"; return 1; }
+    for f in "$KERNEL_NAME" "$INITRD_NAME" "$PI5_DTB" overlays/overlay_map.dtb; do
+        grep -q "  $f\$" "$d/$MANIFEST" || { echo "manifest lacks $f"; return 1; }
+    done
+    (cd "$d" && sha256sum --quiet -c "$MANIFEST" >/dev/null 2>&1) || { echo "staged files do not match their manifest"; return 1; }
+}
+
+need_staged() {
+    local why
+    why=$(check_staged "$1") || die "$1: $why (run: $ME stage $1)"
+}
+
+# The staged command line follows the stock one plus CMDLINE_APPEND.
+refresh_cmdline() {
+    local f=$FW/$1/cmdline.txt want
+    want=$(staged_cmdline)
+    [[ -f $f && $(cat "$f") == "$want" ]] && return 0
+    printf '%s\n' "$want" | write_fw_file "$f"
+    echo "  ${f#"$ROOT"}: $want"
+}
+
+do_unstage() {
+    local kr=$1 changed=0
+    if [[ $(default_kr) == "$kr" ]]; then
+        warn "$kr is the default boot and is being removed; reverting to the stock kernel"
+        write_config "$(strip_block "$FW/config.txt"; echo x)"
+        changed=1
+    fi
+    if is_our_tryboot && [[ $(tryboot_target) == "$kr" ]]; then
+        rm -f "$FW/tryboot.txt"
+        echo "  removed tryboot.txt (it named $kr)"
+        changed=1
+    fi
+    [[ $(trial_get kr) != "$kr" ]] || disarm
+    rm -rf "${FW:?}/$kr" "$FW/.$kr.new" "$FW/.$kr.old"
+    rm -f "$STATE/verified/$kr"
+    # tryboot.txt follows the new default: the stock fallback for another
+    # hardened default, none for stock. Left alone when this removal did not
+    # touch the boot (it may be another kernel's pending trial).
+    (( ! changed )) || reset_tryboot
+    sync -f "$FW/config.txt" 2>/dev/null || sync
+    echo "  unstaged $kr"
+    log "unstaged $kr"
+}
+
+# --- Trial state and the dead-man ---------------------------------------------------
+
+trial_get() {
+    [[ -f $STATE/trial ]] || return 0
+    sed -n "s/^$1=//p" "$STATE/trial" | head -n1
+}
+
+arm() {  # $1 = KR
+    mkdir -p "${DEADMAN_DROPIN%/*}"
+    cat > "$DEADMAN_DROPIN" <<EOF
+# Written by '$ME try $1'. Removed by confirm, promote, revert, and the first
+# boot after the trial.
+[Unit]
+ConditionKernelVersion=$1
+
+[Timer]
+OnBootSec=
+OnBootSec=${DEADMAN_MINUTES}min
+EOF
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable --quiet "$DEADMAN_TIMER"
+}
+
+disarm() {
+    if [[ -f $DEADMAN_DROPIN ]] || systemctl is-enabled --quiet "$DEADMAN_TIMER" 2>/dev/null; then
+        systemctl disable --quiet --now "$DEADMAN_TIMER" 2>/dev/null || true
+        rm -f "$DEADMAN_DROPIN"
+        rmdir "${DEADMAN_DROPIN%/*}" 2>/dev/null || true
+        systemctl daemon-reload 2>/dev/null || true
+        echo "  dead-man disarmed"
+    fi
+    if [[ -f $STATE/trial ]] && [[ $(trial_get armed) == 1 ]]; then
+        sed -i 's/^armed=1$/armed=0/' "$STATE/trial"
+    fi
+}
+
+record_trial() {  # $1 = KR or stock
+    mkdir -p "$STATE"
+    {
+        echo "kr=$1"
+        echo "armed=$([[ $1 == stock ]] && echo 0 || echo 1)"
+        echo "written=$(date -u +%FT%TZ)"
+        echo "from=$(running_kr)"
+        echo "failed_units=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
+        echo "links_up=$(ip -br link 2>/dev/null | awk '$2 == "UP" {print $1}' | tr '\n' ' ')"
+        echo "ipv4=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 "=" $4}' | tr '\n' ' ')"
+    } > "$STATE/trial"
+    fingerprint > "$STATE/trial.stock.sha256"
+}
+
+# --- Writing the boot configuration -------------------------------------------
+
+write_config() {  # $1 = new config.txt content + "x"
+    local new=${1%x}
+    mkdir -p "$STATE"
+    cp "$FW/config.txt" "$STATE/config.txt.previous"
+    printf '%s' "$new" | write_fw_file "$FW/config.txt"
+    echo "  wrote config.txt (previous copy: ${STATE#"$ROOT"}/config.txt.previous)"
+}
+
+write_tryboot() {  # $1 = KR or stock, $2 = why
+    tryboot_for "$1" "$2" | write_fw_file "$FW/tryboot.txt"
+    echo "  wrote tryboot.txt: a tryboot boots $1"
+}
+
+show_change() {  # $1 = file, $2 = new content + "x"
+    local tmp
+    tmpdir; tmp=$(mktemp -p "$TMPD")
+    printf '%s' "${2%x}" > "$tmp"
+    if [[ -f $1 ]]; then
+        diff -u --label "${1#"$ROOT"}" --label "${1#"$ROOT"} (new)" "$1" "$tmp" || true
+    else
+        diff -u --label /dev/null --label "${1#"$ROOT"} (new)" /dev/null "$tmp" || true
+    fi
+}
+
+# What tryboot.txt should say when no trial is pending: the stock kernel when
+# a hardened one is the default, nothing otherwise.
+reset_tryboot() {
+    if [[ -n $(default_kr) ]]; then
+        local want
+        want=$(tryboot_for stock "fallback to the stock kernel"; echo x)
+        if ! is_our_tryboot || [[ "$(cat "$FW/tryboot.txt"; echo x)" != "$want" ]]; then
+            write_tryboot stock "fallback to the stock kernel"
+        fi
+    elif is_our_tryboot; then
+        rm -f "$FW/tryboot.txt"
+        sync -f "$FW/config.txt" 2>/dev/null || sync
+        echo "  removed tryboot.txt"
+    fi
+}
+
+# --- Commands ------------------------------------------------------------------
+
+cmd_stage() {
+    local kr krs=()
+    require_root; require_fw
+    if [[ ${1:-} == --all ]]; then
+        mapfile -t krs < <(installed_krs)
+        (( ${#krs[@]} )) || { echo "no hardened Pi 5 kernel installed; nothing to stage"; return 0; }
+    else
+        [[ -n ${1:-} ]] || die "usage: $ME stage KR|--all"
+        need_ours "$1"; krs=("$1")
+    fi
+    lock
+    for kr in "${krs[@]}"; do
+        check_install "$kr"
+        guarded do_stage "$kr"
+    done
+}
+
+# From the kernel's postinst.d hook: the preinst.d snapshot says what the
+# stock boot files were before this kernel's package was unpacked. A stock
+# file that has since become a copy of THIS kernel's image or initrd means
+# another hook took our kernel for a stock one (raspi-firmware's z50 hooks do
+# that for any kernelrelease with "-rpi-" in it) and the stock fallback is
+# gone. Other changes come from other packages in the same dpkg run (a stock
+# kernel upgraded alongside ours) and are reported, not refused.
+check_install() {
+    local kr=$1 snap=$STATE/pending/$1.stock now changes hit=()
+    [[ -f $snap ]] || return 0
+    tmpdir; now=$(mktemp -p "$TMPD")
+    fingerprint > "$now"
+    changes=$(fp_changes "$snap" "$now")
+    if [[ -z $changes ]]; then
+        echo "  stock boot files unchanged across the install of linux-image-$kr ($(wc -l < "$now") files)"
+    else
+        local ours_k ours_i p h
+        ours_k=$(sha "$BOOTDIR/vmlinuz-$kr")
+        ours_i=$( [[ -f $BOOTDIR/initrd.img-$kr ]] && sha "$BOOTDIR/initrd.img-$kr" || echo none)
+        while read -r _ p; do
+            h=$(grep -F "  $p" "$now" | awk -v p="$p" 'substr($0, 67) == p {print substr($0, 1, 64)}')
+            [[ -n $h && ( $h == "$ours_k" || $h == "$ours_i" ) ]] && hit+=("$p")
+        done <<<"$changes"
+        if (( ${#hit[@]} )); then
+            echo "$ME: stock boot file(s) became copies of $kr's kernel or initrd during its install:" >&2
+            printf '  %s\n' "${hit[@]}" >&2
+            die "another kernel hook treated $kr as a stock kernel; the stock fallback is damaged. Reinstall the stock kernel package (apt reinstall linux-image-rpi-2712) and report this"
+        fi
+        echo "  note: other packages in this dpkg run changed stock boot files:"
+        while IFS= read -r p; do echo "    $p"; done <<<"$changes"
+    fi
+    rm -f "$snap"
+}
+
+cmd_snapshot() {  # preinst.d: $1 = KR
+    is_ours "$1" || return 0
+    require_root
+    [[ -f $FW/config.txt ]] || return 0
+    mkdir -p "$STATE/pending"
+    fingerprint > "$STATE/pending/$1.stock"
+}
+
+cmd_unstage() {
+    require_root; require_fw
+    need_ours "${1:-}"
+    lock
+    if [[ ! -d $FW/$1 && $(default_kr) != "$1" ]] && ! { is_our_tryboot && [[ $(tryboot_target) == "$1" ]]; }; then
+        echo "  $1 is not staged"; rm -f "$STATE/verified/$1"; return 0
+    fi
+    guarded do_unstage "$1"
+}
+
+# initramfs post-update.d: update-initramfs rebuilt $2 for $1.
+cmd_refresh_initrd() {
+    local kr=$1 path=$2 dst
+    is_ours "$kr" || return 0
+    dst=$FW/$kr
+    # The kernel's own postinst stages the whole prefix right after this.
+    if [[ ${DEB_MAINT_PARAMS:-} == configure* && ${DPKG_MAINTSCRIPT_PACKAGE:-} == "linux-image-$kr" ]]; then
+        return 0
+    fi
+    [[ -d $dst ]] || return 0
+    require_root; require_fw; lock
+    guarded do_refresh_initrd "$kr" "$path"
+}
+
+do_refresh_initrd() {
+    local kr=$1 path=$2 dst=$FW/$1
+    cp "$path" "$dst/$INITRD_NAME$TMP_SUFFIX"
+    cmp -s "$path" "$dst/$INITRD_NAME$TMP_SUFFIX" || die "staged initramfs of $kr does not read back identical"
+    sync -f "$dst/$INITRD_NAME$TMP_SUFFIX" 2>/dev/null || sync
+    mv -f "$dst/$INITRD_NAME$TMP_SUFFIX" "$dst/$INITRD_NAME"
+    write_manifest "$dst"
+    rm -f "$STATE/verified/$kr"
+    echo "  refreshed ${dst#"$ROOT"}/$INITRD_NAME"
+    log "refreshed the initramfs of $kr"
+}
+
+cmd_try() {
+    local target="" reboot=0 dry=0 arg cur new
+    for arg; do
+        case $arg in
+            --reboot) reboot=1 ;;
+            --dry-run) dry=1 ;;
+            -*) die "unknown option $arg" ;;
+            *) [[ -z $target ]] || die "usage: $ME try KR|stock [--reboot] [--dry-run]"; target=$arg ;;
+        esac
+    done
+    [[ -n $target ]] || die "usage: $ME try KR|stock [--reboot] [--dry-run]"
+    require_root; require_fw
+    (( dry )) || lock
+    check_block_intact "$FW/config.txt"
+    check_config_supported
+    if [[ -f $FW/tryboot.txt ]] && ! is_our_tryboot; then
+        die "$FW/tryboot.txt exists and was not written by $ME; move it away first"
+    fi
+    cur=$(default_kr)
+    if [[ $target == stock ]]; then
+        [[ -n $cur ]] || die "the stock kernel is already the default boot; nothing to try"
+    else
+        need_ours "$target"
+        need_staged "$target"
+        [[ $target != "$cur" ]] || die "$target is already the default boot"
+    fi
+    new=$(tryboot_for "$target" "a one-shot trial, $(date -u +%FT%TZ)"; echo x)
+    if (( dry )); then
+        show_change "$FW/tryboot.txt" "$new"
+        [[ $target == stock ]] || echo "would arm the dead-man: reboot after ${DEADMAN_MINUTES} min of $target unless confirmed"
+        return 0
+    fi
+    # The dead-man is armed BEFORE tryboot.txt names the kernel: there is
+    # never a moment when a tryboot would boot it unguarded.
+    record_trial "$target"
+    if [[ $target != stock ]]; then
+        guarded refresh_cmdline "$target"
+        arm "$target"
+        echo "  dead-man armed: $target reboots to the default boot after ${DEADMAN_MINUTES} min unless '$ME confirm' runs"
+    fi
+    guarded write_tryboot "$target" "a one-shot trial, $(date -u +%FT%TZ)"
+    log "trial of $target staged"
+    echo
+    echo "The default boot is unchanged ($([[ -n $cur ]] && echo "$cur" || echo stock)). Every reboot after the trial boot returns to it."
+    if (( reboot )); then
+        echo "rebooting into the trial: reboot '0 tryboot'"
+        log "rebooting into the trial of $target"
+        systemctl reboot '0 tryboot'
+    else
+        echo "Start the trial with:  reboot '0 tryboot'"
+        echo "Then, on the trial boot:  $ME verify && $ME confirm"
+    fi
+}
+
+cmd_confirm() {
+    local kr
+    require_root
+    kr=$(trial_get kr)
+    [[ -n $kr && $kr != stock ]] || die "no hardened-kernel trial is recorded"
+    [[ $(running_kr) == "$kr" && $(tryboot_flag) == 1 ]] ||
+        die "not on the trial boot of $kr (running $(running_kr), tryboot flag $(tryboot_flag))"
+    lock
+    disarm
+    log "trial of $kr confirmed"
+    echo "trial of $kr confirmed: the dead-man will not reboot this boot."
+    echo "The next reboot returns to the default boot. To keep $kr: $ME promote"
+}
+
+cmd_promote() {
+    local kr="" force=0 dry=0 arg rec new tb
+    for arg; do
+        case $arg in
+            --force) force=1 ;;
+            --dry-run) dry=1 ;;
+            -*) die "unknown option $arg" ;;
+            *) [[ -z $kr ]] || die "usage: $ME promote [KR] [--force] [--dry-run]"; kr=$arg ;;
+        esac
+    done
+    [[ -n $kr ]] || kr=$(running_kr)
+    need_ours "$kr"
+    require_root; require_fw
+    (( dry )) || lock
+    check_block_intact "$FW/config.txt"
+    check_config_supported
+    need_staged "$kr"
+    if [[ -f $FW/tryboot.txt ]] && ! is_our_tryboot; then
+        die "$FW/tryboot.txt exists and was not written by $ME; move it away first"
+    fi
+    [[ $(default_kr) != "$kr" ]] || { echo "$kr is already the default boot"; return 0; }
+    rec=$STATE/verified/$kr
+    if (( ! force )); then
+        [[ -f $rec ]] || die "$kr has not passed '$ME verify' on a trial boot; try it first ($ME try $kr), or pass --force"
+        [[ $(sed -n 's/^staged=//p' "$rec") == "$(sha "$FW/$kr/$MANIFEST")" ]] ||
+            die "$kr was re-staged since it was verified; try it again, or pass --force"
+    fi
+    # Our block goes at the end. A config.txt whose last line has no newline
+    # would need a stock byte changed to append after it.
+    new=$(strip_block "$FW/config.txt"; echo x)
+    [[ $new == x || $new == *$'\n'x ]] || die "config.txt does not end with a newline; add one by hand, then retry"
+    new=${new%x}$(block_for "$kr"; echo x)
+    tb=$(tryboot_for stock "fallback to the stock kernel"; echo x)
+    if (( dry )); then
+        show_change "$FW/config.txt" "$new"
+        show_change "$FW/tryboot.txt" "$tb"
+        return 0
+    fi
+    guarded refresh_cmdline "$kr"
+    guarded promote_files "$kr" "$new"
+    disarm
+    log "promoted $kr"
+    echo
+    echo "$kr is the default boot from the next reboot on."
+    echo "The stock kernel stays installed; boot it once with:  reboot '0 tryboot'"
+    echo "Make it the default again with:  $ME revert"
+}
+
+promote_files() {  # $1 = KR, $2 = new config.txt + "x"
+    write_tryboot stock "fallback to the stock kernel"
+    write_config "$2"
+    [[ $(default_kr) == "$1" ]] || die "config.txt does not name $1 after writing it"
+}
+
+cmd_revert() {
+    local dry=0 arg cur new
+    for arg; do
+        case $arg in
+            --dry-run) dry=1 ;;
+            *) die "usage: $ME revert [--dry-run]" ;;
+        esac
+    done
+    require_root; require_fw
+    (( dry )) || lock
+    check_block_intact "$FW/config.txt"
+    cur=$(default_kr)
+    new=$(strip_block "$FW/config.txt"; echo x)
+    if (( dry )); then
+        [[ -n $cur ]] && show_change "$FW/config.txt" "$new"
+        is_our_tryboot && echo "would remove ${FW#"$ROOT"}/tryboot.txt"
+        return 0
+    fi
+    guarded revert_files "$cur" "$new"
+    disarm
+    log "reverted to the stock kernel"
+    echo
+    echo "The stock kernel is the default boot from the next reboot on."
+    [[ $(running_kr) != *"$KR_SUFFIX" ]] || echo "(running $(running_kr) until then)"
+    if [[ -n $(staged_krs) ]]; then
+        echo "Staged hardened kernels stay in place for '$ME try': $(staged_krs | tr '\n' ' ')"
+    fi
+}
+
+revert_files() {  # $1 = current default ("" = stock), $2 = config.txt minus block + "x"
+    [[ -z $1 ]] || write_config "$2"
+    if is_our_tryboot; then
+        rm -f "$FW/tryboot.txt"
+        sync -f "$FW/config.txt" 2>/dev/null || sync
+        echo "  removed tryboot.txt"
+    fi
+    [[ -n $1 ]] || echo "  config.txt already boots the stock kernel"
+}
+
+cmd_status() {
+    local kr tb cur tgt d why base now n
+    kr=$(running_kr); tb=$(tryboot_flag)
+    [[ -f $FW/config.txt ]] || die "$FW/config.txt not found"
+    check_block_intact "$FW/config.txt"
+    cur=$(default_kr)
+    echo "$ME $(pkg_version "$ME")"
+    printf 'running:     %s%s, tryboot flag %s\n' "$kr" "$(is_ours "$kr" && echo " (hardened)" || echo " (stock)")" "$tb"
+    printf 'default:     %s\n' "${cur:-stock (config.txt has no $ME block)}"
+    if [[ -f $FW/tryboot.txt ]]; then
+        if is_our_tryboot; then tgt=$(tryboot_target); else tgt="(tryboot.txt not written by $ME)"; fi
+        printf 'tryboot:     %s\n' "$tgt"
+    else
+        printf 'tryboot:     no tryboot.txt (a tryboot boots config.txt)\n'
+    fi
+    echo "staged:"
+    for d in $(staged_krs); do
+        if why=$(check_staged "$d"); then why="complete"; fi
+        printf '  %-40s %s, package %s%s\n' "$d" "$why" "$(pkg_version "linux-image-$d")" \
+            "$([[ -f $STATE/verified/$d ]] && echo ", verified $(sed -n 's/^at=//p' "$STATE/verified/$d")")"
+    done
+    for d in $(installed_krs); do
+        [[ -d $FW/$d ]] || printf '  %-40s installed but NOT staged (%s stage %s)\n' "$d" "$ME" "$d"
+    done
+    [[ -n $(staged_krs)$(installed_krs) ]] || echo "  (none)"
+    if [[ -f $STATE/trial ]]; then
+        printf 'last trial:  %s, written %s from %s, dead-man %s\n' "$(trial_get kr)" "$(trial_get written)" \
+            "$(trial_get from)" "$([[ $(trial_get armed) == 1 ]] && echo armed || echo not armed)"
+    fi
+    if systemctl is-active --quiet "$DEADMAN_TIMER" 2>/dev/null; then
+        printf 'dead-man:    ACTIVE: %s\n' "$(systemctl list-timers --no-legend "$DEADMAN_TIMER" 2>/dev/null | awk '{print $1, $2, $3, $4, "(" $5, $6 ")"}')"
+    fi
+    base=$STATE/stock.sha256
+    tmpdir; now=$(mktemp -p "$TMPD")
+    fingerprint > "$now"; n=$(wc -l < "$now")
+    if [[ -f $base ]]; then
+        if [[ -z $(fp_changes <(grep -v '^#' "$base") "$now") ]]; then
+            printf 'stock files: %s, unchanged since %s\n' "$n" "$(head -n1 "$base" | cut -d' ' -f2)"
+        else
+            printf 'stock files: %s; changed since %s (by another package, not by %s):\n' "$n" \
+                "$(head -n1 "$base" | cut -d' ' -f2)" "$ME"
+            fp_changes <(grep -v '^#' "$base") "$now" | sed 's/^/  /'
+        fi
+    else
+        printf 'stock files: %s\n' "$n"
+    fi
+}
+
+# --- verify ---------------------------------------------------------------------
+
+V_FAILS=0
+v_hdr()  { echo "== $*"; }
+v_ok()   { printf '  ok    %s\n' "$*"; }
+v_bad()  { printf '  FAIL  %s\n' "$*"; V_FAILS=$((V_FAILS + 1)); }
+v_info() { printf '  info  %s\n' "$*"; }
+v_chk()  { if [[ $1 == 1 ]]; then v_ok "$2"; else v_bad "$2"; fi; }  # $1 = 1/0, $2 = label
+yes_if() { if "$@" >/dev/null 2>&1; then echo 1; else echo 0; fi; }
+
+cmd_verify() {
+    local kr tb model cfg want got f ifs=() missing=() lsms=() l
+    require_root
+    kr=$(running_kr); tb=$(tryboot_flag)
+
+    v_hdr boot
+    model=$(tr -d '\0' < "$DT/model" 2>/dev/null || true)
+    v_chk "$([[ $model == "Raspberry Pi 5"* ]] && echo 1 || echo 0)" "model: ${model:-unknown}"
+    if is_ours "$kr"; then
+        v_ok "running $kr, tryboot flag $tb"
+        f=$FW/$kr/$KERNEL_NAME
+        if [[ -f $f ]]; then
+            got=$(head -n1 "$ROOT/proc/version")
+            # grep -q stops reading at the first match; without pipefail
+            # zcat's SIGPIPE does not decide the result.
+            if (set +o pipefail
+                { if [[ $(od -An -tx1 -N2 "$f" | tr -d ' ') == 1f8b ]]; then zcat "$f"; else cat "$f"; fi; } |
+                    grep -aqF -- "$got"); then
+                v_ok "the running kernel is the one staged in ${FW#"$ROOT"}/$kr"
+            else
+                v_bad "the running kernel's banner is not in ${f#"$ROOT"} (re-staged since boot?)"
+            fi
+        else
+            v_bad "$kr is running but not staged"
+        fi
+        v_info "cmdline: $(cat "$ROOT/proc/cmdline")"
+    else
+        v_info "running $kr, not a hardened kernel: only the boot-setup checks apply"
+    fi
+
+    if is_ours "$kr"; then
+        cfg=$BOOTDIR/config-$kr
+        c() { sed -nE "s/^CONFIG_$1=\"?([^\"]*)\"?$/\1/p" "$cfg" | head -n1; }
+        v_hdr "hardening (expected values from ${cfg#"$ROOT"})"
+        if [[ ! -f $cfg ]]; then
+            v_bad "${cfg#"$ROOT"} not found"
+        else
+            want=""
+            [[ $(c LOCK_DOWN_KERNEL_FORCE_INTEGRITY) == y ]] && want=integrity
+            [[ $(c LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY) == y ]] && want=confidentiality
+            got=$(cat "$ROOT/sys/kernel/security/lockdown" 2>/dev/null || echo unreadable)
+            v_chk "$([[ -n $want && $got == *"[$want]"* ]] && echo 1 || echo 0)" "lockdown: $got (want [$want])"
+            # Same mapping as tools/qemu-smoke.sh: the LSMs CONFIG_LSM lists
+            # whose code is built must all be active.
+            declare -A lsm_sym=(
+                [landlock]=SECURITY_LANDLOCK [lockdown]=SECURITY_LOCKDOWN_LSM
+                [yama]=SECURITY_YAMA [loadpin]=SECURITY_LOADPIN [safesetid]=SECURITY_SAFESETID
+                [integrity]=- [ima]=IMA [evm]=EVM [bpf]=BPF_LSM [ipe]=SECURITY_IPE
+                [selinux]=SECURITY_SELINUX [apparmor]=SECURITY_APPARMOR
+                [smack]=SECURITY_SMACK [tomoyo]=SECURITY_TOMOYO
+            )
+            got=",$(cat "$ROOT/sys/kernel/security/lsm" 2>/dev/null),"
+            IFS=, read -r -a lsms <<<"$(c LSM)"
+            for l in "${lsms[@]}"; do
+                [[ ${lsm_sym[$l]:-} && ${lsm_sym[$l]} != - && $(c "${lsm_sym[$l]}") == y ]] || continue
+                [[ $got == *",$l,"* ]] || missing+=("$l")
+            done
+            v_chk "$([[ ${#missing[@]} == 0 && $got != ",," ]] && echo 1 || echo 0)" \
+                "LSMs: ${got:1:-1}${missing[*]:+ (missing: ${missing[*]})}"
+            want=$(c ARCH_MMAP_RND_BITS); got=$(cat "$ROOT/proc/sys/vm/mmap_rnd_bits" 2>/dev/null || true)
+            v_chk "$([[ -n $want && $got == "$want" ]] && echo 1 || echo 0)" "vm.mmap_rnd_bits=$got (want $want)"
+            want=$(c ARCH_MMAP_RND_COMPAT_BITS)
+            if [[ -n $want ]]; then
+                got=$(cat "$ROOT/proc/sys/vm/mmap_rnd_compat_bits" 2>/dev/null || true)
+                v_chk "$([[ $got == "$want" ]] && echo 1 || echo 0)" "vm.mmap_rnd_compat_bits=$got (want $want)"
+            fi
+            got=$(cat "$ROOT/sys/module/module/parameters/sig_enforce" 2>/dev/null || true)
+            v_chk "$([[ $got == Y ]] && echo 1 || echo 0)" "module signatures enforced (sig_enforce=$got)"
+            [[ $(c DEVMEM) == y ]] || v_chk "$(yes_if test ! -e "$ROOT/dev/mem")" "/dev/mem absent"
+            [[ $(c PROC_KCORE) == y ]] || v_chk "$(yes_if test ! -e "$ROOT/proc/kcore")" "/proc/kcore absent"
+            [[ $(c BCM_VCIO) == y ]] || v_chk "$(yes_if test ! -e "$ROOT/dev/vcio")" "/dev/vcio absent"
+            [[ $(c BCM2708_VCMEM) == y ]] || v_chk "$(yes_if test ! -e "$ROOT/dev/vc-mem")" "/dev/vc-mem absent"
+            [[ $(c DEBUG_INFO_BTF) != y ]] || v_chk "$(yes_if test -e "$ROOT/sys/kernel/btf/vmlinux")" "kernel BTF present"
+            for want in 4 16 64; do
+                [[ $(c "ARM64_${want}K_PAGES") == y ]] || continue
+                got=$(getconf PAGESIZE 2>/dev/null || true)
+                v_chk "$([[ $got == $((want * 1024)) ]] && echo 1 || echo 0)" "page size $got (want $((want * 1024)))"
+            done
+        fi
+
+        v_hdr platform
+        got=$(cat "$ROOT/sys/class/thermal/thermal_zone0/temp" 2>/dev/null || true)
+        if [[ $got =~ ^[0-9]+$ ]]; then
+            v_ok "temperature: $((got / 1000)).$(( (got % 1000) / 100 )) C (thermal_zone0)"
+        else
+            v_bad "temperature: thermal_zone0 unreadable"
+        fi
+        got=$(cat "$ROOT/sys/class/watchdog/watchdog0/state" 2>/dev/null || true)
+        if [[ $got == active ]]; then
+            v_ok "hardware watchdog active: $(cat "$ROOT/sys/class/watchdog/watchdog0/identity" 2>/dev/null)"
+        else
+            v_info "hardware watchdog ${got:-absent} (set RuntimeWatchdogSec= in systemd's system.conf to arm it)"
+        fi
+        if command -v rpi-eeprom-update >/dev/null; then
+            got=$(rpi-eeprom-update 2>&1 || true)
+            if grep -qE '^ *CURRENT: .*[0-9]' <<<"$got"; then
+                v_ok "rpi-eeprom-update reads the bootloader: $(sed -n 's/^ *CURRENT: //p' <<<"$got" | head -n1)"
+            else
+                v_bad "rpi-eeprom-update cannot read the bootloader version: $(head -n3 <<<"$got" | tr '\n' ' ')"
+            fi
+        fi
+        if [[ -f $STATE/trial ]]; then
+            v_hdr "network (against the boot '$ME try' ran on)"
+            read -r -a ifs <<<"$(trial_get links_up)"
+            for f in "${ifs[@]}"; do
+                [[ $f == lo ]] && continue
+                v_chk "$(yes_if sh -c "ip -br link show dev '${f%@*}' | awk '{print \$2}' | grep -qx UP")" "link ${f%@*} up"
+            done
+            read -r -a ifs <<<"$(trial_get ipv4)"
+            for f in "${ifs[@]}"; do
+                v_chk "$(yes_if sh -c "ip -4 -o addr show dev '${f%%=*}' | grep -qF ' ${f#*=} '")" "${f%%=*} has ${f#*=}"
+            done
+        fi
+        v_chk "$(yes_if sh -c 'ip route show default | grep -q .')" "default route: $(ip route show default 2>/dev/null | head -n1)"
+
+        v_hdr services
+        local failed ignore u newf=()
+        failed=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}')
+        ignore=" $VERIFY_IGNORE_FAILED_UNITS $(trial_get failed_units) "
+        for u in $failed; do [[ $ignore == *" $u "* ]] || newf+=("$u"); done
+        v_chk "$([[ ${#newf[@]} == 0 ]] && echo 1 || echo 0)" \
+            "no newly failed units${newf[*]:+ (${newf[*]})}${failed:+; already failing before the trial or ignored: $(tr '\n' ' ' <<<"$failed" | sed 's/ $//')}"
+        v_info "system state: $(systemctl is-system-running 2>/dev/null || true)"
+        echo "== kernel log (err and worse)"
+        dmesg --level=emerg,alert,crit,err 2>/dev/null | sed 's/^/  /' | head -n 30 || true
+    fi
+
+    v_hdr "boot setup"
+    local d why
+    for d in $(staged_krs); do
+        if why=$(check_staged "$d"); then v_ok "staged $d: complete"; else v_bad "staged $d: $why"; fi
+    done
+    if [[ -f $STATE/trial.stock.sha256 ]]; then
+        tmpdir; f=$(mktemp -p "$TMPD"); fingerprint > "$f"
+        got=$(fp_changes "$STATE/trial.stock.sha256" "$f")
+        v_chk "$([[ -z $got ]] && echo 1 || echo 0)" \
+            "stock boot files unchanged since '$ME try' ($(wc -l < "$f") files)${got:+: $(tr '\n' ';' <<<"$got")}"
+    fi
+    if systemctl is-active --quiet "$DEADMAN_TIMER" 2>/dev/null; then
+        v_info "dead-man ACTIVE, fires $(systemctl list-timers --no-legend "$DEADMAN_TIMER" 2>/dev/null | awk '{print $1, $2, $3, $4}'); '$ME confirm' stops it"
+    fi
+
+    if [[ -d $VERIFY_D ]]; then
+        v_hdr "site checks (${VERIFY_D#"$ROOT"})"
+        for f in "$VERIFY_D"/*; do
+            [[ -f $f && -x $f && ${f##*/} =~ ^[A-Za-z0-9_-]+$ ]] || continue
+            if "$f"; then :; else v_bad "${f##*/} exited non-zero"; fi
+        done
+    fi
+
+    echo "fails=$V_FAILS"
+    if (( V_FAILS == 0 )) && is_ours "$kr" && [[ $tb == 1 && -f $FW/$kr/$MANIFEST ]]; then
+        mkdir -p "$STATE/verified"
+        printf 'at=%s\nstaged=%s\n' "$(date -u +%FT%TZ)" "$(sha "$FW/$kr/$MANIFEST")" > "$STATE/verified/$kr"
+        echo "trial boot of $kr verified. Keep it up: $ME confirm. Make it the default: $ME promote"
+        log "trial boot of $kr verified"
+    fi
+    (( V_FAILS == 0 ))
+}
+
+# --- Called by systemd units and maintainer scripts ----------------------------
+
+# The dead-man timer's service: fire only on the trial boot it was armed for.
+cmd_deadman_check() {
+    [[ $(trial_get armed) == 1 && $(trial_get kr) == "$(running_kr)" && $(tryboot_flag) == 1 ]]
+}
+
+cmd_deadman_fire() {
+    log "trial of $(running_kr) not confirmed within ${DEADMAN_MINUTES} min; rebooting to the default boot"
+    echo "trial not confirmed within ${DEADMAN_MINUTES} min; rebooting to the default boot"
+    sed -i 's/^armed=1$/armed=fired/' "$STATE/trial" 2>/dev/null || true
+    systemctl reboot
+}
+
+# Every normal boot: a pending or finished trial is over, so disarm the
+# dead-man and put tryboot.txt back to the fallback (or remove it).
+cmd_boot_cleanup() {
+    require_fw
+    [[ $(tryboot_flag) != 1 ]] || { echo "trial boot of $(running_kr); nothing to clean up"; return 0; }
+    lock
+    check_block_intact "$FW/config.txt"
+    if [[ -f $DEADMAN_DROPIN || $(trial_get armed) == 1 ]]; then
+        echo "a normal boot: the trial of $(trial_get kr) is over"
+        disarm
+    fi
+    if [[ -f $FW/tryboot.txt ]] && ! is_our_tryboot; then return 0; fi
+    # Most boots have nothing to do; touch nothing then (not even the
+    # baseline `status` compares against).
+    if [[ -n $(default_kr) ]]; then
+        is_our_tryboot && [[ "$(cat "$FW/tryboot.txt"; echo x)" == "$(tryboot_for stock "fallback to the stock kernel"; echo x)" ]] &&
+            return 0
+    else
+        is_our_tryboot || return 0
+    fi
+    guarded reset_tryboot
+}
+
+# The boot package's prerm on removal: put the stock boot back exactly.
+cmd_pkg_remove() {
+    local kr base now
+    require_fw; lock
+    check_block_intact "$FW/config.txt"
+    guarded revert_files "$(default_kr)" "$(strip_block "$FW/config.txt"; echo x)"
+    disarm
+    for kr in $(staged_krs); do guarded do_unstage "$kr"; done
+    base=$STATE/stock-at-install.sha256
+    if [[ -f $base ]]; then
+        tmpdir; now=$(mktemp -p "$TMPD"); fingerprint > "$now"
+        if [[ -z $(fp_changes <(grep -v '^#' "$base") "$now") ]]; then
+            echo "  stock boot files identical to when $ME was installed ($(wc -l < "$now") files)"
+        else
+            echo "  stock boot files changed since $ME was installed (by other packages):"
+            fp_changes <(grep -v '^#' "$base") "$now" | sed 's/^/    /'
+        fi
+    fi
+}
+
+# The boot package's postinst: record the stock baseline, stage every
+# installed hardened kernel (one installed before this package has no stage).
+cmd_pkg_configure() {
+    require_fw
+    mkdir -p "$STATE/pending" "$STATE/verified"
+    if [[ ! -f $STATE/stock-at-install.sha256 ]]; then
+        { echo "# $(date -u +%FT%TZ) when $ME was installed"; fingerprint; } > "$STATE/stock-at-install.sha256"
+        cp "$STATE/stock-at-install.sha256" "$STATE/stock.sha256"
+    fi
+    cmd_stage --all
+}
+
+main() {
+    local cmd=${1:-help}
+    [[ $# == 0 ]] || shift
+    case $cmd in
+        status)         cmd_status "$@" ;;
+        stage)          cmd_stage "$@" ;;
+        unstage)        cmd_unstage "$@" ;;
+        try)            cmd_try "$@" ;;
+        confirm)        cmd_confirm "$@" ;;
+        promote)        cmd_promote "$@" ;;
+        revert)         cmd_revert "$@" ;;
+        verify)         cmd_verify "$@" ;;
+        fingerprint)    require_fw; fingerprint ;;
+        # Internal: kernel hooks, systemd units, maintainer scripts.
+        snapshot)       cmd_snapshot "$@" ;;
+        refresh-initrd) cmd_refresh_initrd "$@" ;;
+        deadman-check)  cmd_deadman_check ;;
+        deadman-fire)   cmd_deadman_fire ;;
+        boot-cleanup)   cmd_boot_cleanup ;;
+        pkg-configure)  cmd_pkg_configure ;;
+        pkg-remove)     cmd_pkg_remove ;;
+        help|-h|--help) usage ;;
+        *) usage >&2; exit 2 ;;
+    esac
+}
+
+main "$@"

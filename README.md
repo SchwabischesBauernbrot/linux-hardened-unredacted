@@ -26,6 +26,7 @@ Per-symptom workarounds are in [docs/users/incompatibilities.md](https://git.unr
 | Path | Contents |
 | ---- | -------- |
 | `build/` | Kernel build pipeline: fetch, patch, configure, build, sign |
+| `packages/` | Sources of the non-kernel packages built with a flavor's kernel (`unredacted-rpi5-boot`) |
 | `tools/` | Publish, prune, reproducibility check |
 | `configs/` | Upstream-seed pin, project intent overlay, hardening-policy doc |
 | `containers/` | Pinned build environments per target |

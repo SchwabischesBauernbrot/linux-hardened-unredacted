@@ -1,6 +1,6 @@
 # Build flavors: amd64, Raspberry Pi 5, generic arm64
 
-**Status: proposed (2026-11-02).** Nothing here is implemented yet. This is the plan for adding Raspberry Pi 5 support, shaped so a generic arm64 kernel can follow later without another redesign.
+**Status: Phases 1–3 implemented (2026-11-04); the soak (Phase 4) is next.** Originally proposed 2026-11-02. This is the plan for adding Raspberry Pi 5 support, shaped so a generic arm64 kernel can follow later without another redesign.
 
 [per-distro-build.md](per-distro-build.md) describes two independent axes: the distro/arch target and the kernel line ([config-architecture.md](config-architecture.md#kernel-lines-single-stable-line-multi-line-capable)). A **flavor** is a third axis. It changes what the other two can't: the source tree, the config seed, the page size, the boot path and the image signing.
 
@@ -131,16 +131,25 @@ The seed lags the tree by a few patch releases, exactly as anthraxx's does on am
 
 ### Boot integration: `unredacted-rpi5-boot`
 
-A separate small package, because the kernel `.deb` should stay what `bindeb-pkg` produces.
+A separate small package, because the kernel `.deb` should stay what `bindeb-pkg` produces. It is built by `build/build-boot-package.sh` from `packages/unredacted-rpi5-boot/` inside `build-debs.sh`, so it is in the manifest and `repro-check.sh` rebuilds it, under the same digest rules as the other packages. It is key-independent and must match exactly. It is versioned with the kernel build, and only the flavor's stable line emits it. The image metas depend on it. User guide: [install-rpi5.md](../users/install-rpi5.md).
 
-- **Kernel hook.** `/etc/kernel/postinst.d` and `postrm.d` hooks stage the kernel (`kernel_2712.img`), initrd, DTBs and overlays into a prefix directory under `/boot/firmware/`. The overlays come from our package, so they match our kernel. The hook never touches the stock files: it fingerprints them before and after, as `stage.sh` did in the trial.
-- **Commands:** `try`, `promote` and `revert`.
-  - **`try`** writes `tryboot.txt` for a one-shot boot of the staged kernel, with `panic=10` and a dead-man unit gated by `ConditionKernelVersion`.
-  - **`promote`** makes it the default by adding `os_prefix=` to `config.txt`. The stock kernel stays installed and reachable through tryboot.
-  - **`revert`** removes the prefix.
-- **Verify.** A `verify` command does what the trial's `verify.sh` did.
+- **Prefixes.** Each kernel is staged into a directory named after its kernelrelease, `/boot/firmware/6.18.60-hardened-unredacted-pi5/`. It holds `kernel_2712.img`, `initramfs_2712`, every `bcm2712*.dtb`, the kernel package's `overlays/` with an `overlays/README`, a manifest, and `cmdline.txt`. Without the README the firmware would ignore the prefix's overlays and use the stock ones. `cmdline.txt` is the stock one plus `panic=10`. A new kernel lands in a second prefix; a rebuild of the same kernelrelease refreshes its own in place, since dpkg replaces its modules in place too. Staging writes a sibling `.new` directory, reads every file back, then swaps it in. A half-written stage is never bootable: the firmware falls back to stock when a prefix lacks the kernel or the DTB.
+- **Kernel hooks.**
+  - A `preinst.d` hook snapshots the stock files.
+  - A `postinst.d` hook (sorting after `initramfs-tools` and `z50-raspi-firmware`) stages the kernel. It fails if a stock file has become a copy of this kernel's image or initrd since the snapshot. That is what `z50-raspi-firmware` would do to a kernelrelease containing `-rpi-`. Other stock changes in the same dpkg run are only reported, because a stock kernel upgraded alongside ours is legitimate.
+  - A `postrm.d` hook unstages the kernel. If that kernel was the default, the default goes back to stock, never to an untried kernel.
+  - An initramfs `post-update.d` hook refreshes the staged initramfs.
+- **Fingerprints.** Every command that writes `/boot/firmware` fingerprints the stock files before and after it, and fails if anything changed. The stock files are everything outside the prefixes and our `tryboot.txt`, with `config.txt` read minus our block.
+- **Commands:** `try`, `verify`, `confirm`, `promote`, `revert`, plus `status`, `stage`, `unstage` and `fingerprint`.
+  - **`try`** writes `tryboot.txt` for a one-shot boot of the staged kernel: a copy of `config.txt`, plus a block naming the prefix. It arms the dead-man first: a timer gated by `ConditionKernelVersion` that fires only on a tryboot boot, after 15 minutes. `try stock` boots the stock kernel once while a hardened one is the default.
+  - **`verify`** does what the trial's `verify.sh` did, with the site-specific checks moved into `/etc/unredacted-rpi5-boot/verify.d/`. Its expectations come from the kernel's own `/boot/config-*`. The network and failed-unit baselines are what `try` recorded on the previous boot. A clean `verify` on a trial boot records the kernel as verified.
+  - **`confirm`** stops the dead-man.
+  - **`promote`** appends an `os_prefix=` block to `config.txt`, and needs a verified trial of the kernel's current staged files (or `--force`). `tryboot.txt` then holds the stock fallback.
+  - **`revert`** removes the block, so `config.txt` is byte-identical to what it was.
+  - A boot-time unit returns `tryboot.txt` to the fallback after every normal boot. A trial is pending only between `try` and the next boot.
 - **Upgrades.** A new hardened kernel is staged into a second prefix and tried from the running hardened kernel. That needs the tryboot reboot flag, which Raspberry Pi's tree supports.
-- **Guard.** The package refuses to install unless `/proc/device-tree/compatible` says Raspberry Pi 5 (`raspberrypi,5-model-b`, and later CM5/500 once tested).
+- **Guard.** The package refuses to install unless `/proc/device-tree/compatible` says Raspberry Pi 5 (`raspberrypi,5-model-b`, and later CM5/500 once tested). The tool also refuses `config.txt` settings it does not model: `os_prefix`, `overlay_prefix`, `cmdline`, `device_tree`, `tryboot_a_b`, and an `autoboot.txt`.
+- **Removal.** Removing the package puts the stock boot back exactly: no block, no `tryboot.txt`, no prefixes.
 
 ### Performance
 
