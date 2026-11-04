@@ -8,7 +8,7 @@ If your rebuild diverges, file an issue with the output of `tools/repro-check.sh
 
 ## Prerequisites
 
-- Linux host with Docker (or podman exposing the Docker API).
+- Linux host with Docker (or podman exposing the Docker API) that can run containers of the manifest's `build_arch` (step 2). That is `amd64` for every release so far, pi5's included; on an arm64 host Docker runs it under emulation, which is much slower.
 - 32+ GB RAM, 200+ GB free disk.
 - This repository at the release tag you intend to rebuild.
 
@@ -21,7 +21,7 @@ git checkout v7.2.15-fwd-v7.2.10-hardened1     # the release you want
 cat releases/v7.2.15-fwd-v7.2.10-hardened1/manifest.json
 ```
 
-The manifest's `container_image` field is the exact image digest used by the original build. Its `schema_version` says how much of the release a rebuild can verify; see [releases/README.md](../../releases/README.md#schema-versions).
+The manifest's `container_image` field is the exact image digest used by the original build. Its `schema_version` says how much of the release a rebuild can verify; see [releases/README.md](../../releases/README.md#schema-versions). A release of a flavor other than amd64 carries that flavor's tag prefix (`pi5-v6.18.60-fwd-v6.18.56-hardened1`), and the script refuses a manifest whose `flavor` does not match the tag.
 
 Run the rebuild:
 
@@ -32,8 +32,12 @@ Run the rebuild:
 The script:
 
 1. Fetches all source inputs and verifies their pinned hashes and signatures.
-2. Runs the build inside the recorded container image (by digest, not tag), with the manifest's `source_date_epoch`, in the manifest's `build_dir`. Schema 4 records `build_dir` because the compiler embeds that path in the host tools and GCC plugin shipped in `linux-headers`, and throughout `-dbg`; for older manifests the script uses `/work`. The build signs the modules with a throwaway key it generates, unless you supply the real one (see [below](#checking-the-key-dependent-members)).
-3. Hashes each rebuilt `.deb` with `tools/canonical-deb-hash.py`. The hasher never repacks the archive, so the result does not depend on your local `dpkg`/`xz` version. Both digests canonicalize module signatures and the `vmlinuz` PE certificate table away, and leave `Installed-Size` out of `control/control`:
+2. Runs the build inside the recorded container image (by digest, not tag), with the manifest's `source_date_epoch`, in the manifest's `build_dir`, on the manifest's `build_arch`. Schema 4 records both:
+   - `build_dir`, because the compiler embeds that path in the host tools and GCC plugin shipped in `linux-headers`, and throughout `-dbg`. For older manifests the script uses `/work`.
+   - `build_arch`, because a flavor of another architecture is cross-compiled. CI builds pi5's arm64 kernel in an amd64 container, and a native arm64 rebuild would differ: `CONFIG_CC_VERSION_TEXT` names the compiler, and it lands in every package. The script runs the container on that platform (`docker run --platform linux/<build_arch>`), whatever your host is. For older manifests it uses `amd64`.
+
+   The build signs the modules with a throwaway key it generates, unless you supply the real one (see [below](#checking-the-key-dependent-members)).
+3. Hashes each rebuilt `.deb` with `tools/canonical-deb-hash.py`. The hasher never repacks the archive, so the result does not depend on your local `dpkg`/`xz` version. Both digests canonicalize module signatures and the `vmlinuz` PE certificate table (amd64's `sbsign` signature; pi5's `Image.gz` is not signed) away, and leave `Installed-Size` out of `control/control`:
    - `key_independent_sha256` covers every member except `boot/vmlinuz-*`, `boot/System.map-*` and `usr/lib/debug/**`, and leaves those paths' lines out of `control/md5sums`.
    - `canonical_sha256` covers every member.
 4. Compares both digests with the manifest's `outputs[].deb_files[]` and prints one verdict per package:
@@ -75,7 +79,7 @@ cat signing.key signing.crt > signing.pem
 REPRO_SIGNING_KEY_PATH=signing.pem ./tools/repro-check.sh v7.2.15-fwd-v7.2.10-hardened1
 ```
 
-The script checks the file before the rebuild starts. It bind-mounts the file read-only into the rebuild container, and the build signs every module with it. Inside the kernel tree, `build/configure-kernel.sh` installs the copy kbuild reads at `certs/unredacted-signing.pem`. `build/build-debs.sh` shreds that copy after the build, and the rebuild deletes it if the build fails. Only the key's path appears in the output, and `repro-diff/` holds package hashes only.
+The script checks the file before the rebuild starts. It bind-mounts the file read-only into the rebuild container, and the build signs every module with it. That is all the key is used for, in every flavor. The flavor's `image_signing` makes no difference to the rebuild: amd64's `sbsign` signature is added after the build and stripped from both sides by the hasher, and pi5 (`image_signing = "none"`) never signs its image. Inside the kernel tree, `build/configure-kernel.sh` installs the copy kbuild reads at `certs/unredacted-signing.pem`. `build/build-debs.sh` shreds that copy after the build, and the rebuild deletes it if the build fails. Only the key's path appears in the output, and `repro-diff/` holds package hashes only.
 
 With the key set, every package of a schema-4 release should report `OK`. A `canonical_sha256` difference is a `FAIL`, and a key whose certificate is not the release's (`signing_cert_sha256`) fails every package that embeds it.
 

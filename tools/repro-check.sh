@@ -263,7 +263,11 @@ esac
 # The project's real signing key, if the verifier holds it (see the verdict).
 # It is bind-mounted read-only at a fixed path and signed with in place: never
 # copied into the build dir, and only its path is ever printed. Check it here,
-# not after 10 minutes of fetching.
+# not after 10 minutes of fetching. Every flavor needs it only for the module
+# signatures and the cert kbuild embeds; the flavor's image_signing does not
+# matter here. sign-debs.sh's sbsign (amd64) runs after the build, and
+# canonical-deb-hash.py strips that layer from both sides. pi5 ("none")
+# never signs its image.
 key_mount=()
 if [[ -n ${REPRO_SIGNING_KEY_PATH:-} ]]; then
     key_file=$REPRO_SIGNING_KEY_PATH
