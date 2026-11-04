@@ -26,7 +26,8 @@ Two digests
 -----------
 `canonical_sha256`      every member.
 `key_independent_sha256`  excludes the three paths whose bytes depend on WHICH
-                          signing key built the kernel (see KEY_DEPENDENT).
+                          signing key built the kernel (see KEY_DEPENDENT), and
+                          their lines in control/md5sums.
 
 The split exists because module signing needs the PRIVATE key. kbuild links the
 signing certificate's DER into `.builtin_trusted_keys`, so a rebuild with a
@@ -51,6 +52,18 @@ What is deliberately NOT in the digest
   is recorded in the manifest and fed back into the rebuild, so it is verified
   by other means.
 - Module signature trailers, and the PE certificate table on `vmlinuz`.
+- The two control fields DERIVED from data, wherever they would carry signature
+  or key bytes back in (schema 4; see canonical_control_member):
+    `control/md5sums`  a line naming a member whose content canonicalization
+                       changed (a signed module, vmlinuz) gets the md5 of the
+                       CANONICAL content; the key-independent digest also drops
+                       the lines naming KEY_DEPENDENT paths. Before this, every
+                       module's signature reached both digests through its md5,
+                       so linux-image could not match without the project key.
+    `Installed-Size`   removed from `control/control`. dpkg-gencontrol sums file
+                       sizes, which include the signature trailers and the
+                       embedded certificate, so it moves with the key. The data
+                       sizes it summarizes are each in the digest already.
 
 Everything else IS in it: path, member type, permission bits, uid/gid, size,
 symlink/hardlink target, and the sha256 of canonicalized content.
@@ -233,40 +246,110 @@ def canonical_member_content(path: str, data: bytes) -> bytes:
     return data
 
 
+def canonical_md5sums(data: bytes, canonical_md5: dict[str, str],
+                      drop_key_dependent: bool) -> bytes:
+    """Rewrite dh_md5sums output so it cannot carry signature bytes.
+
+    `canonical_md5` maps each data path whose content canonicalization CHANGED
+    to the md5 of its canonical content; those lines take that md5. Every other
+    line is kept verbatim, so md5sums still has to agree with the data for
+    ordinary files. With `drop_key_dependent`, lines naming KEY_DEPENDENT paths
+    go entirely, as those members do from the key-independent digest.
+
+    The signed CI .deb needs the rewrite for vmlinuz even with the right key:
+    sign-debs.sh repacks after sbsign without regenerating md5sums, so its line
+    is the md5 of the image BEFORE signing.
+    """
+    out = []
+    for line in data.splitlines(keepends=True):
+        _md5, sep, rest = line.partition(b"  ")
+        if not sep:
+            out.append(line)  # not an md5sums line; keep it so it is still hashed
+            continue
+        path = rest.rstrip(b"\n").decode("utf-8", "surrogateescape").lstrip("./")
+        if drop_key_dependent and path.startswith(KEY_DEPENDENT):
+            continue
+        elif path in canonical_md5:
+            out.append(canonical_md5[path].encode() + sep + rest)
+        else:
+            out.append(line)
+    return b"".join(out)
+
+
+def canonical_control_member(path: str, data: bytes, canonical_md5: dict[str, str],
+                             drop_key_dependent: bool) -> bytes:
+    if path == "md5sums":
+        return canonical_md5sums(data, canonical_md5, drop_key_dependent)
+    if path == "control":
+        # The whole field line, so a package that never had one hashes the same.
+        return b"".join(line for line in data.splitlines(keepends=True)
+                        if not line.startswith(b"Installed-Size:"))
+    return data
+
+
 # --- digest -------------------------------------------------------------
+def _record(which: str, path: str, ti: tarfile.TarInfo, content: bytes | None) -> dict:
+    return {
+        "archive": which,
+        "path": path,
+        "type": ("file" if ti.isfile() else
+                 "dir" if ti.isdir() else
+                 "symlink" if ti.issym() else
+                 "hardlink" if ti.islnk() else
+                 f"other:{ti.type!r}"),
+        "mode": oct(ti.mode & 0o7777),
+        "uid": ti.uid, "gid": ti.gid,
+        "size": len(content) if content is not None else 0,
+        "linkname": ti.linkname or "",
+        "sha256": hashlib.sha256(content).hexdigest() if content is not None else "",
+    }
+
+
 def member_records(deb: Path) -> list[dict]:
-    """One normalized record per archive member, sorted by path."""
+    """One normalized record per archive member, sorted by path.
+
+    A control member whose key-independent form differs (md5sums, when it names
+    KEY_DEPENDENT paths) carries that form's size and sha256 under
+    `key_independent`; hash_deb substitutes them for that digest.
+    """
     ar = read_ar(deb.read_bytes())
+    tars = {("control" if n.startswith("control.tar") else "data"): (n, blob)
+            for n, blob in ar.items()
+            if n.startswith("control.tar") or n.startswith("data.tar")}
+    # (debian-binary is a version marker, not content.)
     records: list[dict] = []
-    for ar_name, blob in ar.items():
-        if not (ar_name.startswith("control.tar") or ar_name.startswith("data.tar")):
-            continue  # debian-binary: a version marker, not content
-        raw = decompress_tar(ar_name, blob)
-        which = "control" if ar_name.startswith("control.tar") else "data"
-        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
+    # Data first: md5sums is rewritten from what canonicalization did to it.
+    canonical_md5: dict[str, str] = {}
+    if "data" in tars:
+        name, blob = tars["data"]
+        with tarfile.open(fileobj=io.BytesIO(decompress_tar(name, blob)), mode="r:") as tf:
             for ti in tf.getmembers():
                 path = ti.name.lstrip("./") or "."
+                content = None
                 if ti.isfile():
                     fh = tf.extractfile(ti)
-                    content = canonical_member_content(path, fh.read() if fh else b"")
-                    digest = hashlib.sha256(content).hexdigest()
-                    size = len(content)
-                else:
-                    digest, size = "", 0
-                records.append({
-                    "archive": which,
-                    "path": path,
-                    "type": ("file" if ti.isfile() else
-                             "dir" if ti.isdir() else
-                             "symlink" if ti.issym() else
-                             "hardlink" if ti.islnk() else
-                             f"other:{ti.type!r}"),
-                    "mode": oct(ti.mode & 0o7777),
-                    "uid": ti.uid, "gid": ti.gid,
-                    "size": size,
-                    "linkname": ti.linkname or "",
-                    "sha256": digest,
-                })
+                    raw = fh.read() if fh else b""
+                    content = canonical_member_content(path, raw)
+                    if content != raw:
+                        canonical_md5[path] = hashlib.md5(content).hexdigest()
+                records.append(_record("data", path, ti, content))
+    if "control" in tars:
+        name, blob = tars["control"]
+        with tarfile.open(fileobj=io.BytesIO(decompress_tar(name, blob)), mode="r:") as tf:
+            for ti in tf.getmembers():
+                path = ti.name.lstrip("./") or "."
+                if not ti.isfile():
+                    records.append(_record("control", path, ti, None))
+                    continue
+                fh = tf.extractfile(ti)
+                raw = fh.read() if fh else b""
+                rec = _record("control", path, ti,
+                              canonical_control_member(path, raw, canonical_md5, False))
+                indep = canonical_control_member(path, raw, canonical_md5, True)
+                if hashlib.sha256(indep).hexdigest() != rec["sha256"]:
+                    rec["key_independent"] = {"size": len(indep),
+                                              "sha256": hashlib.sha256(indep).hexdigest()}
+                records.append(rec)
     records.sort(key=lambda r: (r["archive"], r["path"]))
     return records
 
@@ -287,7 +370,7 @@ def hash_deb(deb: Path) -> tuple[str, str, list[dict]]:
     records = member_records(deb)
     if not records:
         raise ValueError(f"{deb}: no control/data members found")
-    independent = [r for r in records
+    independent = [{**r, **r.get("key_independent", {})} for r in records
                    if not r["path"].startswith(KEY_DEPENDENT)]
     return _digest(records), _digest(independent), records
 
