@@ -11,9 +11,10 @@
 #   key_independent_sha256  every archive member EXCEPT the paths whose bytes
 #                           depend on which signing key built the kernel
 #                           (boot/vmlinuz-*, boot/System.map-*,
-#                           usr/lib/debug/**). A third party with no access to
-#                           the project key must be able to match this, so a
-#                           mismatch is always a FAILURE.
+#                           usr/lib/debug/**) and their control/md5sums lines.
+#                           A third party with no access to the project key
+#                           must be able to match this, so a mismatch is a
+#                           FAILURE (schema >= 4; see the verdict for schema 3).
 #   canonical_sha256        every member. Matching it requires the project's
 #                           PRIVATE signing key, because kbuild links the
 #                           signing certificate into .builtin_trusted_keys and
@@ -231,19 +232,32 @@ else
     seed_desc="$seed_commit ($seed_sha256)"
 fi
 
+# Build in the directory the release was built in. It is compiled into the
+# packages: objtool, resolve_btfids and the GCC plugin in linux-headers carry
+# DWARF with absolute paths under it, as does all of -dbg. CI builds under
+# `runner.temp`, wherever the runner puts that, so the manifest records the
+# physical path (schema 4). Older manifests do not, and get the /work this
+# script always used; their kbuild packages are unverifiable anyway.
+build_dir=$(jq -r '.build_dir // "/work"' "$manifest")
+if [[ ! $build_dir =~ ^/[A-Za-z0-9._/-]+$ || $build_dir == *..* || $build_dir == / ]]; then
+    echo "manifest build_dir is not a plain absolute path: $build_dir" >&2
+    exit 1
+fi
+
 rebuild_work="$work/build"
 mkdir -p "$rebuild_work"
 
 echo "rebuilding $version (flavor $flavor) in $container_image (SOURCE_DATE_EPOCH=$source_date_epoch)"
 echo "  pinned seed: $seed_desc"
+echo "  build dir:   $build_dir"
 # The dep-install block mirrors .forgejo/workflows/build-kernel.yml's
 # "install build deps" step; keep the two in sync when either changes.
 # We can't share a script: the CI installs deps before actions/checkout
 # (which needs nodejs), so the list has to be inline there.
 docker run --rm \
     -v "$repo_root:/repo:ro" \
-    -v "$rebuild_work:/work" \
-    -e WORKDIR=/work \
+    -v "$rebuild_work:$build_dir" \
+    -e WORKDIR="$build_dir" \
     -e KERNEL_VERSION="$kernel_version" \
     -e HARDENED_REVISION="$hardened_revision" \
     -e HARDENED_BASE_VERSION="$tag_base" \
@@ -299,14 +313,14 @@ docker run --rm \
         # follow-up work on the comparison itself. Set REPRO_SIGNING_KEY_PATH
         # to compare those artifacts too, if you hold the real key.
         if [ -n "${REPRO_SIGNING_KEY_PATH:-}" ]; then
-            cp "$REPRO_SIGNING_KEY_PATH" /work/verifier-signing.pem
+            cp "$REPRO_SIGNING_KEY_PATH" "$WORKDIR/verifier-signing.pem"
         else
             openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 36500 \
                 -batch -subj "/CN=repro-check throwaway module-signing key/" \
-                -outform PEM -out /work/verifier-signing.pem \
-                -keyout /work/verifier-signing.pem 2>/dev/null
+                -outform PEM -out "$WORKDIR/verifier-signing.pem" \
+                -keyout "$WORKDIR/verifier-signing.pem" 2>/dev/null
         fi
-        export MODULE_SIG_KEY_PATH=/work/verifier-signing.pem
+        export MODULE_SIG_KEY_PATH="$WORKDIR/verifier-signing.pem"
         /repo/build/configure-kernel.sh
         /repo/build/build-debs.sh
     '
@@ -335,8 +349,10 @@ mv "$rebuild_work"/*.deb "$work/"
 #
 # tools/canonical-deb-hash.py computes two digests. `key_independent_sha256`
 # excludes the paths whose bytes depend on WHICH signing key built the kernel
-# (boot/vmlinuz-*, boot/System.map-*, usr/lib/debug/**); `canonical_sha256`
-# covers everything. A rebuilder without the project's private key cannot
+# (boot/vmlinuz-*, boot/System.map-*, usr/lib/debug/**) and their md5sums
+# lines; `canonical_sha256` covers everything. Both canonicalize module
+# signatures out of control/md5sums and drop Installed-Size, which sums the
+# signature bytes. A rebuilder without the project's private key cannot
 # reproduce the first set -- kbuild links the signing cert's DER into
 # .builtin_trusted_keys, and handing over the published .der does not help
 # because sign-file needs the private half -- but CAN reproduce everything else
@@ -344,7 +360,8 @@ mv "$rebuild_work"/*.deb "$work/"
 # indexes.
 #
 # So:
-#   key_independent mismatch  -> FAIL, always. Real divergence.
+#   key_independent mismatch  -> FAIL. Real divergence. (Schema 3 kbuild
+#                                packages excepted: UNVERIF, see below.)
 #   canonical mismatch        -> FAIL if the real key was supplied
 #                                (REPRO_SIGNING_KEY_PATH), else INFO: expected,
 #                                and names the excluded paths.
@@ -360,9 +377,17 @@ have_real_key=0
 # build compiled it into UTS_VERSION, so a rebuild cannot match by construction.
 # Report that as partial rather than red -- a permanently-failing check nobody
 # can act on is worse than an honest "not verifiable".
+#
+# Schema 3 is verifiable only in part, for the same reason. mkdebian dated the
+# changelog that every kbuild package (linux-image, -dbg, linux-headers,
+# linux-libc-dev) ships with the build's WALL CLOCK, recorded nowhere, and the
+# schema-3 digest rules let module signatures into linux-image through
+# control/md5sums. So no rebuild can match those packages. The metas and the
+# defaults package are unaffected and must still match exactly.
 schema=$(jq -r '.schema_version // 0' "$manifest")
 legacy=0
 (( schema < 3 )) && legacy=1
+wallclock=0
 
 mkdir -p repro-diff
 fails=0; exact=0; indep_ok=0; info=0; missing=0; total=0
@@ -386,14 +411,25 @@ while IFS=$'\t' read -r name exp_canon exp_indep; do
     fi
 
     if [[ $got_indep != "$exp_indep" ]]; then
+        # Per-member JSON is what makes a mismatch diagnosable without
+        # diffoscope or the released .deb.
+        diff_json="repro-diff/${name}.rebuilt.json"
+        python3 "$repo_root/tools/canonical-deb-hash.py" --json "$rebuild_path" \
+            > "$diff_json" 2>/dev/null || true
+        # A schema-3 kbuild package (see above), recognized by content: only
+        # mkdebian's packages ship a changelog.Debian.gz. Anything else, or
+        # JSON that failed to parse, is still a failure.
+        if (( schema == 3 )) && jq -e '[.members[] | select(.archive == "data"
+                and (.path | test("^usr/share/doc/[^/]+/changelog\\.Debian\\.gz$")))]
+                | length > 0' "$diff_json" >/dev/null 2>&1; then
+            printf '  UNVERIF  %s  schema 3: its changelog.Debian.gz carries the build'\''s wall clock\n' "$name"
+            wallclock=$((wallclock + 1)); info=$((info + 1))
+            continue
+        fi
         printf '  FAIL     %s  key-independent content differs\n' "$name" >&2
         printf '             expected %s\n             got      %s\n' \
             "$exp_indep" "$got_indep" >&2
         fails=$((fails + 1))
-        # Per-member JSON is what makes a mismatch diagnosable without
-        # diffoscope or the released .deb.
-        python3 "$repo_root/tools/canonical-deb-hash.py" --json "$rebuild_path" \
-            > "repro-diff/${name}.rebuilt.json" 2>/dev/null || true
         continue
     fi
     indep_ok=$((indep_ok + 1))
@@ -418,6 +454,10 @@ printf 'repro-check: %d package(s): %d exact, %d key-independent-only, %d not co
 if (( legacy )); then
     echo "note: $manifest predates schema_version 3, so this release is only"
     echo "      partially verifiable by construction. See releases/README.md."
+fi
+if (( wallclock )); then
+    echo "note: $wallclock kbuild package(s) of this schema-3 release cannot be matched"
+    echo "      by any rebuild (wall-clock changelog date). See releases/README.md."
 fi
 if (( fails > 0 )); then
     echo "$fails package(s) failed; per-member detail in repro-diff/" >&2

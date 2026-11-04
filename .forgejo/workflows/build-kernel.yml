@@ -697,6 +697,10 @@ jobs:
           # Cheap SBOM: build-container packages + toolchain versions.
           python3 "$repo/tools/sbom.py" "$WORKDIR/sbom.json"
 
+          # --build-dir: the physical WORKDIR (we cd'd into it above). The
+          # compiler embeds it in linux-headers' host tools and in -dbg, so
+          # repro-check.sh must rebuild there; WORKDIR follows the runner's
+          # temp dir, which is runner configuration, not ours.
           python3 "$repo/tools/build-manifest.py" \
             --workdir "$WORKDIR" \
             --deb-hashes "$WORKDIR/deb-hashes.tsv" \
@@ -705,6 +709,7 @@ jobs:
             --hardened-base-version "$HARDENED_BASE_VERSION" \
             --container-image "$CONTAINER_IMAGE" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
+            --build-dir "$(pwd -P)" \
             --ci-run-number "$CI_RUN_NUMBER" \
             --flavor "$FLAVOR" \
             --distro "$DISTRO" --release "$RELEASE" --arch "$ARCH" \

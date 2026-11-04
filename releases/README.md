@@ -21,19 +21,21 @@ The signing layer is attested separately by `signing_cert_sha256` in the manifes
 | ---------------- | -------- | -------- |
 | *absent* (legacy) | `v7.0.10-hardened1` … `v7.1.4-hardened1` | Every field below except `schema_version` and `ci_run_number`. **Not fully verifiable by rebuild:** these builds compiled the CI run number into `KBUILD_BUILD_VERSION` (hence into `UTS_VERSION` inside `vmlinux`) without recording it, so the value is unrecoverable and no independent rebuild can match the kernel image or the `-dbg` package. `tools/repro-check.sh` reports these as *partially* verifiable, not failed. Two of them (`v7.0.10-hardened1`, `v7.0.10-hardened1.2`) additionally carry `null` for `kernel_version`/`hardened_revision` and cannot be checked at all. |
 | `2` | (superseded before release) | Added `schema_version` and `ci_run_number`. The build no longer derives anything shipped from the CI run number, so `ci_run_number` is provenance only. |
-| `3` | from `v7.1.5-hardened1` | Adds `canonical_sha256`, `key_independent_sha256` and `repro_class` per `.deb`. `unsigned_deb_sha256` is retained as an alias of `canonical_sha256` for older readers — note it is **not** the old value, which was the sha256 of a `dpkg-deb` repack and therefore depended on the machine that recorded it. This is the first schema a third party can verify without the project signing key. |
+| `3` | `v7.1.5-hardened1` … `v7.2.15-fwd-v7.2.10-hardened1` | Adds `canonical_sha256`, `key_independent_sha256` and `repro_class` per `.deb`. `unsigned_deb_sha256` is retained as an alias of `canonical_sha256` for older readers — note it is **not** the old value, which was the sha256 of a `dpkg-deb` repack and therefore depended on the machine that recorded it. **Only the meta-packages and `unredacted-hardened-defaults` are verifiable by rebuild.** The four kernel-built packages (`linux-image`, `-dbg`, `linux-headers`, `linux-libc-dev`) ship `usr/share/doc/<pkg>/changelog.Debian.gz`, which the kernel's `mkdebian` dated with the build's wall-clock time and nothing recorded. In addition, both digests of `linux-image` and `-dbg` covered `control/md5sums` (the md5 of every signed module) and `Installed-Size` (which sums the signature bytes), so they could not match without the project key either, and `linux-headers` embeds the build directory, which these manifests do not record. `tools/repro-check.sh` reports those four as `UNVERIF`, not failed. |
+| `4` | releases built after this change | Adds `build_dir`: the physical directory the kernel tree was built under (`<build_dir>/linux-<version>`). The compiler embeds it in `objtool`, `resolve_btfids` and the GCC plugin shipped in `linux-headers`, and in all of `-dbg`; CI builds under the runner's temp dir, and `tools/repro-check.sh` rebuilds there (older manifests get `/work`, as before). The build and the digest rules change too. The kernel-built packages' changelog is dated `source_date_epoch` (`build/build-debs.sh` puts a `date` on `PATH` that answers with it, and refuses to package if `debian/changelog` says otherwise). `tools/canonical-deb-hash.py` gives each `control/md5sums` line that names a signed module or `vmlinuz` the md5 of the member's canonical content, drops the lines naming key-dependent paths from `key_independent_sha256`, and leaves `Installed-Size` out of `control/control` in both digests. This is the first schema under which a third party can verify every package's `key_independent_sha256` without the project signing key. |
 
-A **forward-port** release (`releases/v7.2.13-fwd-v7.2.10-hardened1/`, see [cve-policy.md](../docs/users/cve-policy.md#forward-ports)) is an ordinary schema-3 manifest plus one field, `hardened_base_version`: the kernel version whose signed `linux-hardened` patch was applied to `kernel_version`'s tarball (`inputs.hardened_patch.url` names the same patch). It is absent on every other release. `hardened_revision` is the base patch's revision. `tools/repro-check.sh` takes the base from the tag and refuses a manifest whose `hardened_base_version` disagrees with it.
+A **forward-port** release (`releases/v7.2.13-fwd-v7.2.10-hardened1/`, see [cve-policy.md](../docs/users/cve-policy.md#forward-ports)) is an ordinary manifest plus one field, `hardened_base_version`: the kernel version whose signed `linux-hardened` patch was applied to `kernel_version`'s tarball (`inputs.hardened_patch.url` names the same patch). It is absent on every other release. `hardened_revision` is the base patch's revision. `tools/repro-check.sh` takes the base from the tag and refuses a manifest whose `hardened_base_version` disagrees with it.
 
 ## Schema
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 4,
   "kernel_version": "7.0.10",
   "hardened_revision": "1",
   "ci_run_number": "58",
   "source_date_epoch": "1780034773",
+  "build_dir": "/tmp/work",
   "container_image": "debian:trixie@sha256:<digest>",
   "signing_cert_sha256": "<sha256 of the X.509 cert that signed this build>",
   "upstream_seed": {
@@ -63,7 +65,7 @@ A **forward-port** release (`releases/v7.2.13-fwd-v7.2.10-hardened1/`, see [cve-
         {
           "name": "linux-image-7.0.10-hardened-unredacted-amd64_7.0.10-hardened1.5_amd64.deb",
           "canonical_sha256": "<all members, signatures canonicalized away>",
-          "key_independent_sha256": "<same, excluding boot/vmlinuz-*, boot/System.map-*, usr/lib/debug/**>",
+          "key_independent_sha256": "<same, excluding boot/vmlinuz-*, boot/System.map-*, usr/lib/debug/** and their md5sums lines>",
           "repro_class": "key_dependent",
           "unsigned_deb_sha256": "<alias of canonical_sha256, for older readers>"
         }
@@ -93,7 +95,7 @@ A **forward-port** release (`releases/v7.2.13-fwd-v7.2.10-hardened1/`, see [cve-
 Notes on the schema:
 - `upstream_seed` records the pinned anthraxx Arch `config.x86_64` (the kernel-config seed); `tools/repro-check.sh` reads it back to fetch + re-verify the exact same seed. Older releases (built before the seed architecture) lack this block, and repro-check refuses them.
 - `inputs` holds only the verified `url` + `sha256` for the two fetched artifacts (the kernel tarball and the hardened patch). The kernel `.config` is no longer assembled from a distro stock config, so there is no `stock_config_sources`/`distro_source` block.
-- `outputs[].deb_files[]` records two digests from `tools/canonical-deb-hash.py`. `key_independent_sha256` is what a third party without the signing key must be able to match — a mismatch there is always a failure. `canonical_sha256` additionally covers the three paths whose bytes depend on which key built the kernel (`boot/vmlinuz-*`, `boot/System.map-*`, `usr/lib/debug/**`); matching it needs the private key, so a difference is reported as expected rather than as a failure. `repro_class` says which kind of package this is, derived from the content rather than the name. The signed-`.deb` `sha256`/`size` live under `publishes[].uploads[]`, added by `tools/publish.py` at publish time.
+- `outputs[].deb_files[]` records two digests from `tools/canonical-deb-hash.py`. `key_independent_sha256` is what a third party without the signing key must be able to match — a mismatch there is always a failure. `canonical_sha256` additionally covers the three paths whose bytes depend on which key built the kernel (`boot/vmlinuz-*`, `boot/System.map-*`, `usr/lib/debug/**`) and their `md5sums` lines; matching it needs the private key, so a difference is reported as expected rather than as a failure. From schema 4, neither digest sees a module signature through `control/md5sums` or `Installed-Size` (see the table above). `repro_class` says which kind of package this is, derived from the content rather than the name. The signed-`.deb` `sha256`/`size` live under `publishes[].uploads[]`, added by `tools/publish.py` at publish time.
 - `sbom` records the build container's package set + toolchain versions (a step toward toolchain pinning).
 
 ## What's intentionally NOT in the manifest
@@ -108,9 +110,9 @@ Notes on the schema:
 
 1. Reads `releases/v7.0.10-hardened1.5/manifest.json`.
 2. Verifies every input URL still resolves and hashes match.
-3. Rebuilds in the recorded container image (by digest).
+3. Rebuilds in the recorded container image (by digest), under the recorded `build_dir`, with the recorded `source_date_epoch`.
 4. Hashes each rebuilt `.deb` with `tools/canonical-deb-hash.py` (no repack, so no dependence on the local `dpkg`/`xz`).
-5. Compares per package against `key_independent_sha256` (hard pass/fail) and `canonical_sha256` (pass/fail only with `REPRO_SIGNING_KEY_PATH`, otherwise reported as not verifiable).
+5. Compares per package against `key_independent_sha256` (hard pass/fail, except `UNVERIF` for the kernel-built packages of a schema-3 release) and `canonical_sha256` (pass/fail only with `REPRO_SIGNING_KEY_PATH`, otherwise reported as not verifiable).
 6. On mismatch, writes per-member JSON to `repro-diff/` naming the archive member that differs.
 
 A diverging rebuild is a reproducibility bug worth fixing before the next release.
