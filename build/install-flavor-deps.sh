@@ -11,9 +11,10 @@
 #                     gcc and binutils, the cross GCC plugin headers (without
 #                     them kconfig hides CONFIG_GCC_PLUGINS and the fidelity
 #                     assertion fails on the stackleak pins), and the target's
-#                     libssl-dev, which the kernel's debian/control lists as a
-#                     build dependency of the cross-built linux-headers
-#                     package (its host programs are rebuilt for the target).
+#                     C runtime and libssl-dev, which the cross-built
+#                     linux-headers package needs: bindeb-pkg rebuilds its
+#                     host programs (fixdep, modpost, sign-file) for the
+#                     target.
 #   QEMU smoke test   when the descriptor sets qemu_smoke: the system
 #                     emulator, cpio, and a static busybox for the target
 #                     architecture (downloaded, not installed: it is a
@@ -49,9 +50,15 @@ if [[ $host_arch != "$deb_arch" ]]; then
     echo "flavor $FLAVOR: cross-compiling for $deb_arch ($triplet) on $host_arch with gcc-$gcc_major"
     # gcc-<triplet> (not gcc-N-<triplet>): the kernel's generated
     # debian/control names it as the cross build's compiler dependency.
+    # libc6-dev-<arch>-cross is only a Recommends of the cross compiler, but
+    # the linux-headers package rebuilds its host programs (fixdep, modpost,
+    # sign-file, ...) as target binaries, which links against the target C
+    # runtime; without it bindeb-pkg fails at the very end ("cannot find
+    # Scrt1.o").
     pkgs+=(
         "gcc-${triplet}" "binutils-${triplet}"
         "gcc-${gcc_major}-plugin-dev-${triplet}"
+        "libc6-dev-${deb_arch}-cross"
         "libssl-dev:${deb_arch}"
     )
     foreign=1
