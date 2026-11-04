@@ -20,8 +20,12 @@
 #                           signing certificate into .builtin_trusted_keys and
 #                           sign-file needs the private half -- the published
 #                           .der cannot substitute. Set REPRO_SIGNING_KEY_PATH
-#                           if you hold the real key; otherwise a difference
-#                           here is reported as expected, not as a failure.
+#                           to a PEM holding the real private key and its
+#                           certificate if you have them (it is mounted
+#                           read-only into the rebuild, which signs with it);
+#                           otherwise the rebuild signs with a throwaway key
+#                           and a difference here is reported as expected,
+#                           not as a failure.
 #
 # Both digests come from tools/canonical-deb-hash.py, which never repacks a
 # .deb, so the verdict does not depend on the local dpkg/liblzma version.
@@ -256,6 +260,30 @@ case $build_arch in
     *) echo "manifest build_arch $build_arch has no Docker platform here" >&2; exit 1 ;;
 esac
 
+# The project's real signing key, if the verifier holds it (see the verdict).
+# It is bind-mounted read-only at a fixed path and signed with in place: never
+# copied into the build dir, and only its path is ever printed. Check it here,
+# not after 10 minutes of fetching. Every flavor needs it only for the module
+# signatures and the cert kbuild embeds; the flavor's image_signing does not
+# matter here. sign-debs.sh's sbsign (amd64) runs after the build, and
+# canonical-deb-hash.py strips that layer from both sides. pi5 ("none")
+# never signs its image.
+key_mount=()
+if [[ -n ${REPRO_SIGNING_KEY_PATH:-} ]]; then
+    key_file=$REPRO_SIGNING_KEY_PATH
+    [[ -f $key_file && -r $key_file ]] || {
+        echo "REPRO_SIGNING_KEY_PATH is not a readable file: $key_file" >&2; exit 1; }
+    if ! grep -q -- 'PRIVATE KEY-----' "$key_file" ||
+       ! grep -q -- '-----BEGIN CERTIFICATE-----' "$key_file"; then
+        echo "REPRO_SIGNING_KEY_PATH must be one PEM holding the private key and its" >&2
+        echo "certificate (build-kernel.yml concatenates them the same way): $key_file" >&2
+        exit 1
+    fi
+    key_file="$(cd "$(dirname "$key_file")" && pwd -P)/$(basename "$key_file")"
+    key_mount=(-v "$key_file:/run/repro-signing.pem:ro" -e REPRO_SIGNING_KEY=/run/repro-signing.pem)
+    echo "signing with $key_file (mounted read-only)"
+fi
+
 rebuild_work="$work/build"
 mkdir -p "$rebuild_work"
 
@@ -279,6 +307,7 @@ docker run --rm \
     -e PACKAGING_REVISION="$packaging_revision" \
     -e SOURCE_DATE_EPOCH="$source_date_epoch" \
     "${seed_env[@]}" \
+    ${key_mount[@]+"${key_mount[@]}"} \
     "$container_image" \
     bash -euo pipefail -c '
         apt-get update -q
@@ -315,26 +344,33 @@ docker run --rm \
         /repo/build/fetch-seed.sh
         # CONFIG_MODULE_SIG_ALL=y means make signs every module, so the build
         # needs a key+cert PEM. A third-party verifier does not have the
-        # project key, so generate a throwaway. RSA + SHA-256 matches
-        # CONFIG_MODULE_SIG_KEY_TYPE_RSA / CONFIG_MODULE_SIG_SHA256.
+        # project key, so by default generate a throwaway. RSA + SHA-256
+        # matches CONFIG_MODULE_SIG_KEY_TYPE_RSA / CONFIG_MODULE_SIG_SHA256.
         #
         # This makes the rebuild WORK but not byte-identical on the artifacts
         # that embed the certificate: kbuild links the cert DER into
         # .builtin_trusted_keys, so boot/vmlinuz-*, boot/System.map-* and the
         # -dbg package differ by the certificate. That is inherent -- signing
         # needs the PRIVATE half, so handing over the published .der cannot
-        # help -- and localizing it (rather than pretending it away) is the
-        # follow-up work on the comparison itself. Set REPRO_SIGNING_KEY_PATH
-        # to compare those artifacts too, if you hold the real key.
-        if [ -n "${REPRO_SIGNING_KEY_PATH:-}" ]; then
-            cp "$REPRO_SIGNING_KEY_PATH" "$WORKDIR/verifier-signing.pem"
+        # help -- and is why the verdict splits the two digests.
+        #
+        # With REPRO_SIGNING_KEY_PATH, the host mounts the real key read-only
+        # at $REPRO_SIGNING_KEY and the build signs with it there.
+        # configure-kernel.sh installs the one in-tree copy kbuild reads,
+        # build-debs.sh shreds it on success, and this trap removes it on
+        # any failure (as build-kernel.yml does), so no private key is left
+        # in the build dir.
+        trap "rm -f $WORKDIR/linux-*/certs/unredacted-signing.pem" EXIT
+        if [ -n "${REPRO_SIGNING_KEY:-}" ]; then
+            export MODULE_SIG_KEY_PATH="$REPRO_SIGNING_KEY"
         else
             openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 36500 \
                 -batch -subj "/CN=repro-check throwaway module-signing key/" \
                 -outform PEM -out "$WORKDIR/verifier-signing.pem" \
                 -keyout "$WORKDIR/verifier-signing.pem" 2>/dev/null
+            export MODULE_SIG_KEY_PATH="$WORKDIR/verifier-signing.pem"
         fi
-        export MODULE_SIG_KEY_PATH="$WORKDIR/verifier-signing.pem"
+        echo "module-signing key: $MODULE_SIG_KEY_PATH"
         /repo/build/configure-kernel.sh
         /repo/build/build-debs.sh
     '
@@ -452,6 +488,8 @@ while IFS=$'\t' read -r name exp_canon exp_indep; do
         printf '  OK       %s  exact\n' "$name"
         exact=$((exact + 1))
     elif (( have_real_key )); then
+        python3 "$repo_root/tools/canonical-deb-hash.py" --json "$rebuild_path" \
+            > "repro-diff/${name}.rebuilt.json" 2>/dev/null || true
         printf '  FAIL     %s  key-dependent members differ despite REPRO_SIGNING_KEY_PATH\n' "$name" >&2
         fails=$((fails + 1))
     else
