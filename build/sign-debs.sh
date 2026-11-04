@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # Sign the kernel image (vmlinuz) in the built linux-image .deb for
-# UEFI Secure Boot. Modules are NOT signed here; they were signed at
-# build time via CONFIG_MODULE_SIG_KEY in configure-kernel.sh, which
-# avoids the decompress/sign/recompress dance and embeds our cert in
-# the kernel's .builtin_trusted_keys.
+# UEFI Secure Boot, if the flavor's descriptor asks for it. Modules are NOT
+# signed here; they were signed at build time via CONFIG_MODULE_SIG_KEY in
+# configure-kernel.sh, which avoids the decompress/sign/recompress dance and
+# embeds our cert in the kernel's .builtin_trusted_keys.
+#
+# The descriptor's `image_signing` (configs/flavors/$FLAVOR.toml) decides:
+#   sbsign   sign every vmlinuz with sbsign and verify it (amd64)
+#   none     leave the image as built: firmware that does not do UEFI Secure
+#            Boot (the Raspberry Pi) has nothing to verify an Authenticode
+#            signature with, and sbsign cannot sign a non-PE Image.gz.
+#            The packages are still checked for, so a naming drift fails
+#            here either way.
 #
 # Run after build/build-debs.sh. Operates in-place on the .debs in
 # $WORKDIR.
 #
 # Inputs from env:
 #   WORKDIR              directory containing built .deb files
-#   SIGNING_KEY_PATH     PEM-encoded private key
-#   SIGNING_CERT_PATH    matching X.509 certificate (PEM)
+#   FLAVOR               build flavor, configs/flavors/<FLAVOR>.toml
+#   SIGNING_KEY_PATH     PEM-encoded private key        (image_signing = sbsign)
+#   SIGNING_CERT_PATH    matching X.509 certificate (PEM) (image_signing = sbsign)
 #
 # Trust model: the signing key is stored in Forgejo's secret store, not
 # an HSM. Forgejo host compromise implies signing-key compromise; the
@@ -21,11 +30,23 @@ set -euo pipefail
 umask 022
 
 : "${WORKDIR:?WORKDIR required}"
-: "${SIGNING_KEY_PATH:?SIGNING_KEY_PATH required}"
-: "${SIGNING_CERT_PATH:?SIGNING_CERT_PATH required}"
+: "${FLAVOR:?FLAVOR required (a configs/flavors/<FLAVOR>.toml)}"
 
-[[ -f $SIGNING_KEY_PATH ]] || { echo "missing signing key: $SIGNING_KEY_PATH" >&2; exit 1; }
-[[ -f $SIGNING_CERT_PATH ]] || { echo "missing signing cert: $SIGNING_CERT_PATH" >&2; exit 1; }
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+image_signing=$(python3 "$repo_root/tools/flavors.py" get "$FLAVOR" image_signing)
+case "$image_signing" in
+    sbsign)
+        : "${SIGNING_KEY_PATH:?SIGNING_KEY_PATH required}"
+        : "${SIGNING_CERT_PATH:?SIGNING_CERT_PATH required}"
+        [[ -f $SIGNING_KEY_PATH ]] || { echo "missing signing key: $SIGNING_KEY_PATH" >&2; exit 1; }
+        [[ -f $SIGNING_CERT_PATH ]] || { echo "missing signing cert: $SIGNING_CERT_PATH" >&2; exit 1; }
+        ;;
+    none) ;;
+    # tools/flavors.py already rejects any other value; this is the backstop
+    # against a value added there without an implementation here.
+    *) echo "flavor $FLAVOR: unknown image_signing '$image_signing'" >&2; exit 2 ;;
+esac
+echo "flavor $FLAVOR: image_signing = $image_signing"
 
 cd "$WORKDIR"
 
@@ -45,6 +66,12 @@ images_processed=0
 for deb in linux-image-[0-9]*-hardened-unredacted-*_*.deb; do
     [[ -f $deb ]] || continue
     case "$deb" in *-dbg_*) continue;; esac
+
+    if [[ $image_signing == none ]]; then
+        echo "not signing the image in $deb (image_signing = none; modules were signed at build time)"
+        images_processed=$((images_processed + 1))
+        continue
+    fi
 
     echo "signing vmlinuz in $deb"
     extracted=$(mktemp -d)
@@ -81,6 +108,8 @@ done
 
 # A zero match means the naming convention drifted and the whole signing
 # step silently no-op'd — which would publish an entirely unsigned kernel.
+# Checked for image_signing = none too: there it is the only proof that the
+# step looked at the package it was meant to leave alone.
 if (( images_processed == 0 )); then
     echo "no concrete linux-image .deb matched the signing glob in $WORKDIR;" >&2
     echo "nothing was signed -- check package naming before publishing" >&2

@@ -17,7 +17,7 @@
 # Bump procedure: see tools/bump-seed.sh and
 # docs/operators/config-architecture.md. The build's drift behaviour is
 # governed by the fidelity assertion in build/configure-kernel.sh, which
-# enforces every line in configs/intent.config lands in the final .config
+# enforces every line of the intent fragments (configs/intent.*.config) lands in the final .config
 # after merge + olddefconfig. Symbols we INHERIT from the seed (not pinned in
 # intent) are guarded separately by tools/check-hardening-drift.sh. The seed
 # routinely LAGS the kernel version — that is expected, handled by

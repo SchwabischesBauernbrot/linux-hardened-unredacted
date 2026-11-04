@@ -104,9 +104,9 @@ Pangolin needs only the ordinary Forgejo reverse-proxy setup for `git.unredacted
 
 ## 7. Reconcile our seed + intent against upstream
 
-The build composes `.config` from anthraxx's pinned `config.x86_64` seed plus `configs/intent.config`. Per kernel bump, two failure modes are possible at configure time:
+The build composes `.config` from anthraxx's pinned `config.x86_64` seed plus the intent fragments `configs/intent.common.config` and `configs/intent.x86_64.config` (the amd64 flavor's list, in `configs/flavors/amd64.toml`). Per kernel bump, two failure modes are possible at configure time:
 
-- **Fidelity miss:** a line in `configs/intent.config` didn't land in the final `.config` after merge+olddefconfig. The configure step aborts naming the symbol. Usually means the seed's dependency graph shifted (e.g. a parent symbol flipped off, masking our child pin) or the symbol was renamed upstream. Fix: pin the parent in `intent.config`, or update `intent.config`+`POLICY.md` to the new name.
+- **Fidelity miss:** an intent line didn't land in the final `.config` after merge+olddefconfig. The configure step aborts naming the symbol. Usually means the seed's dependency graph shifted (e.g. a parent symbol flipped off, masking our child pin) or the symbol was renamed upstream. Fix: pin the parent in the same fragment, or update the fragment + `POLICY.md` to the new name.
 - **Anthraxx changed config.x86_64 in a way we want to adopt:** not detected by the build (the pin is static). Run `tools/reconcile-vs-anthraxx.sh` to see hardening-relevant deltas; `tools/bump-seed.sh <commit-or-tag>` to update the pin if you want to adopt them.
 
 ```
@@ -121,7 +121,7 @@ tools/reconcile-vs-anthraxx.sh
 tools/bump-seed.sh --pin-file configs/seeds/7.1.toml 7.1.4.hardened1-1
 ```
 
-The `intent-matches-policy` CI check (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between `configs/intent.config` and `configs/POLICY.md` — update both together when changing one. Full design in [config-architecture.md](config-architecture.md).
+The `intent-matches-policy` CI check (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between the intent fragments (`configs/intent.*.config`) and `configs/POLICY.md` — update both together when changing one. Full design in [config-architecture.md](config-architecture.md).
 
 ## 8. Push a stub test tag
 
@@ -137,7 +137,7 @@ git push origin v6.6.0-hardened1
 **What will probably fail the first time:**
 
 - Some package missing from `containers/Dockerfile.debian-trixie-amd64`. Add it, rebuild the image.
-- The configure step's fidelity assertion aborts because an intent line didn't land — inspect the symbol named in the error, decide whether to pin a parent symbol in `configs/intent.config`, update the intent value to match what landed, or (rarely) bump the seed pin via `tools/bump-seed.sh` to inherit anthraxx's choice.
+- The configure step's fidelity assertion aborts because an intent line didn't land — inspect the symbol named in the error, decide whether to pin a parent symbol in the same intent fragment, update the intent value to match what landed, or (rarely) bump the seed pin via `tools/bump-seed.sh` to inherit anthraxx's choice.
 - Pangolin's allow rule for the runner IP isn't quite right; CI uploads 403. Re-check step 6.
 - The signing step fails because the secret was loaded with stray whitespace. Re-add the secret without the trailing newline.
 - `debian/patches/` was already empty in this kernel version, so the truncate is a no-op. Fine.

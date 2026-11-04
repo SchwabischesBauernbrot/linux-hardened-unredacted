@@ -1,6 +1,8 @@
 # Kernel configuration policy
 
-The audit trail for every hardening choice we take a position on. The build seeds the kernel config from anthraxx's Arch linux-hardened `config.x86_64` (pinned by sha256 + signed-commit-verified in `configs/upstream-seed.toml`) and layers `configs/intent.config` on top — the symbols below. The CI `intent-matches-policy` job (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between this file and `configs/intent.config` (every kconfig assertion here has a matching pin there, and vice versa); the build's fidelity assertion (`build/configure-kernel.sh`) confirms every intent line lands in the final `.config` after `olddefconfig`. Symbols anthraxx already sets the way we want flow through from the seed automatically — defense-in-depth pins below catch any future seed regression that would lose one.
+The audit trail for every hardening choice we take a position on. The build seeds the kernel config from anthraxx's Arch linux-hardened `config.x86_64` (pinned by sha256 + signed-commit-verified in `configs/seeds/<X.Y>.toml`) and layers the intent fragments on top — the symbols below. The CI `intent-matches-policy` job (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between this file and the fragments (every kconfig assertion here has a matching pin there, and vice versa); the build's fidelity assertion (`build/configure-kernel.sh`) confirms every intent line lands in the final `.config` after `olddefconfig`. Symbols anthraxx already sets the way we want flow through from the seed automatically — defense-in-depth pins below catch any future seed regression that would lose one.
+
+**Where the pins live.** The intent is split by architecture. `configs/intent.common.config` holds every position all flavors ship; `configs/intent.x86_64.config` holds the nine that only exist on x86: `CONFIG_RANDOMIZE_MEMORY`, `CONFIG_LEGACY_VSYSCALL_NONE`, `CONFIG_MODIFY_LDT_SYSCALL` (off), `CONFIG_MITIGATION_PAGE_TABLE_ISOLATION`, `CONFIG_MITIGATION_RETPOLINE`, `CONFIG_MITIGATION_RETHUNK`, `CONFIG_X86_KERNEL_IBT`, `CONFIG_X86_USER_SHADOW_STACK` and `CONFIG_X86_UMIP`. Each build flavor's descriptor (`configs/flavors/<flavor>.toml`) lists the fragments it merges, common first; amd64 merges both. The entries below are written per topic, not per file, and each x86-only entry says so.
 
 **Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
 
@@ -46,7 +48,7 @@ Randomizes the order pages are placed into the page allocator's free lists. Mode
 
 ### `CONFIG_RANDOMIZE_BASE=y`, `CONFIG_RANDOMIZE_MEMORY=y`
 
-KASLR for the kernel image and the direct-mapping region. Matches linux-hardened upstream.
+KASLR for the kernel image and the direct-mapping region. Matches linux-hardened upstream. `RANDOMIZE_MEMORY` is x86-only (pinned in `configs/intent.x86_64.config`); `RANDOMIZE_BASE` is common.
 
 ### `CONFIG_KFENCE=y`
 
@@ -191,11 +193,11 @@ Checkpoint/restore (CRIU) exposes additional process-introspection and state-man
 
 ### `CONFIG_LEGACY_VSYSCALL_NONE=y`
 
-Disables the legacy `vsyscall` page entirely. Modern glibc has used `vDSO` for over a decade; only very old static binaries need vsyscall. (The `X86_VSYSCALL_EMULATION` machinery stays compiled in, matching upstream/Arch, but is inactive with the mode set to none.) Matches linux-hardened upstream.
+Disables the legacy `vsyscall` page entirely. Modern glibc has used `vDSO` for over a decade; only very old static binaries need vsyscall. (The `X86_VSYSCALL_EMULATION` machinery stays compiled in, matching upstream/Arch, but is inactive with the mode set to none.) Matches linux-hardened upstream. x86-only; pinned in `configs/intent.x86_64.config`.
 
 ### `CONFIG_MODIFY_LDT_SYSCALL=n`
 
-The `modify_ldt` syscall has security history and no modern use; disable it. (The even older `uselib` syscall — USELIB — is already absent/unreachable in our config and no longer needs an explicit pin.) Matches linux-hardened upstream.
+The `modify_ldt` syscall has security history and no modern use; disable it. (The even older `uselib` syscall — USELIB — is already absent/unreachable in our config and no longer needs an explicit pin.) Matches linux-hardened upstream. The LDT is an x86 structure, so this is pinned in `configs/intent.x86_64.config`.
 
 ### `CONFIG_LEGACY_PTYS=n`
 
@@ -249,21 +251,21 @@ Blocks on-demand autoloading of TTY line disciplines (a historic local-privilege
 
 ## Container NAT (project pin)
 
-`configs/intent.config` pins `CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m` and `CONFIG_NETFILTER_XT_NAT=m`. (There is no separate per-distro override file today — per-distro config layering is Phase-2 scaffolding; these live in the single `intent.config` overlay.)
+`configs/intent.common.config` pins `CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m` and `CONFIG_NETFILTER_XT_NAT=m`. (The intent is split per architecture, not per distro; there is no per-distro override fragment, and container NAT is wanted on every flavor.)
 
 ### `CONFIG_NETFILTER_XT_TARGET_MASQUERADE=m`, `CONFIG_NETFILTER_XT_NAT=m`
 
-Container runtimes (Docker, Podman, containerd) program their bridge NAT through the `iptables-nft` backend, which resolves the `MASQUERADE` and `SNAT`/`DNAT` rule targets to the generic xtables modules `xt_MASQUERADE` and `xt_nat`. The kernel tree advances ahead of anthraxx's pinned `config.x86_64` seed (the seed routinely lags the built version); the 6.12 → 7.0 Kconfig refactor removed the old `IP_NF_TARGET_MASQUERADE` symbol that used to `select` the xt MASQUERADE target, so `olddefconfig` left it off even though its dependency (`NF_NAT`) is met. Result: `dockerd` aborted at startup — `Extension MASQUERADE revision 0 not supported, missing kernel module`. We pin both generic xt targets explicitly in `intent.config` so they no longer hinge on a symbol that disappeared upstream. These are loadable modules and add no attack surface until loaded; a container-compat fix, not a hardening choice.
+Container runtimes (Docker, Podman, containerd) program their bridge NAT through the `iptables-nft` backend, which resolves the `MASQUERADE` and `SNAT`/`DNAT` rule targets to the generic xtables modules `xt_MASQUERADE` and `xt_nat`. The kernel tree advances ahead of anthraxx's pinned `config.x86_64` seed (the seed routinely lags the built version); the 6.12 → 7.0 Kconfig refactor removed the old `IP_NF_TARGET_MASQUERADE` symbol that used to `select` the xt MASQUERADE target, so `olddefconfig` left it off even though its dependency (`NF_NAT`) is met. Result: `dockerd` aborted at startup — `Extension MASQUERADE revision 0 not supported, missing kernel module`. We pin both generic xt targets explicitly in the common intent fragment so they no longer hinge on a symbol that disappeared upstream. These are loadable modules and add no attack surface until loaded; a container-compat fix, not a hardening choice.
 
 The broader legacy xtables stacks (`ip_tables` / `ip6_tables` / `ebtables` / `arptables` and their mangle/raw/security tables) deliberately stay off: traffic routes through nftables, so they are vestigial for our targets, and omitting them keeps the attack surface smaller. Re-enable a specific legacy module here only when a concrete workload is shown to need `iptables-legacy`.
 
 ## Inherited-hardening insurance pins
 
-These symbols are all set identically by anthraxx's seed and appear in the shipped `final.config`; we pin them in `configs/intent.config` so a future seed bump cannot silently drop one (previously they were covered only by the release-to-release `tools/check-hardening-drift.sh`, not the configure-time fidelity assertion). None changes behaviour.
+These symbols are all set identically by anthraxx's seed and appear in the shipped `final.config`; we pin them in the intent fragments so a future seed bump cannot silently drop one (previously they were covered only by the release-to-release `tools/check-hardening-drift.sh`, not the configure-time fidelity assertion). None changes behaviour.
 
 ### `CONFIG_CPU_MITIGATIONS=y`, `CONFIG_MITIGATION_PAGE_TABLE_ISOLATION=y`, `CONFIG_MITIGATION_RETPOLINE=y`, `CONFIG_MITIGATION_RETHUNK=y`
 
-`CONFIG_CPU_MITIGATIONS=y` is the master switch for every per-vulnerability CPU mitigation; losing it is the compile-time equivalent of booting `mitigations=off`. The other three are the structural mitigations the rest build on: KPTI (Meltdown), retpoline and return-thunk (Spectre-v2 / retbleed). We deliberately do **not** pin the ~21 per-CPU-vulnerability mitigation symbols (SRSO, GDS, RFDS, SPECTRE_BHI, …) — they are added or renamed almost every kernel release and are gated by the master switch, so pinning them would only produce spurious fidelity-assertion failures on each bump. Matches anthraxx.
+`CONFIG_CPU_MITIGATIONS=y` is the master switch for every per-vulnerability CPU mitigation; losing it is the compile-time equivalent of booting `mitigations=off`, on any architecture, so it is in the common fragment. The other three are the x86 structural mitigations the rest build on, pinned in `configs/intent.x86_64.config`: KPTI (Meltdown), retpoline and return-thunk (Spectre-v2 / retbleed). We deliberately do **not** pin the ~21 per-CPU-vulnerability mitigation symbols (SRSO, GDS, RFDS, SPECTRE_BHI, …) — they are added or renamed almost every kernel release and are gated by the master switch, so pinning them would only produce spurious fidelity-assertion failures on each bump. Matches anthraxx.
 
 ### `CONFIG_LSM="landlock,lockdown,yama,integrity,bpf"`, `CONFIG_SECURITY_YAMA=y`, `CONFIG_SECURITY_LANDLOCK=y`, `CONFIG_SECURITY_LOADPIN=y`, `CONFIG_SECURITY_LOADPIN_ENFORCE=y`, `CONFIG_SECURITY_SAFESETID=y`
 
@@ -277,11 +279,11 @@ Be precise about what is **active**, because compiled-in and active are differen
 
 Activating LoadPin is deliberately **not** treated as a documentation fix. With `LOADPIN_ENFORCE=y` the kernel pins kernel-file loads (modules, firmware) to the filesystem of the first such load and refuses any from elsewhere; combined with `MODULE_SIG_FORCE=y` there is no soft-fail path. On unknown user hardware — initramfs→root transitions, a separate `/usr`, firmware or modules on a distinct mount, DKMS modules built after boot — the failure mode ranges from "a module refuses to load" to "does not boot", and this project has no boot-test farm. Turning it on is a feature with a rollout (boot matrix, an `docs/users/incompatibilities.md` entry, a release-note warning), tracked as an open decision in `DECISIONS.md`, not a side effect of correcting this paragraph.
 
-Note that `tools/check-hardening-drift.sh` cannot protect the `CONFIG_LSM` string at all — it only compares `=y`/`=m` symbols and skips value-only ones by design. The fidelity assertion is the only thing holding that value.
+Two checks hold the `CONFIG_LSM` string. The fidelity assertion holds it to the pinned value on every build. `tools/check-hardening-drift.sh` compares it, with three other hardening value symbols (`ARCH_MMAP_RND_BITS`, `ARCH_MMAP_RND_COMPAT_BITS`, `KFENCE_SAMPLE_INTERVAL`), against the previous release of the same flavor and line, so changing the pin itself also needs a deliberate `ALLOW_HARDENING_REGRESSION=1` on the first build after.
 
 ### `CONFIG_X86_KERNEL_IBT=y`, `CONFIG_X86_USER_SHADOW_STACK=y`
 
-Hardware CET: IBT is coarse forward-edge control-flow integrity via `endbr` landing pads (the GCC-compatible counterpart to the Clang-only kernel CFI we cannot build), and the user shadow stack gives backward-edge protection for userspace. Both no-op gracefully on pre-CET CPUs. Matches anthraxx.
+Hardware CET: IBT is coarse forward-edge control-flow integrity via `endbr` landing pads (the GCC-compatible counterpart to the Clang-only kernel CFI we cannot build), and the user shadow stack gives backward-edge protection for userspace. Both no-op gracefully on pre-CET CPUs. Matches anthraxx. x86-only; pinned in `configs/intent.x86_64.config`.
 
 ### `CONFIG_IOMMU_DEFAULT_DMA_STRICT=y`, `# CONFIG_IOMMU_DEFAULT_PASSTHROUGH is not set`
 
@@ -297,7 +299,7 @@ Heap-hardening companions to the already-pinned slab options: partitioned kmallo
 
 ### `CONFIG_STACKPROTECTOR=y`, `CONFIG_X86_UMIP=y`, `CONFIG_RESET_ATTACK_MITIGATION=y`
 
-`STACKPROTECTOR` is the parent of the already-pinned `STACKPROTECTOR_STRONG`. UMIP blocks userspace `SGDT` / `SIDT` / `SLDT` / `SMSW` / `STR` (KASLR-leak primitives). The reset-attack mitigation asks firmware to overwrite memory on an unclean reset (cold-boot mitigation). Match anthraxx.
+`STACKPROTECTOR` is the parent of the already-pinned `STACKPROTECTOR_STRONG`. UMIP blocks userspace `SGDT` / `SIDT` / `SLDT` / `SMSW` / `STR` (KASLR-leak primitives); it is x86-only and pinned in `configs/intent.x86_64.config`. The reset-attack mitigation asks firmware to overwrite memory on an unclean reset (cold-boot mitigation). Match anthraxx.
 
 ## Additional hardening (beyond anthraxx)
 
@@ -321,11 +323,11 @@ SELinux is compiled in but not part of our active `CONFIG_LSM` stack, so these a
 
 ## Review process
 
-The kernel `.config` is composed from anthraxx's pinned `config.x86_64` seed plus `configs/intent.config` (full design in [config-architecture.md](../docs/operators/config-architecture.md)). Two build-time gates protect it:
+The kernel `.config` is composed from anthraxx's pinned `config.x86_64` seed plus the intent fragments the flavor descriptor lists (for amd64, `configs/intent.common.config` then `configs/intent.x86_64.config`; full design in [config-architecture.md](../docs/operators/config-architecture.md)). Two build-time gates protect it:
 
-1. **Fidelity assertion** (`build/configure-kernel.sh`): every line in `configs/intent.config` must appear verbatim in the final `.config` after merge + `olddefconfig`, or the build aborts — catching an intent pin that silently fails to land (a dependency conflict, an upstream rename like `STACKLEAK` → `KSTACK_ERASE`, or a version-skewed seed).
-2. **Hardening-drift guard** (`tools/check-hardening-drift.sh`, run as a step in `build-kernel.yml`): fails the build if a hardening symbol that was *enabled* in the most recent released `final.config` is no longer enabled. This covers the symbols we *inherit* from the seed (not pinned in `intent.config`), which the fidelity assertion does not. Set `ALLOW_HARDENING_REGRESSION=1` to override a reviewed, intentional drop; the next release's `final.config` then becomes the new baseline.
+1. **Fidelity assertion** (`build/configure-kernel.sh`): every line of every merged fragment must appear verbatim in the final `.config` after merge + `olddefconfig`, or the build aborts — catching an intent pin that silently fails to land (a dependency conflict, an upstream rename like `STACKLEAK` → `KSTACK_ERASE`, or a version-skewed seed).
+2. **Hardening-drift guard** (`tools/check-hardening-drift.sh`, run as a step in `build-kernel.yml`): fails the build if a hardening symbol that was *enabled* in the most recent released `final.config` of the same flavor and line is no longer enabled, or if one of the hardening value symbols (`ARCH_MMAP_RND_BITS`, `ARCH_MMAP_RND_COMPAT_BITS`, `LSM`, `KFENCE_SAMPLE_INTERVAL`) changed value. The enabled-symbol check covers the symbols we *inherit* from the seed (not pinned in the intent), which the fidelity assertion does not. Set `ALLOW_HARDENING_REGRESSION=1` to override a reviewed, intentional drop or value change; the next release's `final.config` then becomes the new baseline.
 
-Every symbol pinned in `intent.config` must have a rationale entry in this file; `validate.yml`'s `intent-matches-policy` job enforces that bidirectional parity.
+Every symbol pinned in an intent fragment must have a rationale entry in this file; `validate.yml`'s `intent-matches-policy` job enforces that bidirectional parity over the union of the fragments.
 
 The container-NAT case above is exactly the silent-disappearance class the drift guard now catches (a symbol that vanished when an upstream Kconfig reshuffle removed a `select`). It compares against the prior *release*, not a distro stock config — the latter no longer applies since the seed is anthraxx's curated hardened config, not a distro's.

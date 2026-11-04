@@ -159,6 +159,13 @@ fi
 distro=$(jq -r '.outputs[0].distro' "$manifest")
 release=$(jq -r '.outputs[0].release' "$manifest")
 arch=$(jq -r '.outputs[0].arch' "$manifest")
+# The build flavor (configs/flavors/<flavor>.toml) every build script reads its
+# arch, source, seed type, intent and naming from. Manifests from before
+# flavors existed carry none and are amd64. The rebuild checks, inside the
+# container, that this checkout's descriptor still targets the distro/release/
+# arch the manifest records, so a descriptor edit cannot quietly rebuild
+# something else under the release's name.
+flavor=$(jq -r '.flavor // "amd64"' "$manifest")
 
 # Pin the HISTORICAL upstream-config seed from the manifest. The current
 # repo's per-line seed pins may have moved forward; for repro we must
@@ -184,7 +191,7 @@ seed_desc="$seed_commit ($seed_sha256)"
 rebuild_work="$work/build"
 mkdir -p "$rebuild_work"
 
-echo "rebuilding $version in $container_image (SOURCE_DATE_EPOCH=$source_date_epoch)"
+echo "rebuilding $version (flavor $flavor) in $container_image (SOURCE_DATE_EPOCH=$source_date_epoch)"
 echo "  pinned seed: $seed_desc"
 # The dep-install block mirrors .forgejo/workflows/build-kernel.yml's
 # "install build deps" step; keep the two in sync when either changes.
@@ -197,7 +204,7 @@ docker run --rm \
     -e KERNEL_VERSION="$kernel_version" \
     -e HARDENED_REVISION="$hardened_revision" \
     -e HARDENED_BASE_VERSION="$tag_base" \
-    -e DISTRO="$distro" -e RELEASE="$release" -e ARCH="$arch" \
+    -e FLAVOR="$flavor" -e EXPECT_TARGET="$distro/$release/$arch" \
     -e PACKAGING_REVISION="$packaging_revision" \
     -e SOURCE_DATE_EPOCH="$source_date_epoch" \
     "${seed_env[@]}" \
@@ -217,11 +224,17 @@ docker run --rm \
         # gcc plugin headers. build-dep does NOT pull these in; without them
         # kconfig hides the whole GCC_PLUGINS subtree, so configure-kernel.sh
         # fidelity-asserts a MISS on CONFIG_GCC_PLUGINS (pinned in
-        # intent.config) and aborts -> the rebuild produces no .debs and the
+        # intent.common.config) and aborts -> the rebuild produces no .debs and the
         # repro check fails before it can compare anything. Mirrors
         # build-kernel.yml exactly; keep the two in sync.
         apt-get install -y --no-install-recommends \
             "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev"
+        flavor_get() { python3 /repo/tools/flavors.py get "$FLAVOR" "$1"; }
+        target="$(flavor_get distro)/$(flavor_get release)/$(flavor_get arch)"
+        if [ "$target" != "$EXPECT_TARGET" ]; then
+            echo "flavor $FLAVOR builds $target, but the manifest records $EXPECT_TARGET" >&2
+            exit 1
+        fi
         /repo/build/fetch-sources.sh
         /repo/build/apply-patches.sh
         /repo/build/fetch-seed.sh

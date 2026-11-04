@@ -1,0 +1,69 @@
+# Build flavor: amd64 — kernel.org stable + anthraxx's linux-hardened patch,
+# seeded from anthraxx's Arch config.x86_64, for Debian trixie on x86_64 with
+# UEFI Secure Boot.
+#
+# Every flavor-dependent decision in build/*.sh, tools/*.sh and
+# .forgejo/workflows/build-kernel.yml reads from this file (via
+# tools/flavors.py, which validates it on every read) instead of switching on
+# ARCH. The field reference is in docs/operators/config-architecture.md
+# (section "Flavors"); the design and the later pi5/arm64 flavors are in
+# docs/operators/flavors.md.
+#
+# Changing a value here changes what amd64 ships. In particular `localversion`
+# is part of every package name and the /lib/modules path, and `intent` decides
+# which hardening pins the fidelity assertion enforces.
+
+name          = "amd64"
+
+# dpkg architecture (the .deb Architecture field and filename suffix) and the
+# kernel's ARCH= (arch/x86; there is no arch/amd64).
+arch          = "amd64"
+kernel_arch   = "x86_64"
+
+# The apt suite this flavor's packages are built for and published to.
+distro        = "debian"
+release       = "trixie"
+
+# Where the kernel tree comes from: the signed kernel.org tarball plus
+# anthraxx's signed patch (build/fetch-sources.sh, build/apply-patches.sh).
+source        = "kernelorg-tarball"
+
+# Which configs/lines.toml blocks this flavor builds: the ones whose `flavor`
+# is this value (blocks without one are amd64's). Decides the umbrella
+# meta-packages in build/build-debs.sh.
+lines         = "amd64"
+
+# Seed source for build/fetch-seed.sh: a signed commit in a git repo,
+# pinned per line in configs/seeds/<X.Y>.toml.
+seed_type     = "arch-git"
+
+# Intent fragments merged over the seed, in this order, by
+# build/configure-kernel.sh. The fidelity assertion checks the union.
+intent        = [
+    "configs/intent.common.config",
+    "configs/intent.x86_64.config",
+]
+
+# Appended to the kernel version to form the kernelrelease, so it names the
+# concrete packages (linux-image-7.2.13-hardened-unredacted-amd64) and
+# /lib/modules/<kernelrelease>.
+localversion  = "-hardened-unredacted-amd64"
+
+# Prefix in front of the release-tag grammar (vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P]).
+# amd64 owns the unprefixed tags; other flavors use "<name>-".
+tag_prefix    = ""
+
+# How build/sign-debs.sh treats the kernel image: "sbsign" signs vmlinuz for
+# UEFI Secure Boot; "none" leaves it (modules are always signed at build time).
+image_signing = "sbsign"
+
+# Symbols build/build-debs.sh requires =y before starting the 30+ minute
+# compile. sbsign needs a PE image, so EFI + EFI_STUB are mandatory with it.
+required_y    = ["CONFIG_X86_64", "CONFIG_EFI", "CONFIG_EFI_STUB"]
+
+# Boot-integration package built alongside the kernel ("" = none; GRUB and
+# the distro's kernel hooks handle amd64).
+boot_package  = ""
+
+# Boot the built kernel under QEMU in CI before signing (arm64 flavors).
+qemu_smoke    = false

@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Fetch + verify the upstream kernel-config seed for the kernel line being
-# built: anthraxx's Arch packaging config.x86_64, verified by git verify-commit
-# (against the pinned signer fingerprint) + sha256.
+# built. The flavor descriptor's `seed_type` (configs/flavors/$FLAVOR.toml)
+# picks the source; the only one implemented is
+#   arch-git   a config file at a signed commit of a git repo -- for amd64,
+#              anthraxx's Arch packaging config.x86_64 -- verified by
+#              git verify-commit (against the pinned signer fingerprint) +
+#              sha256.
 #
 # Seed selection (which pin file):
 #   - $SERIES set (X.Y derived from the build tag) + configs/seeds/$SERIES.toml
@@ -26,6 +30,7 @@
 #
 # Required env:
 #   WORKDIR    absolute writable directory
+#   FLAVOR     build flavor, configs/flavors/<FLAVOR>.toml (e.g. amd64)
 #
 # Optional env:
 #   SERIES                kernel line key (X.Y), selects configs/seeds/<X.Y>.toml
@@ -37,9 +42,19 @@ set -euo pipefail
 umask 022
 
 : "${WORKDIR:?WORKDIR required}"
+: "${FLAVOR:?FLAVOR required (a configs/flavors/<FLAVOR>.toml)}"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
+
+seed_type=$(python3 "$repo_root/tools/flavors.py" get "$FLAVOR" seed_type)
+# tools/flavors.py's validate refuses a descriptor asking for an unimplemented
+# seed type (apt-deb is Phase 2); this is the backstop.
+case "$seed_type" in
+    arch-git) ;;
+    *) echo "flavor $FLAVOR: seed_type '$seed_type' is not implemented by fetch-seed.sh" >&2; exit 2 ;;
+esac
+echo "seed type: $seed_type (flavor $FLAVOR)"
 
 [[ -d $WORKDIR ]] || { echo "WORKDIR $WORKDIR does not exist" >&2; exit 1; }
 
@@ -52,7 +67,7 @@ elif [[ -n "${SERIES:-}" ]]; then
     # symlink to the CURRENT stable line's seed — used to happen silently, and
     # it turns BOTH safety nets off at once:
     #
-    #   - the fidelity assertion still passes (configs/intent.config is
+    #   - the fidelity assertion still passes (the intent fragments are
     #     satisfied by either series' seed), and
     #   - the hardening-drift guard finds no releases/v<SERIES>.* baseline, so
     #     it SKIPS.
@@ -202,7 +217,7 @@ cp "$src" "$WORKDIR/upstream-seed.config"
 # bytes that were verified in a different step. Anything that mutated $WORKDIR
 # in between -- a compromised intermediate step, a poisoned runner cache --
 # would go undetected, and the seed sets every hardening default we do NOT pin
-# in configs/intent.config, so the fidelity assertion cannot see the swap.
+# in the intent fragments, so the fidelity assertion cannot see the swap.
 #
 # This is the symmetric guard to fetch-sources.sh/input-hashes.txt, which
 # apply-patches.sh re-checks for exactly this reason -- see the comment at

@@ -34,8 +34,14 @@ jobs:
       image: debian:trixie@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
     strategy:
       matrix:
-        target:
-          - { distro: debian, release: trixie, arch: amd64 }
+        # One entry per build flavor: configs/flavors/<flavor>.toml holds
+        # everything flavor-dependent (arch, distro/release, source, seed type,
+        # intent fragments, LOCALVERSION, tag prefix, image signing), read by
+        # the "resolve flavor" step below and by every build/*.sh script.
+        # A tag is built by the flavor whose tag_prefix it carries; amd64 owns
+        # the unprefixed tags this workflow triggers on. Adding a flavor with a
+        # prefix also means routing its tags here (docs/operators/flavors.md).
+        flavor: [amd64]
     steps:
       # This step must run BEFORE actions/checkout, because actions/
       # checkout is a JavaScript action and Forgejo's act runner invokes
@@ -114,6 +120,21 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # Load this matrix entry's flavor descriptor. tools/flavors.py validates
+      # every descriptor (schema, intent fragments, cross-flavor uniqueness)
+      # and refuses one that asks for something this pipeline does not build
+      # yet -- a QEMU smoke test or boot package nothing would run is a guard
+      # that silently does not exist. The scalar fields become step outputs
+      # for the steps below that need them outside a script.
+      - name: resolve flavor
+        id: flavor
+        env:
+          FLAVOR: ${{ matrix.flavor }}
+        run: |
+          set -euo pipefail
+          python3 tools/flavors.py validate
+          python3 tools/flavors.py gha-outputs "$FLAVOR" | tee -a "$GITHUB_OUTPUT"
+
       # A tag cut from a stale checkout is a perfectly valid tag on an old
       # commit, and the build goes GREEN while silently losing two properties:
       #
@@ -124,7 +145,7 @@ jobs:
       #      main has already advanced to a real same-line seed. The seed sets
       #      every UN-pinned hardening default, so this is a real config delta,
       #      not a cosmetic one; the fidelity assertion won't catch it because
-      #      configs/intent.config is still satisfied.
+      #      the intent fragments are still satisfied.
       #   2. It skips the hardening-drift guard entirely. That step picks its
       #      baseline from releases/ *in the tag's own tree*, and each release
       #      dir is added by the `publish:` commit that follows its build. A
@@ -190,9 +211,19 @@ jobs:
           # the injection happens at bash PARSE time, before the regex ever
           # runs, so the validation cannot protect the assignment that feeds it.
           REF_NAME: ${{ github.ref_name }}
+          # The flavor's tag prefix ("" for amd64; "<flavor>-" for the others).
+          TAG_PREFIX: ${{ steps.flavor.outputs.tag_prefix }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME:-$REF_NAME}"
+          # A tag belongs to exactly one flavor, by prefix. For amd64 the
+          # prefix is empty and the grammar below starts with "v", so a
+          # prefixed tag (pi5-v...) can never pass as an amd64 build.
+          if [[ $tag != "$TAG_PREFIX"* ]]; then
+            echo "tag $tag does not carry this flavor's tag prefix '$TAG_PREFIX'" >&2
+            exit 1
+          fi
+          tag=${tag#"$TAG_PREFIX"}
           # Fail loud on malformed tags. A typo'd tag would otherwise
           # silently feed garbage to wget in the next step.
           #
@@ -287,9 +318,7 @@ jobs:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
           HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
-          DISTRO: ${{ matrix.target.distro }}
-          RELEASE: ${{ matrix.target.release }}
-          ARCH: ${{ matrix.target.arch }}
+          FLAVOR: ${{ matrix.flavor }}
           WORKDIR: ${{ runner.temp }}/work
         run: |
           mkdir -p "$WORKDIR"
@@ -299,11 +328,13 @@ jobs:
         # Selects the per-line seed pin (configs/seeds/<series>.toml via
         # SERIES) — anthraxx's signed config.x86_64 for the stable line —
         # runs `git verify-commit` against the pinned key fpr, and
-        # sha256-verifies the bytes. Network-ON; results land in $WORKDIR for
-        # the network-isolated configure step below.
+        # sha256-verifies the bytes. The flavor's seed_type picks the fetcher.
+        # Network-ON; results land in $WORKDIR for the network-isolated
+        # configure step below.
         env:
           WORKDIR: ${{ runner.temp }}/work
           SERIES: ${{ steps.ver.outputs.series }}
+          FLAVOR: ${{ matrix.flavor }}
           # Escape hatch for a deliberate one-off build of a series that has no
           # configs/seeds/<X.Y>.toml yet. Unset (the default) makes that a hard
           # failure: silently falling back to the stable-line seed builds one
@@ -327,9 +358,7 @@ jobs:
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
           HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
           PACKAGING_REVISION: ${{ steps.ver.outputs.packaging }}
-          DISTRO: ${{ matrix.target.distro }}
-          RELEASE: ${{ matrix.target.release }}
-          ARCH: ${{ matrix.target.arch }}
+          FLAVOR: ${{ matrix.flavor }}
           # No REVISION here any more. It used to pass github.run_number to
           # build-debs.sh, which fed it to KBUILD_BUILD_VERSION and so into
           # UTS_VERSION inside vmlinux -- making two runs of the same tag differ
@@ -348,7 +377,7 @@ jobs:
           set -euo pipefail
           # Materialize the project signing key + cert into a tmpfs file.
           # configure-kernel.sh copies it to the FIXED in-tree path
-          # configs/intent.config pins (certs/unredacted-signing.pem) -- the
+          # configs/intent.common.config pins (certs/unredacted-signing.pem) -- the
           # .config value is a constant and is never rewritten, so no runner
           # path can leak into the shipped config. The build then signs every
           # module with our key and embeds our cert in .builtin_trusted_keys,
@@ -410,18 +439,21 @@ jobs:
 
       - name: hardening drift guard
         # configure-kernel.sh's fidelity assertion only covers the symbols
-        # pinned in configs/intent.config. The hardening symbols we inherit
-        # from anthraxx's seed (the LSMs, BPF_UNPRIV_DEFAULT_OFF, the
+        # pinned in the flavor's intent fragments. The hardening symbols we
+        # inherit from the seed (the LSMs, BPF_UNPRIV_DEFAULT_OFF, the
         # kstack/slab family, ...) are unchecked and could silently regress
         # across a kernel bump against a lagging seed. Diff this build's
-        # final.config against the most recent committed release baseline
-        # and fail on any enabled hardening symbol that dropped. Runs here,
-        # in the workflow, NOT inside build-debs.sh — so repro-check.sh's
-        # rebuild (which calls build-debs.sh directly) isn't coupled to a
-        # policy gate it shouldn't enforce. First-ever build: no baseline.
+        # final.config against the most recent committed release of the same
+        # flavor and line, and fail on any enabled hardening symbol that
+        # dropped or any hardening value symbol (ASLR bits, LSM order, KFENCE
+        # interval) that changed. Runs here, in the workflow, NOT inside
+        # build-debs.sh — so repro-check.sh's rebuild (which calls
+        # build-debs.sh directly) isn't coupled to a policy gate it shouldn't
+        # enforce. First build of a flavor's line: no baseline.
         env:
           WORKDIR: ${{ runner.temp }}/work
           SERIES: ${{ steps.ver.outputs.series }}
+          FLAVOR: ${{ matrix.flavor }}
           # Escape hatch for a REVIEWED, intentional hardening-symbol drop
           # (e.g. upstream removed the symbol). check-hardening-drift.sh has
           # honoured this variable since it was written, and BOTH
@@ -437,27 +469,27 @@ jobs:
           set -euo pipefail
           new="$WORKDIR/final.config"
           [[ -f $new ]] || { echo "no $new — did the build step run?" >&2; exit 1; }
-          # An empty SERIES would make esc_series empty, the grep below match
-          # nothing, baseline_dir come back empty, and the guard "skip" — i.e.
-          # silently disable itself. It is always set by derive-version; assert
-          # rather than trust, because the failure is invisible.
-          [[ -n ${SERIES:-} ]] || {
-            echo "::error::SERIES is empty; the drift baseline cannot be scoped" >&2
+          # An empty SERIES or FLAVOR would make the lookup below match
+          # nothing and the guard "skip" — i.e. silently disable itself. Both
+          # are always set; assert rather than trust, because the failure is
+          # invisible.
+          [[ -n ${SERIES:-} && -n ${FLAVOR:-} ]] || {
+            echo "::error::SERIES or FLAVOR is empty; the drift baseline cannot be scoped" >&2
             exit 1
           }
-          # Scope the baseline to the SAME kernel line (X.Y). Comparing a
-          # 6.12 build against a 7.x final.config would flag every symbol
-          # that only exists (or is only enabled) on 7.x as a false
-          # regression. Match release dirs named v<series>.* (the dot is
-          # escaped so v7.0 doesn't also match v7.10).
-          esc_series=${SERIES//./\\.}
-          baseline_dir=$(find releases -mindepth 2 -maxdepth 2 -name final.config \
-              -printf '%h\n' 2>/dev/null \
-              | grep -E "/v${esc_series}\." \
-              | sort -V | tail -n1 || true)
-          if [[ -n $baseline_dir && -f "$baseline_dir/final.config" ]]; then
-            echo "hardening-drift baseline (line $SERIES): $baseline_dir/final.config"
-            ./tools/check-hardening-drift.sh "$baseline_dir/final.config" "$new"
+          # Scope the baseline to the SAME flavor and kernel line (X.Y).
+          # Comparing a 6.12 build against a 7.x final.config, or a pi5 build
+          # against an amd64 one, would flag every symbol that only exists
+          # (or is only enabled) on the other as a false regression.
+          # tools/flavors.py matches release dirs by the flavor's tag prefix
+          # and the release-tag grammar, cross-checks each candidate's
+          # manifest flavor, and picks the newest by version (sort -V order).
+          # A failing lookup fails the step: `set -e` sees a failing command
+          # substitution in an assignment.
+          baseline=$(python3 tools/flavors.py drift-baseline "$FLAVOR" "$SERIES" releases)
+          if [[ -n $baseline ]]; then
+            echo "hardening-drift baseline (flavor $FLAVOR, line $SERIES): $baseline"
+            ./tools/check-hardening-drift.sh "$FLAVOR" "$baseline" "$new"
           else
             # ::warning:: not a bare echo: a SKIPPED guard is a materially
             # different outcome from a passed one, and a plain echo scrolls
@@ -465,12 +497,15 @@ jobs:
             # first-build-of-a-line case, but it is also what a mis-set SERIES
             # or a missing releases/ dir looks like, so it should be visible in
             # the run summary rather than buried.
-            echo "::warning::hardening-drift guard SKIPPED — no prior $SERIES release baseline in releases/"
+            echo "::warning::hardening-drift guard SKIPPED — no prior $FLAVOR $SERIES release baseline in releases/"
           fi
 
       - name: sign kernel + modules
         env:
           WORKDIR: ${{ runner.temp }}/work
+          # sign-debs.sh signs the image or not per the descriptor's
+          # image_signing.
+          FLAVOR: ${{ matrix.flavor }}
           SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
           SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
         run: |
@@ -516,9 +551,10 @@ jobs:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
           HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
-          DISTRO: ${{ matrix.target.distro }}
-          RELEASE: ${{ matrix.target.release }}
-          ARCH: ${{ matrix.target.arch }}
+          FLAVOR: ${{ matrix.flavor }}
+          DISTRO: ${{ steps.flavor.outputs.distro }}
+          RELEASE: ${{ steps.flavor.outputs.release }}
+          ARCH: ${{ steps.flavor.outputs.arch }}
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
           SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
           WORKDIR: ${{ runner.temp }}/work
@@ -564,6 +600,7 @@ jobs:
             --container-image "$CONTAINER_IMAGE" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --ci-run-number "$CI_RUN_NUMBER" \
+            --flavor "$FLAVOR" \
             --distro "$DISTRO" --release "$RELEASE" --arch "$ARCH" \
             --signing-cert "$SIGNING_CERT" \
             --sbom "$WORKDIR/sbom.json" \
