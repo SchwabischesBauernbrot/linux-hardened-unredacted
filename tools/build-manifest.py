@@ -6,7 +6,7 @@ are produced, signed, and stripped-and-hashed. It records, in the schema
 tools/repro-check.sh reads back:
 
     schema_version, flavor, kernel_version, hardened_revision, container_image,
-    source_date_epoch,
+    source_date_epoch, build_dir, build_arch,
     inputs.{kernel_tarball,hardened_patch}.{url,sha256}  (from inputs.json),
     outputs[].{distro,release,arch, deb_files[].{name, canonical_sha256,
         key_independent_sha256, repro_class, unsigned_deb_sha256}},
@@ -34,7 +34,9 @@ rebuild impossible and left no way to discover the real value. That dependency i
 being removed from the build; this field keeps the provenance the old
 KBUILD_BUILD_VERSION provided.
 
-schema_version is bumped whenever the fields repro-check.sh depends on change.
+schema_version is bumped whenever the fields repro-check.sh depends on change,
+or the rules that produce their values do (4: digest rules and the kbuild
+changelog date; see the comment at the value below).
 An ABSENT schema_version identifies a legacy manifest, which repro-check must
 report as partially verifiable rather than failed.
 
@@ -43,7 +45,8 @@ The per-deb hashes come from tools/canonical-deb-hash.py via --deb-hashes:
     canonical_sha256        every archive member, signatures canonicalized away
     key_independent_sha256  the same, excluding the paths whose bytes depend on
                             WHICH signing key built the kernel (boot/vmlinuz-*,
-                            boot/System.map-*, usr/lib/debug/**)
+                            boot/System.map-*, usr/lib/debug/**) and their
+                            control/md5sums lines
     repro_class             derived from those two: whether this package
                             contains any key-dependent path at all
 
@@ -90,6 +93,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--container-image", required=True,
                     help="image ref WITH digest (debian:trixie@sha256:...)")
     ap.add_argument("--source-date-epoch", required=True)
+    ap.add_argument("--build-dir", required=True,
+                    help="the PHYSICAL path of WORKDIR (pwd -P), which the "
+                         "kernel tree sits under. The compiler embeds it in "
+                         "linux-headers' host tools and in -dbg, so a rebuild "
+                         "has to use the same one; repro-check.sh reads it.")
+    ap.add_argument("--build-arch", required=True,
+                    help="dpkg architecture of the build container "
+                         "(dpkg --print-architecture). A flavor of another "
+                         "arch is cross-compiled there, and a native build "
+                         "differs (CONFIG_CC_VERSION_TEXT names the compiler), "
+                         "so repro-check.sh runs the rebuild on this one.")
     ap.add_argument("--ci-run-number", default="",
                     help="the CI run number that produced this release "
                          "(github.run_number). Traceability only — see the "
@@ -158,12 +172,21 @@ def main(argv: list[str] | None = None) -> int:
         # v7.0.10 .. v7.1.4): repro-check must not treat those as verifiable
         # failures, because they lack fields no rebuild can reconstruct. See
         # releases/README.md for what each version promises.
-        "schema_version": 3,
+        #
+        # 4: adds build_dir and build_arch, and changes the digest rules and
+        # the build. The kbuild changelog is dated SOURCE_DATE_EPOCH
+        # (build-debs.sh), and canonical-deb-hash.py canonicalizes
+        # control/md5sums and drops Installed-Size, which carried signature
+        # bytes into both digests. A schema-3 digest of a kbuild package is
+        # not reproducible by anyone.
+        "schema_version": 4,
         "flavor": args.flavor,
         "kernel_version": args.kernel_version,
         "hardened_revision": args.hardened_revision,
         "container_image": args.container_image,
         "source_date_epoch": args.source_date_epoch,
+        "build_dir": args.build_dir,
+        "build_arch": args.build_arch,
         "inputs": inputs,
         "outputs": [{
             "distro": args.distro,

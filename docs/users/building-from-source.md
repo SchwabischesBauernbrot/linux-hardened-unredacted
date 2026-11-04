@@ -37,7 +37,7 @@ The script:
 4. Compares that hash against the manifest's `unsigned_deb_sha256` for each `.deb`. This is the pass/fail verdict — it needs only your rebuild and the committed manifest: no private key, and not even the released `.deb`s.
 5. On mismatch only, fetches the released `.deb`, strips it the same way, and runs `diffoscope` per file into `repro-diff/` so you can see exactly what differs.
 
-Exit code 0: every comparable package matched. Non-zero: divergence, and the report names the offending packages and members. Packages are reported individually — `OK exact`, `OK*` (key-independent content matched; the cert-embedding members need the project's private key), `FAIL`, or `SKIP` for pre-schema-3 releases that cannot be verified by construction.
+Exit code 0: every comparable package matched. Non-zero: divergence, and the report names the offending packages and members. Packages are reported individually — `OK exact`, `OK*` (key-independent content matched; the cert-embedding members need the project's private key), `FAIL`, `SKIP` for pre-schema-3 releases that cannot be verified by construction, or `UNVERIF` for the four kernel-built packages of a schema-3 release, whose changelog carries the original build's wall-clock time (see [releases/README.md](../../releases/README.md#schema-versions)).
 
 On a mismatch, `repro-check.sh` writes per-member JSON under `repro-diff/` naming the exact archive member whose content differs — no `diffoscope` and no copy of the released `.deb` needed. You can also run the hasher directly on any two `.deb`s to compare them yourself:
 
