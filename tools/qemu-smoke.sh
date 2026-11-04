@@ -77,11 +77,13 @@ done
 }
 # The LSMs that must be active: every CONFIG_LSM entry whose code is built.
 # An LSM name this table does not know fails the check, so a new one is
-# classified here rather than silently skipped.
+# classified here rather than silently skipped. "integrity" maps to nothing:
+# since 6.10 it is no longer an LSM (IMA and EVM register as "ima" and "evm"),
+# and the kernel ignores the name in the list.
 declare -A lsm_sym=(
     [landlock]=SECURITY_LANDLOCK [lockdown]=SECURITY_LOCKDOWN_LSM
     [yama]=SECURITY_YAMA [loadpin]=SECURITY_LOADPIN [safesetid]=SECURITY_SAFESETID
-    [integrity]=INTEGRITY [ima]=IMA [evm]=EVM [bpf]=BPF_LSM [ipe]=SECURITY_IPE
+    [integrity]=- [ima]=IMA [evm]=EVM [bpf]=BPF_LSM [ipe]=SECURITY_IPE
     [selinux]=SECURITY_SELINUX [apparmor]=SECURITY_APPARMOR
     [smack]=SECURITY_SMACK [tomoyo]=SECURITY_TOMOYO
 )
@@ -89,7 +91,7 @@ want_lsms=()
 IFS=, read -r -a listed <<<"$(cfg LSM)"
 for l in "${listed[@]}"; do
     [[ -n ${lsm_sym[$l]:-} ]] || { echo "CONFIG_LSM names '$l', which this script does not map to a symbol" >&2; exit 1; }
-    [[ $(cfg "${lsm_sym[$l]}") == y ]] && want_lsms+=("$l")
+    [[ ${lsm_sym[$l]} != - && $(cfg "${lsm_sym[$l]}") == y ]] && want_lsms+=("$l")
 done
 (( ${#want_lsms[@]} > 0 )) || { echo "no LSM from CONFIG_LSM is built in" >&2; exit 1; }
 
@@ -141,7 +143,10 @@ PY
 bb_deb=$(find "$smoke_dir" -maxdepth 1 -name "busybox-static_*_${deb_arch}.deb" | head -n1)
 [[ -n $bb_deb ]] || { echo "no busybox-static .deb for $deb_arch in $smoke_dir (build/install-flavor-deps.sh)" >&2; exit 1; }
 dpkg-deb -x "$bb_deb" "$tmp/bb"
-install -m 0755 "$tmp/bb/bin/busybox" "$tmp/root/bin/busybox"
+# /usr/bin/busybox in trixie's package (/bin/busybox before the /usr merge).
+bb=$(find "$tmp/bb" -path '*bin/busybox' -type f | head -n1)
+[[ -n $bb ]] || { echo "no busybox binary in $(basename "$bb_deb")" >&2; exit 1; }
+install -m 0755 "$bb" "$tmp/root/bin/busybox"
 install -m 0755 "$repo_root/tools/qemu-smoke-init" "$tmp/root/init"
 ( cd "$tmp/root" && find . | LC_ALL=C sort | cpio -o -H newc --quiet ) | gzip -n > "$tmp/initrd.gz"
 
