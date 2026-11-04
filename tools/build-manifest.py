@@ -6,7 +6,7 @@ are produced, signed, and stripped-and-hashed. It records, in the schema
 tools/repro-check.sh reads back:
 
     schema_version, flavor, kernel_version, hardened_revision, container_image,
-    source_date_epoch, build_dir,
+    source_date_epoch, build_dir, build_arch,
     inputs.{kernel_tarball,hardened_patch}.{url,sha256}  (from inputs.json),
     outputs[].{distro,release,arch, deb_files[].{name, canonical_sha256,
         key_independent_sha256, repro_class, unsigned_deb_sha256}},
@@ -98,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
                          "kernel tree sits under. The compiler embeds it in "
                          "linux-headers' host tools and in -dbg, so a rebuild "
                          "has to use the same one; repro-check.sh reads it.")
+    ap.add_argument("--build-arch", required=True,
+                    help="dpkg architecture of the build container "
+                         "(dpkg --print-architecture). A flavor of another "
+                         "arch is cross-compiled there, and a native build "
+                         "differs (CONFIG_CC_VERSION_TEXT names the compiler), "
+                         "so repro-check.sh runs the rebuild on this one.")
     ap.add_argument("--ci-run-number", default="",
                     help="the CI run number that produced this release "
                          "(github.run_number). Traceability only — see the "
@@ -167,11 +173,12 @@ def main(argv: list[str] | None = None) -> int:
         # failures, because they lack fields no rebuild can reconstruct. See
         # releases/README.md for what each version promises.
         #
-        # 4: adds build_dir, and changes the digest rules and the build. The
-        # kbuild changelog is dated SOURCE_DATE_EPOCH (build-debs.sh), and
-        # canonical-deb-hash.py canonicalizes control/md5sums and drops
-        # Installed-Size, which carried signature bytes into both digests. A
-        # schema-3 digest of a kbuild package is not reproducible by anyone.
+        # 4: adds build_dir and build_arch, and changes the digest rules and
+        # the build. The kbuild changelog is dated SOURCE_DATE_EPOCH
+        # (build-debs.sh), and canonical-deb-hash.py canonicalizes
+        # control/md5sums and drops Installed-Size, which carried signature
+        # bytes into both digests. A schema-3 digest of a kbuild package is
+        # not reproducible by anyone.
         "schema_version": 4,
         "flavor": args.flavor,
         "kernel_version": args.kernel_version,
@@ -179,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         "container_image": args.container_image,
         "source_date_epoch": args.source_date_epoch,
         "build_dir": args.build_dir,
+        "build_arch": args.build_arch,
         "inputs": inputs,
         "outputs": [{
             "distro": args.distro,

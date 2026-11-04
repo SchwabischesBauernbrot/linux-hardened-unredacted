@@ -244,17 +244,31 @@ if [[ ! $build_dir =~ ^/[A-Za-z0-9._/-]+$ || $build_dir == *..* || $build_dir ==
     exit 1
 fi
 
+# Build on the architecture the release was built on. A flavor of another arch
+# (pi5 on CI's amd64) is cross-compiled there, and the same flavor built
+# natively differs: CONFIG_CC_VERSION_TEXT names the compiler, and it lands in
+# every package. Left to the host, Docker picks the host's arch, so an arm64
+# verifier would rebuild a pi5 release natively and an amd64 one as a cross
+# build. Schema 4 records the arch; every earlier release was built on amd64.
+build_arch=$(jq -r '.build_arch // "amd64"' "$manifest")
+case $build_arch in
+    amd64|arm64) build_platform="linux/$build_arch" ;;
+    *) echo "manifest build_arch $build_arch has no Docker platform here" >&2; exit 1 ;;
+esac
+
 rebuild_work="$work/build"
 mkdir -p "$rebuild_work"
 
 echo "rebuilding $version (flavor $flavor) in $container_image (SOURCE_DATE_EPOCH=$source_date_epoch)"
 echo "  pinned seed: $seed_desc"
 echo "  build dir:   $build_dir"
+echo "  build arch:  $build_arch"
 # The dep-install block mirrors .forgejo/workflows/build-kernel.yml's
 # "install build deps" step; keep the two in sync when either changes.
 # We can't share a script: the CI installs deps before actions/checkout
 # (which needs nodejs), so the list has to be inline there.
 docker run --rm \
+    --platform "$build_platform" \
     -v "$repo_root:/repo:ro" \
     -v "$rebuild_work:$build_dir" \
     -e WORKDIR="$build_dir" \

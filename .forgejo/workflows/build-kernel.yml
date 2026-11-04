@@ -701,6 +701,9 @@ jobs:
           # compiler embeds it in linux-headers' host tools and in -dbg, so
           # repro-check.sh must rebuild there; WORKDIR follows the runner's
           # temp dir, which is runner configuration, not ours.
+          # --build-arch: this container's arch. A flavor of another arch is
+          # cross-compiled here, and a native build of it differs, so
+          # repro-check.sh must run the rebuild on the same one.
           python3 "$repo/tools/build-manifest.py" \
             --workdir "$WORKDIR" \
             --deb-hashes "$WORKDIR/deb-hashes.tsv" \
@@ -710,6 +713,7 @@ jobs:
             --container-image "$CONTAINER_IMAGE" \
             --source-date-epoch "$SOURCE_DATE_EPOCH" \
             --build-dir "$(pwd -P)" \
+            --build-arch "$(dpkg --print-architecture)" \
             --ci-run-number "$CI_RUN_NUMBER" \
             --flavor "$FLAVOR" \
             --distro "$DISTRO" --release "$RELEASE" --arch "$ARCH" \
