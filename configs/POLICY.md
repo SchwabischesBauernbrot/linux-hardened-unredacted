@@ -2,7 +2,7 @@
 
 The audit trail for every hardening choice we take a position on. The build seeds the kernel config from anthraxx's Arch linux-hardened `config.x86_64` (pinned by sha256 + signed-commit-verified in `configs/seeds/<X.Y>.toml`) and layers the intent fragments on top — the symbols below. The CI `intent-matches-policy` job (`.forgejo/workflows/validate.yml`) enforces bidirectional parity between this file and the fragments (every kconfig assertion here has a matching pin there, and vice versa); the build's fidelity assertion (`build/configure-kernel.sh`) confirms every intent line lands in the final `.config` after `olddefconfig`. Symbols anthraxx already sets the way we want flow through from the seed automatically — defense-in-depth pins below catch any future seed regression that would lose one.
 
-**Where the pins live.** The intent is split by architecture. `configs/intent.common.config` holds every position all flavors ship; `configs/intent.x86_64.config` holds the nine that only exist on x86: `CONFIG_RANDOMIZE_MEMORY`, `CONFIG_LEGACY_VSYSCALL_NONE`, `CONFIG_MODIFY_LDT_SYSCALL` (off), `CONFIG_MITIGATION_PAGE_TABLE_ISOLATION`, `CONFIG_MITIGATION_RETPOLINE`, `CONFIG_MITIGATION_RETHUNK`, `CONFIG_X86_KERNEL_IBT`, `CONFIG_X86_USER_SHADOW_STACK` and `CONFIG_X86_UMIP`. Each build flavor's descriptor (`configs/flavors/<flavor>.toml`) lists the fragments it merges, common first; amd64 merges both. The entries below are written per topic, not per file, and each x86-only entry says so.
+**Where the pins live.** The intent is split into fragments. `configs/intent.common.config` holds every position all flavors ship; `configs/intent.x86_64.config` holds the nine that only exist on x86: `CONFIG_RANDOMIZE_MEMORY`, `CONFIG_LEGACY_VSYSCALL_NONE`, `CONFIG_MODIFY_LDT_SYSCALL` (off), `CONFIG_MITIGATION_PAGE_TABLE_ISOLATION`, `CONFIG_MITIGATION_RETPOLINE`, `CONFIG_MITIGATION_RETHUNK`, `CONFIG_X86_KERNEL_IBT`, `CONFIG_X86_USER_SHADOW_STACK` and `CONFIG_X86_UMIP`. `configs/intent.v7_2.config` holds the two symbols that only exist from kernel 7.2 (`CONFIG_KMALLOC_PARTITION_CACHES`, `CONFIG_KMALLOC_PARTITION_RANDOM`). `configs/intent.arm64.config` and `configs/intent.pi5.config` hold the arm64 and Raspberry Pi 5 positions, in the [arm64 and Raspberry Pi 5](#arm64-and-raspberry-pi-5-the-pi5-flavor) section. Each build flavor's descriptor (`configs/flavors/<flavor>.toml`) lists the fragments it merges, common first: amd64 merges common, x86_64 and v7_2; pi5 merges common, arm64 and pi5. The entries below are written per topic, not per file, and each architecture- or flavor-specific entry says so.
 
 **Enabled** entries justify why a hardening symbol is on. **Disabled** entries justify why a feature that exists in the stock distro kernel is off in our build; those are the contentious ones because they remove user-visible functionality. For every disabled-by-us option with meaningful user impact, [docs/users/incompatibilities.md](../docs/users/incompatibilities.md) carries the symptom and workaround.
 
@@ -297,6 +297,8 @@ Compile-time backstops for the `kernel.unprivileged_bpf_disabled=1` and `kernel.
 
 Heap-hardening companions to the already-pinned slab options: partitioned kmalloc caches (heap-grooming / use-after-free mitigation), separate caches for user-controlled allocation sizes, and the default-on switch that makes hardened usercopy active. Upstream 7.2 renamed `CONFIG_RANDOM_KMALLOC_CACHES` to `CONFIG_KMALLOC_PARTITION_CACHES` and split the mechanism into a mode choice: `KMALLOC_PARTITION_RANDOM` (per-boot random cache selection by call site, the former behaviour) or `KMALLOC_PARTITION_TYPED` (deterministic type-based selection via Clang ≥ 22 allocation tokens). The old symbol survives only as a transitional stub, which is why the fidelity assertion failed on the first 7.2 build. We pin the random mode explicitly: the choice defaults to TYPED whenever the compiler advertises alloc-token support, and we build with GCC, so an implicit default could flip the mode with a toolchain change rather than a reviewed decision. Match anthraxx (7.2.5.hardened1-1 sets both).
 
+The two 7.2 names live in `configs/intent.v7_2.config`, merged by flavors on 7.2 or newer. A flavor on an older series pins the same position under the old name: pi5 (6.18) pins `CONFIG_RANDOM_KMALLOC_CACHES=y` in `configs/intent.pi5.config`, where Raspberry Pi's seed has it off.
+
 ### `CONFIG_STACKPROTECTOR=y`, `CONFIG_X86_UMIP=y`, `CONFIG_RESET_ATTACK_MITIGATION=y`
 
 `STACKPROTECTOR` is the parent of the already-pinned `STACKPROTECTOR_STRONG`. UMIP blocks userspace `SGDT` / `SIDT` / `SLDT` / `SMSW` / `STR` (KASLR-leak primitives); it is x86-only and pinned in `configs/intent.x86_64.config`. The reset-attack mitigation asks firmware to overwrite memory on an unclean reset (cold-boot mitigation). Match anthraxx.
@@ -320,6 +322,58 @@ Removes `insmod --force`, which would otherwise load modules with mismatched ver
 ### `# CONFIG_SECURITY_SELINUX_DEVELOP is not set`, `# CONFIG_SECURITY_SELINUX_BOOTPARAM is not set`
 
 SELinux is compiled in but not part of our active `CONFIG_LSM` stack, so these are latent. Pinned off so that, were SELinux ever enabled, it could not be placed in permissive mode at runtime (`DEVELOP`) or disabled via a boot parameter (`BOOTPARAM`). No current user impact. anthraxx leaves both on.
+
+## arm64 and Raspberry Pi 5 (the pi5 flavor)
+
+The pi5 flavor ([docs/operators/flavors.md](../docs/operators/flavors.md)) builds Raspberry Pi's kernel tree, seeded from Raspberry Pi OS's own packaged `rpi-2712` config rather than anthraxx's. Everything in the common fragment applies to it. A distro config does not carry anthraxx's hardening defaults, so the one-time inherited-gap audit ([docs/operators/pi5-inherited-gap-audit.md](../docs/operators/pi5-inherited-gap-audit.md)) compared it with the amd64 release and with the KSPP recommendations; the positions amd64 inherits and pi5 would not are pinned here. `configs/intent.arm64.config` holds what any arm64 flavor needs; `configs/intent.pi5.config` what depends on the page size or the board.
+
+### `CONFIG_SHADOW_CALL_STACK=y`, `CONFIG_UNMAP_KERNEL_AT_EL0=y`
+
+The software shadow call stack keeps return addresses on a separate stack, out of reach of a stack overflow. The Pi 5's Cortex-A76 has no pointer authentication, BTI or MTE, so it is the only return-address protection there (the seed's PAC/BTI/MTE options are compiled in but inert on that CPU). KPTI (`UNMAP_KERNEL_AT_EL0`) unmaps the kernel while user code runs; it is forced on with KASLR. arm64 fragment.
+
+### `# CONFIG_EFI_ZBOOT is not set`
+
+Keeps the kernel image an `Image.gz`, which the Raspberry Pi firmware boots directly, rather than an EFI zboot PE wrapper. pi5 does not sign its image (`image_signing = "none"`: the Pi firmware has no UEFI Secure Boot). A generic arm64 flavor booted through UEFI will decide its image format when it is built. arm64 fragment.
+
+### `CONFIG_BPF_LSM=y`, `CONFIG_DEBUG_INFO_BTF=y`, `CONFIG_DEBUG_INFO_DWARF5=y`, `# CONFIG_DEBUG_INFO_NONE is not set`
+
+`CONFIG_LSM` (common fragment) lists `bpf`, which activates only with `BPF_LSM`; amd64 inherits it from anthraxx, the arm64 seeds lack it. Kernel BTF is what BPF LSM programs and systemd's `bpf-restrict-fs` are written against: on the 2026-11-02 Pi trial, without it that unit failed. BTF is generated from DWARF, so debug info is on in the same form as amd64's (DWARF 5), which also produces the `-dbg` package. arm64 fragment.
+
+### `CONFIG_MODULE_DECOMPRESS=y`
+
+Modules are xz-compressed (common fragment) and LoadPin is enforced; LoadPin's Kconfig requires in-kernel decompression when modules are compressed, so without it the LoadPin pins fail the fidelity assertion. amd64 inherits it. arm64 fragment.
+
+### `CONFIG_ARCH_MMAP_RND_COMPAT_BITS=16`, `CONFIG_ARCH_MMAP_RND_BITS=30`
+
+mmap ASLR at its maximum: 16 bits for 32-bit (compat) processes on arm64 (arm64 fragment), and 30 bits for 64-bit processes with 16K pages and a 47-bit address space (pi5 fragment; the maximum depends on the page size). Raspberry Pi's config uses 18 and 11. The drift guard also compares both values release to release.
+
+### `CONFIG_BPF_JIT_ALWAYS_ON=y`, `CONFIG_DEBUG_VIRTUAL=y`, `CONFIG_DEFAULT_MMAP_MIN_ADDR=32768`, `CONFIG_DEBUG_FS_ALLOW_NONE=y`, `# CONFIG_DEBUG_FS_ALLOW_ALL is not set`, `CONFIG_MAGIC_SYSRQ_DEFAULT_ENABLE=0x0`, `# CONFIG_KGDB is not set`, `# CONFIG_IP_SCTP is not set`
+
+Positions amd64 inherits from anthraxx's config that Raspberry Pi's does not take, found by the gap audit: no BPF interpreter (only JIT-compiled programs, removing the interpreter as a speculative-execution gadget); `virt_to_phys()` argument checks; the lowest 32K of user address space unmappable (Raspberry Pi lowers it to 4096; 32768 is the arm64 default and the KSPP value), so a kernel NULL dereference cannot reach user-controlled memory; debugfs registered but neither mountable nor reachable; SysRq off until `kernel.sysrq` enables it, so a serial-console break cannot trigger it; no in-kernel debugger; and no SCTP, a protocol any local user can autoload with `socket(2)` that has a long CVE record and that nothing on the target hosts uses. arm64 fragment.
+
+### `CONFIG_LOCALVERSION=""`, `# CONFIG_LOCALVERSION_AUTO is not set`
+
+The seed carries `-v8-16k`; the flavor's `localversion` (`-hardened-unredacted-pi5`) must be the only suffix, so the kernelrelease is `6.18.60-hardened-unredacted-pi5`. It must never contain `-rpi`: Raspberry Pi OS's `z50-raspi-firmware` kernel hook would take it for a stock kernel and copy its DTBs over the stock ones in `/boot/firmware`. `tools/flavors.py` refuses such a localversion. pi5 fragment.
+
+### `CONFIG_ARM64_16K_PAGES=y`, `CONFIG_NUMA=y`, `CONFIG_NUMA_EMU=y`
+
+16K pages are what Raspberry Pi ships for the Pi 5 and are measurably faster on it. The Pi firmware passes `numa=fake=8 numa_policy=interleave`, which spreads allocations across the SDRAM banks (Igalia measured +6% single-core, +18% multi-core); that needs NUMA emulation. pi5 fragment.
+
+### `CONFIG_PREEMPT=y`, `CONFIG_PREEMPT_DYNAMIC=y`
+
+Full preemption, as Raspberry Pi ships it, plus `PREEMPT_DYNAMIC`, so `preempt=lazy` can be tried on the relays from the kernel command line without a rebuild (decided after the soak; [flavors.md, Performance](../docs/operators/flavors.md#performance)). pi5 fragment.
+
+### `# CONFIG_BCM_VCIO is not set`, `# CONFIG_BCM2708_VCMEM is not set`, `# CONFIG_VCHIQ_CDEV is not set`
+
+The VideoCore's userspace interfaces. `/dev/vcio` passes any firmware mailbox property list to the VideoCore with no filtering, and `/dev/vc-mem` maps VideoCore memory: both give root a path around `lockdown=integrity`. `/dev/vchiq` hands userspace the VideoCore's message interface (the MMAL camera and codec services), which the Pi 5 does not use for its camera or display. The cost is `vcgencmd`; EEPROM updates and the temperature sensor do not need it ([incompatibilities](../docs/users/incompatibilities.md)). `/dev/gpiomem*` and `/dev/pio0` stay: they expose only the GPIO and PIO blocks, to the `gpio` group. pi5 fragment.
+
+### `CONFIG_ARCH_BCM2835=y`, `CONFIG_PCIE_BRCMSTB=y`, `CONFIG_BCM2712_MIP=y`, `CONFIG_PINCTRL_BCM2712=y`, `CONFIG_MFD_RP1=y`, `CONFIG_PINCTRL_RP1=y`, `CONFIG_COMMON_CLK_RP1=y`, `CONFIG_MACB=y`, `CONFIG_BROADCOM_PHY=y`, `CONFIG_MMC_SDHCI_BRCMSTB=y`, `CONFIG_BLK_DEV_NVME=y`, `CONFIG_RASPBERRYPI_FIRMWARE=y`, `CONFIG_RASPBERRYPI_POWER=y`, `CONFIG_BCM2835_WDT=y`
+
+The Pi 5 platform drivers the root filesystem and the network depend on, built in so the relay boots without an initramfs carrying them, and pinned so a seed bump that moves one to a module or drops it fails the build instead of the boot: the BCM2712 SoC and its PCIe root port, interrupt controller and pin controller; RP1 (the I/O controller behind PCIe) with its pin and clock controllers; the Ethernet MAC on RP1 and its PHY; the SD/eMMC host and NVMe; the firmware mailbox and power domains; and the watchdog, which also carries reboots (including the tryboot flag). The seed builds all of them in already. pi5 fragment.
+
+### `CONFIG_RANDOM_KMALLOC_CACHES=y`
+
+The randomized-kmalloc-caches position of the common heap-hardening entries above, under its pre-7.2 name for the 6.18 line. Raspberry Pi's seed has it off. Moves to `configs/intent.v7_2.config` when the pi5 line moves to 7.2 or newer. pi5 fragment.
 
 ## Review process
 

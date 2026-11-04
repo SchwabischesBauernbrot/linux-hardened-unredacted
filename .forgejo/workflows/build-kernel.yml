@@ -1,7 +1,22 @@
 name: build-kernel
 on:
   push:
-    tags: ['v*.*.*-hardened*']
+    # One glob per flavor: its tag_prefix in front of the release grammar
+    # (tools/flavors.py tag-globs; validate.yml checks this list matches).
+    tags: ['v*.*.*-hardened*', 'pi5-v*.*.*-hardened*']
+  # TEST BUILD: build what a tag would build, from the dispatched ref, with a
+  # throwaway signing key generated in the job. The production signing secrets
+  # are never passed to a test build, the stale-tag guard does not apply (no
+  # tag exists), and nothing is attached to a release. Everything else --
+  # source and seed verification, fidelity, drift guard, QEMU smoke test,
+  # manifest -- runs exactly as for a tag. Used to prove a pipeline change
+  # (e.g. a new flavor) end to end without cutting a release tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to test-build (not created), e.g. pi5-v6.18.60-fwd-v6.18.56-hardened1'
+        required: true
+        type: string
 
 # Per spec §6.1: the build stages do NOT hold publish credentials.
 # REGISTRY_TOKEN, FASTLY_PURGE_TOKEN, and MANIFEST_COMMIT_TOKEN are
@@ -32,16 +47,12 @@ jobs:
       # CAP_SYS_ADMIN (what `unshare -n` requires) and setting that variable
       # is the operator step in docs/operators/runner-setup.md.
       image: debian:trixie@sha256:f324c7ff54321e8d9c588493a20244965938ce0aa50bbd1022d38010e9ffc4b1
-    strategy:
-      matrix:
-        # One entry per build flavor: configs/flavors/<flavor>.toml holds
-        # everything flavor-dependent (arch, distro/release, source, seed type,
-        # intent fragments, LOCALVERSION, tag prefix, image signing), read by
-        # the "resolve flavor" step below and by every build/*.sh script.
-        # A tag is built by the flavor whose tag_prefix it carries; amd64 owns
-        # the unprefixed tags this workflow triggers on. Adding a flavor with a
-        # prefix also means routing its tags here (docs/operators/flavors.md).
-        flavor: [amd64]
+    # No flavor matrix: a tag belongs to exactly one flavor, the one whose
+    # tag_prefix it carries (amd64's is empty), so the "resolve flavor" step
+    # routes each tag to its flavor. configs/flavors/<flavor>.toml holds
+    # everything flavor-dependent, read by that step and by every build/*.sh
+    # script. Every flavor builds on this amd64 runner; one for another
+    # architecture is cross-compiled (build/install-flavor-deps.sh).
     steps:
       # This step must run BEFORE actions/checkout, because actions/
       # checkout is a JavaScript action and Forgejo's act runner invokes
@@ -120,20 +131,65 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      # Load this matrix entry's flavor descriptor. tools/flavors.py validates
+      # Route the tag to its flavor and load the descriptor. The tag is the
+      # pushed tag, or a test build's `tag` input. tools/flavors.py validates
       # every descriptor (schema, intent fragments, cross-flavor uniqueness)
       # and refuses one that asks for something this pipeline does not build
       # yet -- a QEMU smoke test or boot package nothing would run is a guard
-      # that silently does not exist. The scalar fields become step outputs
-      # for the steps below that need them outside a script.
+      # that silently does not exist. It then names the one flavor whose
+      # tag_prefix + release grammar the tag matches, or fails. The scalar
+      # fields become step outputs (name, arch, qemu_smoke, ...), plus `tag`
+      # and `test_build`, for the steps below.
       - name: resolve flavor
         id: flavor
         env:
-          FLAVOR: ${{ matrix.flavor }}
+          # Via env:, never spliced into the script (see the stale-tag step).
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+          if [[ $EVENT == workflow_dispatch ]]; then
+            tag=$INPUT_TAG
+            test_build=true
+            echo "::notice::TEST BUILD of $tag from $REF_NAME: throwaway signing key, nothing uploaded"
+          else
+            tag="${GITHUB_REF_NAME:-$REF_NAME}"
+            test_build=false
+          fi
           python3 tools/flavors.py validate
-          python3 tools/flavors.py gha-outputs "$FLAVOR" | tee -a "$GITHUB_OUTPUT"
+          # A failing command substitution in an assignment fails the step.
+          flavor=$(python3 tools/flavors.py for-tag "$tag")
+          echo "tag $tag -> flavor $flavor"
+          {
+            echo "tag=$tag"
+            echo "test_build=$test_build"
+            python3 tools/flavors.py gha-outputs "$flavor"
+          } | tee -a "$GITHUB_OUTPUT"
+
+      # The flavor's extras on top of the common toolchain: the cross
+      # toolchain for a flavor of another architecture (pi5's arm64 on this
+      # amd64 runner) and the QEMU smoke test's emulator and busybox. A no-op
+      # for amd64, whose build environment stays the common one.
+      - name: install flavor deps
+        env:
+          FLAVOR: ${{ steps.flavor.outputs.name }}
+        run: ./build/install-flavor-deps.sh
+
+      # TEST BUILD only: a throwaway module-signing key + certificate, made
+      # here so the build and sign steps below never see the production key.
+      # A kernel built with it trusts only this key, which is gone at job end.
+      - name: throwaway signing key (test build)
+        if: steps.flavor.outputs.test_build == 'true'
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/testkey"
+          openssl req -x509 -newkey rsa:4096 -nodes -sha256 -days 30 -batch \
+              -subj "/CN=linux-hardened-unredacted TEST BUILD throwaway key/" \
+              -keyout "$RUNNER_TEMP/testkey/signing.key" \
+              -out "$RUNNER_TEMP/testkey/signing.crt" 2>/dev/null
+          openssl x509 -in "$RUNNER_TEMP/testkey/signing.crt" -noout -subject -fingerprint -sha256
 
       # A tag cut from a stale checkout is a perfectly valid tag on an old
       # commit, and the build goes GREEN while silently losing two properties:
@@ -158,7 +214,11 @@ jobs:
       # build. Set the repo variable ALLOW_STALE_TAG=1 to downgrade it to a
       # warning for a deliberate rebuild of an old commit (same escape-hatch
       # pattern as REQUIRE_NET_ISOLATION below, inverted).
+      #
+      # A test build has no tag: it builds the dispatched ref on purpose, and
+      # produces nothing that ships.
       - name: assert tag is current with main
+        if: steps.flavor.outputs.test_build != 'true'
         env:
           ALLOW_STALE_TAG: ${{ vars.ALLOW_STALE_TAG }}
           # Via env:, not spliced into the script body. The runner substitutes
@@ -210,20 +270,23 @@ jobs:
           # This matters even though the regex below rejects a malformed tag:
           # the injection happens at bash PARSE time, before the regex ever
           # runs, so the validation cannot protect the assignment that feeds it.
-          REF_NAME: ${{ github.ref_name }}
+          # The tag (pushed, or a test build's input) as "resolve flavor"
+          # routed it.
+          FULL_TAG: ${{ steps.flavor.outputs.tag }}
+          TEST_BUILD: ${{ steps.flavor.outputs.test_build }}
           # The flavor's tag prefix ("" for amd64; "<flavor>-" for the others).
           TAG_PREFIX: ${{ steps.flavor.outputs.tag_prefix }}
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME:-$REF_NAME}"
           # A tag belongs to exactly one flavor, by prefix. For amd64 the
           # prefix is empty and the grammar below starts with "v", so a
           # prefixed tag (pi5-v...) can never pass as an amd64 build.
-          if [[ $tag != "$TAG_PREFIX"* ]]; then
-            echo "tag $tag does not carry this flavor's tag prefix '$TAG_PREFIX'" >&2
+          # "resolve flavor" already routed it; this is the backstop.
+          if [[ $FULL_TAG != "$TAG_PREFIX"* ]]; then
+            echo "tag $FULL_TAG does not carry this flavor's tag prefix '$TAG_PREFIX'" >&2
             exit 1
           fi
-          tag=${tag#"$TAG_PREFIX"}
+          tag=${FULL_TAG#"$TAG_PREFIX"}
           # Fail loud on malformed tags. A typo'd tag would otherwise
           # silently feed garbage to wget in the next step.
           #
@@ -270,11 +333,17 @@ jobs:
           # Tagger date is stable across rebase/amend; commit timestamp
           # is not. Lightweight tags have no tagger date, in which case
           # taggerdate:unix yields empty and we fall back, with a log
-          # line so it's visible in CI output.
-          sde=$(git for-each-ref --format='%(taggerdate:unix)' "refs/tags/$tag")
-          if [[ -z $sde ]]; then
-            echo "lightweight tag, falling back to commit timestamp for SOURCE_DATE_EPOCH" >&2
-            sde=$(git log -1 --format=%ct "$tag^{commit}")
+          # line so it's visible in CI output. The lookups use the full tag,
+          # prefix included: that is the ref that exists. A test build has
+          # no tag, so it takes the dispatched commit's timestamp.
+          if [[ $TEST_BUILD == true ]]; then
+            sde=$(git log -1 --format=%ct HEAD)
+          else
+            sde=$(git for-each-ref --format='%(taggerdate:unix)' "refs/tags/$FULL_TAG")
+            if [[ -z $sde ]]; then
+              echo "lightweight tag, falling back to commit timestamp for SOURCE_DATE_EPOCH" >&2
+              sde=$(git log -1 --format=%ct "$FULL_TAG^{commit}")
+            fi
           fi
           # series is the kernel line key (X.Y): it selects the per-line seed
           # pin (configs/seeds/<X.Y>.toml) and scopes the hardening-drift
@@ -318,7 +387,7 @@ jobs:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
           HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
-          FLAVOR: ${{ matrix.flavor }}
+          FLAVOR: ${{ steps.flavor.outputs.name }}
           WORKDIR: ${{ runner.temp }}/work
         run: |
           mkdir -p "$WORKDIR"
@@ -334,7 +403,7 @@ jobs:
         env:
           WORKDIR: ${{ runner.temp }}/work
           SERIES: ${{ steps.ver.outputs.series }}
-          FLAVOR: ${{ matrix.flavor }}
+          FLAVOR: ${{ steps.flavor.outputs.name }}
           # Escape hatch for a deliberate one-off build of a series that has no
           # configs/seeds/<X.Y>.toml yet. Unset (the default) makes that a hard
           # failure: silently falling back to the stable-line seed builds one
@@ -350,6 +419,9 @@ jobs:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
           HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
+          # Which tree to extract: the kernel.org tarball, or the pinned
+          # downstream tree fetch-sources.sh archived (source = rpi-git).
+          FLAVOR: ${{ steps.flavor.outputs.name }}
         run: ./build/apply-patches.sh
 
       - name: configure + build
@@ -358,7 +430,7 @@ jobs:
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
           HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
           PACKAGING_REVISION: ${{ steps.ver.outputs.packaging }}
-          FLAVOR: ${{ matrix.flavor }}
+          FLAVOR: ${{ steps.flavor.outputs.name }}
           # No REVISION here any more. It used to pass github.run_number to
           # build-debs.sh, which fed it to KBUILD_BUILD_VERSION and so into
           # UTS_VERSION inside vmlinux -- making two runs of the same tag differ
@@ -367,8 +439,11 @@ jobs:
           # number is recorded in the manifest as ci_run_number.
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
           WORKDIR: ${{ runner.temp }}/work
-          SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
-          SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
+          # The production key only for a tag push; a test build gets empty
+          # values here and uses the throwaway key made above.
+          TEST_BUILD: ${{ steps.flavor.outputs.test_build }}
+          SIGNING_KEY: ${{ github.event_name == 'push' && secrets.KERNEL_SIGNING_KEY || '' }}
+          SIGNING_CERT: ${{ github.event_name == 'push' && secrets.KERNEL_SIGNING_CERT || '' }}
           # Optional gate: set the repo variable REQUIRE_NET_ISOLATION=1 to
           # HARD-FAIL when unshare -n isn't available, instead of silently
           # compiling without network isolation (see the fallback below).
@@ -391,8 +466,13 @@ jobs:
           # covers every failure path, where the tree is left behind for
           # debugging and must not contain a private key.
           trap 'rm -rf "$keydir"; rm -f "$WORKDIR"/linux-*/certs/unredacted-signing.pem' EXIT
-          cat <<<"$SIGNING_KEY"  > "$keydir/signing.key"
-          cat <<<"$SIGNING_CERT" > "$keydir/signing.crt"
+          if [[ $TEST_BUILD == true ]]; then
+            [[ -z $SIGNING_KEY ]] || { echo "a test build must not see the production key" >&2; exit 1; }
+            cp "$RUNNER_TEMP/testkey/signing.key" "$RUNNER_TEMP/testkey/signing.crt" "$keydir/"
+          else
+            cat <<<"$SIGNING_KEY"  > "$keydir/signing.key"
+            cat <<<"$SIGNING_CERT" > "$keydir/signing.crt"
+          fi
           # The kernel build wants one PEM file containing both the key
           # and the cert. Concatenate in that order.
           cat "$keydir/signing.key" "$keydir/signing.crt" \
@@ -453,7 +533,7 @@ jobs:
         env:
           WORKDIR: ${{ runner.temp }}/work
           SERIES: ${{ steps.ver.outputs.series }}
-          FLAVOR: ${{ matrix.flavor }}
+          FLAVOR: ${{ steps.flavor.outputs.name }}
           # Escape hatch for a REVIEWED, intentional hardening-symbol drop
           # (e.g. upstream removed the symbol). check-hardening-drift.sh has
           # honoured this variable since it was written, and BOTH
@@ -500,14 +580,30 @@ jobs:
             echo "::warning::hardening-drift guard SKIPPED — no prior $FLAVOR $SERIES release baseline in releases/"
           fi
 
+      # Boot the built kernel under QEMU and check, at runtime, what the
+      # fidelity assertion and drift guard check in the config: lockdown mode,
+      # active LSMs, mmap ASLR bits and mmap_min_addr, and module-signature
+      # enforcement (a packaged module loads; the same module stripped of its
+      # signature, or altered under it, is rejected). Expectations come from
+      # this build's final.config (tools/qemu-smoke.sh). Runs before signing,
+      # so a kernel that fails it is never signed or attached. For flavors
+      # whose descriptor sets qemu_smoke (pi5).
+      - name: QEMU smoke test
+        if: steps.flavor.outputs.qemu_smoke == 'true'
+        env:
+          WORKDIR: ${{ runner.temp }}/work
+          FLAVOR: ${{ steps.flavor.outputs.name }}
+        run: ./tools/qemu-smoke.sh
+
       - name: sign kernel + modules
         env:
           WORKDIR: ${{ runner.temp }}/work
           # sign-debs.sh signs the image or not per the descriptor's
           # image_signing.
-          FLAVOR: ${{ matrix.flavor }}
-          SIGNING_KEY: ${{ secrets.KERNEL_SIGNING_KEY }}
-          SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
+          FLAVOR: ${{ steps.flavor.outputs.name }}
+          TEST_BUILD: ${{ steps.flavor.outputs.test_build }}
+          SIGNING_KEY: ${{ github.event_name == 'push' && secrets.KERNEL_SIGNING_KEY || '' }}
+          SIGNING_CERT: ${{ github.event_name == 'push' && secrets.KERNEL_SIGNING_CERT || '' }}
         run: |
           set -euo pipefail
           # Materialize the key + cert into the runner's tmpfs only for
@@ -518,8 +614,13 @@ jobs:
           umask 077
           keydir=$(mktemp -d)
           trap 'rm -rf "$keydir"' EXIT
-          cat <<<"$SIGNING_KEY"  > "$keydir/signing.key"
-          cat <<<"$SIGNING_CERT" > "$keydir/signing.crt"
+          if [[ $TEST_BUILD == true ]]; then
+            [[ -z $SIGNING_KEY ]] || { echo "a test build must not see the production key" >&2; exit 1; }
+            cp "$RUNNER_TEMP/testkey/signing.key" "$RUNNER_TEMP/testkey/signing.crt" "$keydir/"
+          else
+            cat <<<"$SIGNING_KEY"  > "$keydir/signing.key"
+            cat <<<"$SIGNING_CERT" > "$keydir/signing.crt"
+          fi
 
           # Validate immediately. A malformed secret here produces a
           # clear "invalid PEM" error rather than a cryptic failure
@@ -551,12 +652,13 @@ jobs:
           KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           HARDENED_REVISION: ${{ steps.ver.outputs.hardened }}
           HARDENED_BASE_VERSION: ${{ steps.ver.outputs.base }}
-          FLAVOR: ${{ matrix.flavor }}
+          FLAVOR: ${{ steps.flavor.outputs.name }}
           DISTRO: ${{ steps.flavor.outputs.distro }}
           RELEASE: ${{ steps.flavor.outputs.release }}
           ARCH: ${{ steps.flavor.outputs.arch }}
           SOURCE_DATE_EPOCH: ${{ steps.ver.outputs.source_date_epoch }}
-          SIGNING_CERT: ${{ secrets.KERNEL_SIGNING_CERT }}
+          TEST_BUILD: ${{ steps.flavor.outputs.test_build }}
+          SIGNING_CERT: ${{ github.event_name == 'push' && secrets.KERNEL_SIGNING_CERT || '' }}
           WORKDIR: ${{ runner.temp }}/work
           # Which CI run produced this release. Recorded for traceability: the
           # build used to compile github.run_number into KBUILD_BUILD_VERSION
@@ -571,6 +673,10 @@ jobs:
           set -euo pipefail
           repo="$(pwd)"
           export SOURCE_DATE_EPOCH
+          # A test build records its throwaway certificate, like a rebuild.
+          if [[ $TEST_BUILD == true ]]; then
+            SIGNING_CERT=$(cat "$RUNNER_TEMP/testkey/signing.crt")
+          fi
           cd "$WORKDIR"
 
           # Per-.deb canonical + key-independent hashes.
@@ -606,13 +712,28 @@ jobs:
             --sbom "$WORKDIR/sbom.json" \
             --upstream-seed-info "$WORKDIR/seed-info.json"
 
+      # TEST BUILD only: what would have been attached, for the run log.
+      - name: test build summary
+        if: steps.flavor.outputs.test_build == 'true'
+        env:
+          WORKDIR: ${{ runner.temp }}/work
+          FULL_TAG: ${{ steps.flavor.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "TEST BUILD of $FULL_TAG (throwaway signing key; nothing attached or published)"
+          ls -l "$WORKDIR"/*.deb
+          sha256sum "$WORKDIR"/*.deb "$WORKDIR/final.config" "$WORKDIR/manifest.json"
+          jq '{flavor, kernel_version, hardened_base_version, inputs, upstream_seed}' "$WORKDIR/manifest.json"
+
       - name: attach .debs to release
         # Forgejo's actions/upload-artifact support varies by version,
         # so we don't depend on it. Instead, attach the signed .debs as
         # release assets on the tag that triggered this build; publish.yml
         # fetches them from the release via the Forgejo API. Release
         # assets persist (workflow artifacts time out), which doubles as
-        # an audit record.
+        # an audit record. Never for a test build: there is no tag, and its
+        # packages are signed with a key nothing trusts.
+        if: steps.flavor.outputs.test_build != 'true'
         env:
           FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           TAG: ${{ github.ref_name }}

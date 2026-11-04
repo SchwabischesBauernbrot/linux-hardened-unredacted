@@ -98,14 +98,17 @@ jobs:
           # (which already uses env: correctly) inherits the guarantee.
           #
           # Same grammar as build-kernel.yml's derive-version step:
-          # vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P], N and P >= 1 with no leading
-          # zeros (the -fwd- infix is a forward-port). Kept as a deliberate
+          # [<tag_prefix>]vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P], N and P >= 1 with
+          # no leading zeros (the -fwd- infix is a forward-port; the prefix
+          # names a flavor other than amd64, e.g. pi5-). Kept as a deliberate
           # duplicate rather than shared, because publish can be dispatched by
           # hand for a tag this workflow never watched get built. KEEP THE TWO
-          # REGEXES IN SYNC.
-          if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-fwd-v[0-9]+\.[0-9]+\.[0-9]+)?-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$ ]]; then
+          # REGEXES IN SYNC. The regex alone bounds the characters; the
+          # prefix must also be a flavor's (tools/flavors.py for-tag).
+          if [[ ! $tag =~ ^([a-z0-9]+-)?v[0-9]+\.[0-9]+\.[0-9]+(-fwd-v[0-9]+\.[0-9]+\.[0-9]+)?-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$ ]] \
+              || ! python3 tools/flavors.py for-tag "$tag" >/dev/null; then
             echo "::error::not a release tag: $tag" >&2
-            echo "::error::expected vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P] (N,P >=1, no leading zeros)" >&2
+            echo "::error::expected [<flavor tag_prefix>]vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P] (N,P >=1, no leading zeros)" >&2
             exit 1
           fi
           # Allowlist, not a regex: $dist is also a path/URL component, and the

@@ -58,6 +58,20 @@ flavor_get() { python3 "$repo_root/tools/flavors.py" get "$FLAVOR" "$1"; }
 # arch/arm64/; there is no arch/amd64/.
 kernel_arch=$(flavor_get kernel_arch)
 
+# Cross-compile when the build host is not the flavor's architecture (pi5 on
+# the amd64 runner; build/install-flavor-deps.sh installs the toolchain).
+# kconfig probes the compiler (cc-option, the CC_HAS_* symbols, GCC plugin
+# and shadow-call-stack support), so olddefconfig has to see the target's
+# compiler: probed against the host's, those symbols would silently come out
+# wrong. Empty for a native build, which then runs exactly as before.
+# build/build-debs.sh derives the same value.
+deb_arch=$(flavor_get arch)
+cross=()
+if [[ $(dpkg --print-architecture) != "$deb_arch" ]]; then
+    cross=("CROSS_COMPILE=$(dpkg-architecture -a"$deb_arch" -qDEB_HOST_GNU_TYPE 2>/dev/null)-")
+    echo "cross-compiling for $deb_arch: ${cross[*]}"
+fi
+
 # The intent fragments to merge, in the descriptor's order, as absolute paths.
 # mapfile from a process substitution would swallow a flavors.py failure, so
 # capture first: `set -e` sees a failing command substitution in an assignment.
@@ -132,7 +146,7 @@ printf '  %s\n' "${intent_fragments[@]#"$repo_root/"}"
 # we build under gcc-14. olddefconfig re-evaluates the toolchain-detected
 # CC_HAS_* symbols against our compiler; kconfig handles this automatically.
 echo "running olddefconfig"
-make ARCH="$kernel_arch" olddefconfig
+make ARCH="$kernel_arch" "${cross[@]}" olddefconfig
 
 # --- Step 4: fidelity assertion ---------------------------------------
 # Every setting line in every merged intent fragment must appear verbatim in

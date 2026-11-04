@@ -87,7 +87,7 @@ jobs:
       # decides what gets DELETED, including the .P-rebuild handling and the
       # per-line sunset knob. They existed (for parse_version) and had never
       # been run by anything.
-      - run: python3 -m doctest tools/prune.py tools/lines.py tools/flavors.py
+      - run: python3 -m doctest tools/prune.py tools/lines.py tools/flavors.py tools/source-delta.py tools/apt-index.py
       # Smoke-test the line registry: py_compile does not prove
       # configs/lines.toml parses, and lines.py raises on a malformed registry
       # (two stable lines, a bad series). Without this, a broken registry
@@ -100,6 +100,33 @@ jobs:
       # stable line, and nothing this pipeline cannot build yet. build-kernel.yml
       # runs the same check before it builds.
       - run: python3 tools/flavors.py validate
+      # The pins of the flavors that do not build from kernel.org + anthraxx's
+      # Arch packaging (configs/sources/<set>/, configs/seeds/<set>/): every
+      # registered line has them, by convention, well-formed and in the
+      # line's series, with the source pin's committed delta and the seed
+      # pin's keyring present. fetch-sources.sh / fetch-seed.sh read them
+      # through the same validator.
+      - run: python3 tools/pins.py validate
+      # build-kernel.yml triggers on one tag glob per flavor. A flavor whose
+      # prefix is missing there would have its tags silently never built; a
+      # stale glob would start builds no flavor accepts.
+      - name: build-kernel.yml triggers on every flavor's tags
+        run: |
+          set -euo pipefail
+          want=$(python3 tools/flavors.py tag-globs)
+          # The one `tags: [...]` flow list under on.push (no YAML parser in
+          # this job's image).
+          line=$(grep -E "^[[:space:]]+tags:[[:space:]]*\[" .forgejo/workflows/build-kernel.yml)
+          [[ $(grep -cE "^[[:space:]]+tags:" .forgejo/workflows/build-kernel.yml) == 1 ]] || {
+            echo "::error::expected exactly one tags: line in build-kernel.yml" >&2; exit 1; }
+          got=$(grep -oE "'[^']+'" <<<"$line" | tr -d "'" | LC_ALL=C sort)
+          want=$(LC_ALL=C sort <<<"$want")
+          if [[ -z $got || $want != "$got" ]]; then
+            echo "::error::build-kernel.yml push tags differ from tools/flavors.py tag-globs:" >&2
+            diff <(echo "$want") <(echo "$got") >&2 || true
+            exit 1
+          fi
+          echo "tag triggers OK: $(echo "$want" | tr '\n' ' ')"
 
   intent-matches-policy:
     # Bidirectional parity between the intent fragments (the project's
@@ -295,6 +322,11 @@ jobs:
           echo "dep-list parity OK ($(echo "$bk" | wc -l | xargs) pkgs; repro-check omits: $EXPECTED_OMITTED)"
 
   seed-pins-well-formed:
+    # (This job covers amd64's arch-git seeds, configs/seeds/<X.Y>.toml. The
+    # pins of other line sets, configs/seeds/<set>/ and configs/sources/<set>/,
+    # have their own schema and are checked by `tools/pins.py validate` in the
+    # pycompile job; the registry check at the end covers every set.)
+    #
     # Each configs/seeds/<X.Y>.toml pins one upstream config seed. Three
     # invariants that nothing else checks, all cheap and all deterministic:
     #
@@ -369,7 +401,7 @@ jobs:
           bad = 0
           for ln in lines.load():
               try:
-                  lines.seed_path_for(ln["series"])
+                  lines.seed_path_for(ln["series"], flavor=lines.flavor_of(ln))
               except ValueError as e:
                   print(f"  {e}", file=sys.stderr)
                   bad += 1

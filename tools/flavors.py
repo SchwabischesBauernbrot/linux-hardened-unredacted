@@ -12,7 +12,7 @@ Python consumers import this module:
 
     import flavors
     flavors.load("amd64")["kernel_arch"]   -> "x86_64"
-    flavors.names()                        -> ["amd64"]
+    flavors.names()                        -> ["amd64", "pi5"]
 
 Shell consumers call it as a CLI. Every query loads and VALIDATES the
 descriptor first, so a malformed descriptor stops the build at the first
@@ -23,6 +23,9 @@ script that reads it:
     python3 tools/flavors.py gha-outputs amd64       # key=value lines for GITHUB_OUTPUT
     python3 tools/flavors.py fragments               # every intent fragment any flavor merges
     python3 tools/flavors.py validate                # all descriptors + cross-flavor checks
+    python3 tools/flavors.py for-tag pi5-v6.18.60-fwd-v6.18.56-hardened1
+                                                     # the one flavor that builds a tag
+    python3 tools/flavors.py tag-globs               # build-kernel.yml's tag triggers
     python3 tools/flavors.py drift-baseline amd64 7.2 [RELEASES_DIR]
                                                      # newest same-flavor, same-line
                                                      # releases/<tag>/final.config
@@ -56,17 +59,22 @@ IMAGE_SIGNING = ("sbsign", "none")
 # requests but nothing runs is a guard that silently does not exist. Widen
 # these in the same change that implements the feature.
 PIPELINE_SUPPORTS = {
-    "source": {"kernelorg-tarball"},
-    "seed_type": {"arch-git"},
+    "source": {"kernelorg-tarball", "rpi-git"},
+    "seed_type": {"arch-git", "apt-deb"},
     "image_signing": {"sbsign", "none"},
-    "qemu_smoke": {False},
+    "qemu_smoke": {False, True},
     "boot_package": {""},
 }
+
+# Architectures tools/qemu-smoke.sh can boot. A descriptor asking for a smoke
+# test elsewhere would otherwise fail only when a tag is built.
+QEMU_SMOKE_ARCHES = ("arm64",)
 
 # key -> (type, pattern or None). Unknown keys are an error: a misspelt
 # `image_sigining` would otherwise be silently ignored.
 _SCHEMA: dict[str, tuple[type, str | None]] = {
     "name":          (str,  r"^[a-z0-9]+$"),
+    "display_name":  (str,  r"^[A-Za-z0-9][A-Za-z0-9 .+-]*$"),
     "arch":          (str,  r"^[a-z0-9]+$"),
     "kernel_arch":   (str,  r"^[a-z0-9_]+$"),
     "distro":        (str,  r"^[a-z]+$"),
@@ -79,6 +87,7 @@ _SCHEMA: dict[str, tuple[type, str | None]] = {
     "tag_prefix":    (str,  r"^([a-z0-9]+-)?$"),
     "image_signing": (str,  None),
     "required_y":    (list, r"^CONFIG_[A-Z0-9_]+$"),
+    "defaults_package": (bool, None),
     "boot_package":  (str,  r"^([a-z0-9][a-z0-9.+-]+)?$"),
     "qemu_smoke":    (bool, None),
 }
@@ -179,6 +188,9 @@ def load(name: str, root: Path | None = None) -> dict:
         if missing:
             raise FlavorError(f"{where}: image_signing = 'sbsign' needs {sorted(missing)} "
                               f"in required_y")
+    if d["qemu_smoke"] and d["arch"] not in QEMU_SMOKE_ARCHES:
+        raise FlavorError(f"{where}: qemu_smoke = true, but tools/qemu-smoke.sh only "
+                          f"boots {QEMU_SMOKE_ARCHES}")
     return d
 
 
@@ -212,6 +224,21 @@ def validate_all(root: Path | None = None) -> list[str]:
             if d[key] in by:
                 errors.append(f"flavors {by[d[key]]} and {d['name']} share {key} = {d[key]!r}")
             by[d[key]] = d["name"]
+    # A tag routes to the flavor whose prefix it carries (parse_tag). If one
+    # prefix began with another ("pi-" and "pi-5-"), a tag could carry both;
+    # forbid that rather than rely on the grammar to disambiguate. (The empty
+    # amd64 prefix is safe: the grammar after a prefix starts with "v".)
+    for a in loaded:
+        for b in loaded:
+            if a is not b and a["tag_prefix"] and b["tag_prefix"].startswith(a["tag_prefix"]):
+                errors.append(f"tag prefix {b['tag_prefix']!r} of {b['name']} starts with "
+                              f"{a['tag_prefix']!r} of {a['name']}")
+    # unredacted-hardened-defaults is Architecture: all and versioned from the
+    # kernel; two flavors emitting it would publish competing versions.
+    if len(loaded) == len(all_names):
+        makers = [d["name"] for d in loaded if d["defaults_package"]]
+        if len(makers) != 1:
+            errors.append(f"exactly one flavor must set defaults_package = true, got {makers}")
     # build-debs.sh asks configs/lines.toml for the stable series of the
     # flavor's line set to decide the umbrella metas; a set with no stable
     # line fails there, 30+ minutes into the build. lines.py is a sibling
@@ -264,6 +291,47 @@ def _release_key(m: re.Match) -> tuple:
     kernel, base, n, p = m.groups()
     return (_ver(kernel), 0 if base else 1, _ver(base) if base else (),
             int(n), int(p or 0))
+
+
+def parse_tag(tag: str, root: Path | None = None) -> tuple[str, re.Match]:
+    """The flavor that builds a release tag, and the tag's grammar match.
+
+    A tag belongs to exactly one flavor: the one whose tag_prefix it carries,
+    followed by the release-tag grammar. amd64's prefix is empty and the
+    grammar starts with "v", so "pi5-v6.18.60-hardened1" can never pass as an
+    amd64 tag, nor "v7.2.13-hardened1" as a pi5 one.
+
+    >>> parse_tag("pi5-v6.18.60-fwd-v6.18.56-hardened1")[0]
+    'pi5'
+    >>> parse_tag("v7.2.13-fwd-v7.2.10-hardened1.2")[1].groups()
+    ('7.2.13', '7.2.10', '1', '2')
+    >>> parse_tag("pi5-7.2.13-hardened1")
+    Traceback (most recent call last):
+    ...
+    flavors.FlavorError: tag 'pi5-7.2.13-hardened1' is not <tag_prefix>vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P] for any flavor
+    """
+    hits = []
+    for n in names(root):
+        m = _tag_re(load(n, root)["tag_prefix"]).match(tag)
+        if m:
+            hits.append((n, m))
+    if len(hits) != 1:
+        raise FlavorError(
+            f"tag {tag!r} is not <tag_prefix>vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P] for any flavor"
+            if not hits else f"tag {tag!r} matches flavors {[h[0] for h in hits]}")
+    return hits[0]
+
+
+def tag_globs(root: Path | None = None) -> list[str]:
+    """The push-tag globs build-kernel.yml must trigger on: one per flavor.
+
+    validate.yml checks the workflow lists exactly these, so adding a flavor
+    cannot leave its tags unbuilt.
+
+    >>> tag_globs()
+    ['pi5-v*.*.*-hardened*', 'v*.*.*-hardened*']
+    """
+    return sorted(f"{load(n, root)['tag_prefix']}v*.*.*-hardened*" for n in names(root))
 
 
 def drift_baseline(name: str, series: str, releases: Path) -> Path | None:
@@ -341,6 +409,11 @@ def _cli(argv: list[str]) -> int:
                 print(f"{len(errors)} flavor descriptor problem(s)", file=sys.stderr)
                 return 1
             print(f"flavor descriptors OK ({', '.join(names())})")
+        elif cmd == "for-tag":
+            print(parse_tag(rest[0])[0])
+        elif cmd == "tag-globs":
+            for g in tag_globs():
+                print(g)
         elif cmd == "drift-baseline":
             releases = Path(rest[2]) if len(rest) > 2 else _REPO_ROOT / "releases"
             found = drift_baseline(rest[0], rest[1], releases)
