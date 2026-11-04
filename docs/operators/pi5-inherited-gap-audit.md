@@ -96,13 +96,34 @@ anthraxx's patch applies to this tree in forward-port mode (`-F0`, Makefile hunk
 
 ## EEPROM updates and the Pi 5 platform
 
-EEPROM updates have to work without `vcgencmd`. `rpi-eeprom-update` reads the bootloader config from the `blconfig` nvmem reserved-memory node and flashes over `spidev` on `spi10`.
+EEPROM updates have to work without `vcgencmd`. `rpi-eeprom-update` reads the bootloader config from the `blconfig` nvmem reserved-memory node and flashes over `spidev` on `spi10`. On the trial's kernel.org build both were missing, and `rpi-eeprom-update.service` failed. The built pi5 package (`linux-image-6.18.60-hardened-unredacted-pi5`) has both:
 
-RESULT-EEPROM
+- **`bcm2712-rpi-5-b.dtb`** has `/reserved-memory/nvram@0` (`compatible = "raspberrypi,bootloader-config", "nvmem-rmem"`, alias `blconfig`; the firmware fills in its address at boot) and `nvram@1` (`blpubkey`).
+- It also has `spi@7d004000` (`brcm,bcm2835-spi`, alias `spi10`) with a `spidev@0` child (`spidev10`).
+- **Drivers:** `nvmem-rmem.ko`, `spi-bcm2835.ko` and `spidev.ko` are in the package (`NVMEM_RMEM`, `SPI_BCM2835`, `SPI_SPIDEV` are `m`).
+- **The rest of the platform** that the trial lacked or relied on:
+  - temperature: `BCM2711_THERMAL=y` (thermal zone), plus `SENSORS_RASPBERRYPI_HWMON`;
+  - the RTC (`RTC_DRV_RPI=y`) and fan (`SENSORS_PWM_FAN`);
+  - the OTP (`NVMEM_RASPBERRYPI_OTP=y`).
+- **Packaging:** 28 Broadcom DTBs and 387 overlays.
+
+Whether `rpi-eeprom-update` actually works from this kernel can only be shown on the hardware: Phase 3 runs it, and Phase 4 applies one real update.
 
 ## Runtime check
 
-RESULT-SMOKE
+The pins are also checked on the running kernel. `tools/qemu-smoke.sh` boots it under `qemu-system-aarch64 -M virt -cpu cortex-a76` and compares the result with the build's `final.config`. It runs in CI for every pi5 build, before signing. On the 6.18.60 test build it reported:
+
+| Check | Result |
+|---|---|
+| kernelrelease | `6.18.60-hardened-unredacted-pi5` (no `-rpi`) |
+| page size | 16K |
+| lockdown | `none [integrity] confidentiality` |
+| active LSMs | `lockdown,capability,landlock,yama,bpf` |
+| `vm.mmap_rnd_bits` / `mmap_rnd_compat_bits` / `mmap_min_addr` | 30 / 16 / 32768 |
+| module signatures | `sig_enforce=Y`; the packaged `dummy.ko` loads; stripped of its signature, or with one byte changed under it, it is rejected ("Key was rejected by service") |
+| `/dev/mem`, `/proc/kcore` | absent |
+
+`integrity` is listed in `CONFIG_LSM` (common fragment) but is not an LSM since 6.10, where IMA and EVM became their own. The kernel ignores the name, as amd64's does.
 
 ## Follow-ups
 
