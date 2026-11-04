@@ -131,3 +131,24 @@ ZFS is a tracked DKMS target. WireGuard is in-tree as of 5.6 and should not need
 | ------ | ---------------------- | -------------- | ------ |
 | zfs    | _(not yet tested)_     |                |        |
 | wireguard-dkms | _(not yet tested)_ |              |        |
+
+## Raspberry Pi 5: `vcgencmd`, `/dev/vchiq`, debugfs, SCTP (pi5 kernel only)
+
+These apply to the Raspberry Pi 5 kernel (`linux-image-hardened-unredacted-pi5`) and not to amd64.
+
+**Symptom:** `vcgencmd` fails with an error about `/dev/vcio`. Software that opens `/dev/vc-mem` or `/dev/vchiq` finds no such device. `mount -t debugfs` fails. `socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP)` fails with `EPROTONOSUPPORT`.
+
+**Cause:** these are compiled out (configs/POLICY.md, "arm64 and Raspberry Pi 5"):
+- `CONFIG_BCM_VCIO` and `CONFIG_BCM2708_VCMEM`: `/dev/vcio` passes any firmware mailbox request to the VideoCore unfiltered, and `/dev/vc-mem` maps VideoCore memory. Either would let root get around `lockdown=integrity`.
+- `CONFIG_VCHIQ_CDEV`: `/dev/vchiq` is the VideoCore's userspace message interface for the legacy MMAL camera and codec stack, which the Pi 5 does not use.
+- debugfs is registered but never mountable (`CONFIG_DEBUG_FS_ALLOW_NONE`), as on amd64.
+- SCTP (`CONFIG_IP_SCTP`) is not built, as on amd64.
+
+**Workaround:** none needed for the Pi 5's normal operation:
+- Temperatures are in `/sys/class/thermal/thermal_zone*/temp`.
+- `rpi-eeprom-update` uses the device tree and SPI flash, not `vcgencmd`.
+- The Pi 5's camera and display stacks do not use VCHIQ.
+
+For a one-off `vcgencmd` query, boot the stock Raspberry Pi kernel.
+
+**Status:** Working as designed.

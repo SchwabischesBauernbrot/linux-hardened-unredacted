@@ -40,11 +40,20 @@
 # keep_in_main = 0 (explicit sunset); delete the block once nothing remains.
 #
 # Line sets per flavor: a block may carry `flavor = "<name>"`, naming the line
-# set it belongs to; a block without one belongs to "amd64" (every block below).
-# A flavor descriptor's `lines` key (configs/flavors/<flavor>.toml) names the
-# set it builds, and `kind = "stable"` is exactly-one PER SET, so one flavor's
-# umbrella metas never follow another's stable series. Series stay unique across
-# all sets for now (retention and seed lookup are keyed on the series alone).
+# set it belongs to; a block without one belongs to "amd64". A flavor
+# descriptor's `lines` key (configs/flavors/<flavor>.toml) names the set it
+# builds, and `kind = "stable"` is exactly-one PER SET, so one flavor's
+# umbrella metas never follow another's stable series. A line's key is
+# (set, series): two sets may track the same series, and seed lookup,
+# retention (tools/prune.py) and the drift baseline are all per set.
+#
+# Pin paths follow a convention the build computes without reading this file
+# (tools/lines.py pin_path): amd64 seeds are configs/seeds/<X.Y>.toml; every
+# other set's are configs/seeds/<set>/<X.Y>.toml. A set whose flavor builds
+# from a pinned git tree (source = "rpi-git") also declares
+# `source = "configs/sources/<set>/<X.Y>.toml"`. The pi5 line is stood up by
+# hand (tools/advance-line.sh only knows anthraxx's packaging); see
+# docs/operators/config-architecture.md#flavors.
 
 [[line]]
 series       = "7.1"
@@ -57,3 +66,14 @@ series       = "7.2"
 kind         = "stable"
 keep_in_main = 3
 seed         = "configs/seeds/7.2.toml"
+
+# Raspberry Pi 5 (configs/flavors/pi5.toml): Raspberry Pi's rpi-6.18.y tree at
+# a pinned commit, seeded from Raspberry Pi OS's packaged rpi-2712 config.
+# Tracks anthraxx's 6.18 branch, so most builds are forward-ports.
+[[line]]
+flavor       = "pi5"
+series       = "6.18"
+kind         = "stable"
+keep_in_main = 3
+seed         = "configs/seeds/pi5/6.18.toml"
+source       = "configs/sources/pi5/6.18.toml"

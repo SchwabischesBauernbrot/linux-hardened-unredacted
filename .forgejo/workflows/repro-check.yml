@@ -42,6 +42,10 @@ jobs:
           # repro-check.sh as $version -- including one with whitespace or a
           # leading dash. Same grammar as build-kernel.yml's derive-version and
           # publish.yml's resolve-target steps; KEEP THE THREE IN SYNC.
+          # amd64 releases only (no flavor tag prefix): this nightly check
+          # rebuilds the newest amd64 release on this amd64 host. A pi5 release
+          # (pi5-v...) is rebuilt by hand with tools/repro-check.sh, which
+          # cross-compiles it.
           ver=$(find releases -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
               | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-fwd-v[0-9]+\.[0-9]+\.[0-9]+)?-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$' \
               | sort -V | tail -n1 || true)

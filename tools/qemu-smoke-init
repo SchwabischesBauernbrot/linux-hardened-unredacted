@@ -1,0 +1,42 @@
+#!/bin/busybox sh
+# /init of the initramfs tools/qemu-smoke.sh boots. It only REPORTS what the
+# running kernel does, one "SMOKE: key=value" line each; tools/qemu-smoke.sh
+# compares them with the kernel's final.config, so the expectations live in
+# one place. Runs as PID 1 with nothing but busybox and /mod.
+/bin/busybox --install -s /bin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t securityfs securityfs /sys/kernel/security
+s() { echo "SMOKE: $*"; }
+s "release=$(uname -r)"
+s "machine=$(uname -m)"
+s "pagesize_kb=$(sed -n 's/^KernelPageSize: *\([0-9]*\) kB$/\1/p' /proc/self/smaps | head -n1)"
+s "lockdown=$(cat /sys/kernel/security/lockdown)"
+s "lsm=$(cat /sys/kernel/security/lsm)"
+s "mmap_rnd_bits=$(cat /proc/sys/vm/mmap_rnd_bits)"
+s "mmap_rnd_compat_bits=$(cat /proc/sys/vm/mmap_rnd_compat_bits 2>/dev/null || echo absent)"
+s "mmap_min_addr=$(cat /proc/sys/vm/mmap_min_addr)"
+s "sig_enforce=$(cat /sys/module/module/parameters/sig_enforce 2>/dev/null || echo absent)"
+s "dev_mem=$([ -e /dev/mem ] && echo present || echo absent)"
+s "proc_kcore=$([ -e /proc/kcore ] && echo present || echo absent)"
+# Signature checks run BEFORE the signed load: once the module is loaded, a
+# second insmod fails with "File exists" whatever its signature, and that
+# would read as a pass.
+for m in stripped tampered; do
+    if insmod "/mod/$m.ko" 2>/tmp/err; then
+        s "load_$m=accepted"
+    else
+        s "load_$m=rejected: $(tr '\n' ' ' </tmp/err)"
+    fi
+done
+if insmod /mod/signed.ko 2>/tmp/err; then
+    s "load_signed=accepted"
+else
+    s "load_signed=rejected: $(tr '\n' ' ' </tmp/err)"
+fi
+s "loaded_modules=$(cut -d' ' -f1 /proc/modules | tr '\n' ',')"
+dmesg | grep -iE 'lockdown|Loaded X.509|Machine model|Kernel command line|panic|BUG' \
+    | sed 's/^/SMOKE-DMESG: /'
+s "done"
+poweroff -f

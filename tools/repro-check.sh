@@ -4,6 +4,7 @@
 #
 # Usage: tools/repro-check.sh VERSION
 # e.g.   tools/repro-check.sh v6.12.8-hardened1
+#        tools/repro-check.sh pi5-v6.18.60-fwd-v6.18.56-hardened1
 #
 # Reproducibility scope, per package:
 #
@@ -47,8 +48,18 @@ manifest="releases/${version}/manifest.json"
 # The optional -fwd-vB infix marks a forward-port (kernel.org K tarball +
 # anthraxx's signed vB-hardenedN patch); like .P, the base is needed to
 # rebuild and comes from the tag.
-if [[ ! $version =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-fwd-v([0-9]+\.[0-9]+\.[0-9]+))?-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
-    echo "not a release tag: $version (want vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P])" >&2
+#
+# A tag of a flavor other than amd64 carries that flavor's tag_prefix
+# (pi5-v6.18.60-...); tools/flavors.py names the one flavor the tag belongs to,
+# and the manifest must record the same flavor below.
+if ! tag_flavor=$(python3 "$(dirname "$0")/flavors.py" for-tag "$version"); then
+    echo "not a release tag: $version (want <tag_prefix>vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P])" >&2
+    exit 2
+fi
+tag_prefix=$(python3 "$(dirname "$0")/flavors.py" get "$tag_flavor" tag_prefix)
+bare_tag=${version#"$tag_prefix"}
+if [[ ! $bare_tag =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-fwd-v([0-9]+\.[0-9]+\.[0-9]+))?-hardened([1-9][0-9]*)(\.([1-9][0-9]*))?$ ]]; then
+    echo "not a release tag: $version (want <tag_prefix>vX.Y.Z[-fwd-vX.Y.B]-hardenedN[.P])" >&2
     exit 2
 fi
 tag_kernel="${BASH_REMATCH[1]}"
@@ -166,27 +177,59 @@ arch=$(jq -r '.outputs[0].arch' "$manifest")
 # arch the manifest records, so a descriptor edit cannot quietly rebuild
 # something else under the release's name.
 flavor=$(jq -r '.flavor // "amd64"' "$manifest")
+if [[ $flavor != "$tag_flavor" ]]; then
+    echo "manifest/tag mismatch: tag $version is a $tag_flavor tag, but $manifest" >&2
+    echo "records flavor $flavor." >&2
+    exit 2
+fi
+
+# A flavor built from a pinned downstream tree reads the commit from the
+# source pin in THIS checkout (which must be at the release tag, see below).
+# Check it is the tree the release recorded before spending the rebuild.
+manifest_commit=$(jq -r '.inputs.source_tree.commit // empty' "$manifest")
+if [[ -n $manifest_commit ]]; then
+    pin_rel=$(python3 "$repo_root/tools/lines.py" source-path "${tag_kernel%.*}" \
+        "$(python3 "$repo_root/tools/flavors.py" get "$flavor" lines)")
+    pin_commit=$(python3 "$repo_root/tools/pins.py" get "$repo_root/$pin_rel" commit)
+    if [[ $pin_commit != "$manifest_commit" ]]; then
+        echo "$pin_rel pins $pin_commit, but $manifest records source tree" >&2
+        echo "$manifest_commit. Check out the release tag before rebuilding it." >&2
+        exit 2
+    fi
+fi
 
 # Pin the HISTORICAL upstream-config seed from the manifest. The current
 # repo's per-line seed pins may have moved forward; for repro we must
 # reproduce the seed that was in effect when the release was built.
 # fetch-seed.sh respects these FETCH_SEED_* env vars and falls back to the
-# pin files otherwise.
-seed_url=$(jq -r '.upstream_seed.url // empty' "$manifest")
-seed_commit=$(jq -r '.upstream_seed.commit // empty' "$manifest")
-seed_config_path=$(jq -r '.upstream_seed.config_path // empty' "$manifest")
+# pin files otherwise. An apt-deb seed record carries `type`; an arch-git one
+# predates the field and has none.
+seed_type=$(jq -r '.upstream_seed.type // "arch-git"' "$manifest")
 seed_sha256=$(jq -r '.upstream_seed.sha256 // empty' "$manifest")
-seed_signer=$(jq -r '.upstream_seed.signer_fpr // empty' "$manifest")
-[[ -n $seed_url && -n $seed_commit && -n $seed_sha256 ]] || {
-    echo "manifest missing upstream_seed.{url,commit,sha256}; this release predates the seed architecture" >&2
-    exit 1
-}
-seed_env=(-e "FETCH_SEED_URL=$seed_url"
-          -e "FETCH_SEED_COMMIT=$seed_commit"
-          -e "FETCH_SEED_CONFIG_PATH=$seed_config_path"
-          -e "FETCH_SEED_SHA256=$seed_sha256"
-          -e "FETCH_SEED_SIGNER_FPR=$seed_signer")
-seed_desc="$seed_commit ($seed_sha256)"
+seed_env=()
+if [[ $seed_type == apt-deb ]]; then
+    for key in archive suite component arch package version deb_sha256 config_path sha256 signer_fpr; do
+        val=$(jq -r --arg k "$key" '.upstream_seed[$k] // empty' "$manifest")
+        [[ -n $val ]] || { echo "manifest upstream_seed (apt-deb) is missing $key" >&2; exit 1; }
+        seed_env+=(-e "FETCH_SEED_${key^^}=$val")
+    done
+    seed_desc="$(jq -r '.upstream_seed.package + " " + .upstream_seed.version' "$manifest") ($seed_sha256)"
+else
+    seed_url=$(jq -r '.upstream_seed.url // empty' "$manifest")
+    seed_commit=$(jq -r '.upstream_seed.commit // empty' "$manifest")
+    seed_config_path=$(jq -r '.upstream_seed.config_path // empty' "$manifest")
+    seed_signer=$(jq -r '.upstream_seed.signer_fpr // empty' "$manifest")
+    [[ -n $seed_url && -n $seed_commit && -n $seed_sha256 ]] || {
+        echo "manifest missing upstream_seed.{url,commit,sha256}; this release predates the seed architecture" >&2
+        exit 1
+    }
+    seed_env=(-e "FETCH_SEED_URL=$seed_url"
+              -e "FETCH_SEED_COMMIT=$seed_commit"
+              -e "FETCH_SEED_CONFIG_PATH=$seed_config_path"
+              -e "FETCH_SEED_SHA256=$seed_sha256"
+              -e "FETCH_SEED_SIGNER_FPR=$seed_signer")
+    seed_desc="$seed_commit ($seed_sha256)"
+fi
 
 rebuild_work="$work/build"
 mkdir -p "$rebuild_work"
@@ -229,6 +272,10 @@ docker run --rm \
         # build-kernel.yml exactly; keep the two in sync.
         apt-get install -y --no-install-recommends \
             "gcc-$(gcc -dumpversion | cut -d. -f1)-plugin-dev"
+        # The extras of the flavor, as build-kernel.yml installs them: a
+        # cross toolchain when this host is not the flavor arch (pi5 on
+        # amd64), nothing for amd64.
+        /repo/build/install-flavor-deps.sh
         flavor_get() { python3 /repo/tools/flavors.py get "$FLAVOR" "$1"; }
         target="$(flavor_get distro)/$(flavor_get release)/$(flavor_get arch)"
         if [ "$target" != "$EXPECT_TARGET" ]; then

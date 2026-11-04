@@ -1,0 +1,43 @@
+# Upstream kernel config seed pin — pi5 line 6.18 (seed_type = "apt-deb").
+#
+# The pi5 flavor is seeded from Raspberry Pi's own packaged kernel config: the
+# /boot/config-* inside the signed linux-image-<ver>+rpt-rpi-2712 .deb from
+# archive.raspberrypi.com. It is the config Raspberry Pi OS ships for the Pi 5
+# (16K pages, BCM2712 + RP1 drivers built in), which the relays already run.
+#
+# build/fetch-seed.sh verifies the whole chain on every build:
+#   InRelease of `suite`, signed by `signer_fpr` (keys/raspberrypi-archive.gpg)
+#   -> sha256 of main/binary-<arch>/Packages(.gz) listed there
+#   -> that index's entry for `package` at exactly `version`, whose SHA256
+#      must equal `deb_sha256`
+#   -> the .deb's bytes (`deb_sha256`)
+#   -> the config file at `config_path` inside it (`sha256`).
+# A link that does not verify stops the build. Raspberry Pi keeps superseded
+# kernel packages listed in the suite's index (6.12.25 is still there), so an
+# older pin stays verifiable for rebuilds.
+#
+# The seed lags the tree: Raspberry Pi OS ships a few 6.18.y releases behind
+# its rpi-6.18.y branch (configs/sources/pi5/6.18.toml), the same way
+# anthraxx's config lags the amd64 tag. `make olddefconfig` reconciles it to
+# the tree, the fidelity assertion enforces every pin in the flavor's intent
+# fragments (Raspberry Pi's own defaults are weak: CONFIG_LSM="", 18 bits of
+# mmap ASLR, no module signing, no FORTIFY_SOURCE, no hardened usercopy), and
+# the hardening-drift guard compares each build with the last published pi5
+# 6.18 release. The inherited-gap audit of this seed is
+# docs/operators/pi5-inherited-gap-audit.md.
+#
+# Bumping: pick the newer linux-image-*-rpi-2712 from the suite's Packages
+# index, record its version and SHA256, extract /boot/config-* and record its
+# sha256, then re-run the gap audit's comparison against the previous seed.
+
+archive     = "https://archive.raspberrypi.com/debian"
+suite       = "trixie"
+component   = "main"
+arch        = "arm64"
+package     = "linux-image-6.18.50+rpt-rpi-2712"
+version     = "1:6.18.50-1+rpt1"
+deb_sha256  = "41a73543781af93f591adddcbf1e2fcc478450784ba2a27be2f07af84ce2bbb6"
+config_path = "./boot/config-6.18.50+rpt-rpi-2712"
+sha256      = "8914d802785a04fbb68a00e88e90774db7aa2ec33b9fa1e28f3296be3ebbcff8"
+signer_fpr  = "CF8A1AF502A2AA2D763BAE7E82B129927FA3303E"
+keyring     = "keys/raspberrypi-archive.gpg"

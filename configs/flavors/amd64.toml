@@ -15,6 +15,9 @@
 
 name          = "amd64"
 
+# Shown in the meta-packages' descriptions ("... for amd64").
+display_name  = "amd64"
+
 # dpkg architecture (the .deb Architecture field and filename suffix) and the
 # kernel's ARCH= (arch/x86; there is no arch/amd64).
 arch          = "amd64"
@@ -42,6 +45,7 @@ seed_type     = "arch-git"
 intent        = [
     "configs/intent.common.config",
     "configs/intent.x86_64.config",
+    "configs/intent.v7_2.config",
 ]
 
 # Appended to the kernel version to form the kernelrelease, so it names the
@@ -60,6 +64,13 @@ image_signing = "sbsign"
 # Symbols build/build-debs.sh requires =y before starting the 30+ minute
 # compile. sbsign needs a PE image, so EFI + EFI_STUB are mandatory with it.
 required_y    = ["CONFIG_X86_64", "CONFIG_EFI", "CONFIG_EFI_STUB"]
+
+# Whether this flavor's build emits unredacted-hardened-defaults (the sysctl
+# drop-in, Architecture: all). Exactly one flavor does, so two lines never
+# publish competing versions of one arch-independent package; the others'
+# image metas depend on it unversioned. amd64 builds the newest series, so
+# its kernel-derived version always sorts highest.
+defaults_package = true
 
 # Boot-integration package built alongside the kernel ("" = none; GRUB and
 # the distro's kernel hooks handle amd64).

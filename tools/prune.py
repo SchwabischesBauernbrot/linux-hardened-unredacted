@@ -38,6 +38,9 @@ from publish import purge_fastly, upload_deb
 # of tracked kernel lines) for per-line retention depth (keep_in_main). The
 # import is side-effect-free; the TOML is read only when its functions run.
 import lines as line_registry
+# flavors.py (configs/flavors/*.toml) names the flavors whose packages share
+# the registry; retention is per flavor, then per line.
+import flavors
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -522,23 +525,103 @@ def select_versions_to_archive(
     return archive_candidates
 
 
-def keep_map_from_registry() -> dict[tuple[int, int], int]:
-    """Per-line keep_in_main from configs/lines.toml, keyed by (major, minor).
+def keep_map_from_registry() -> dict[str, dict[tuple[int, int], int]]:
+    """Per-line keep_in_main from configs/lines.toml: {line set: {(major,
+    minor): keep}}. A line set is named after its flavor (amd64, pi5).
 
     Returns {} (callers then fall back to --keep) if the registry can't be
     read — prune must still work with --keep even if lines.toml is absent.
     """
-    out: dict[tuple[int, int], int] = {}
+    out: dict[str, dict[tuple[int, int], int]] = {}
     try:
-        for s in line_registry.all_series():
-            keep = line_registry.keep_for_series(s)
+        for line_set, s in line_registry.all_lines():
+            keep = line_registry.keep_for_series(s, flavor=line_set)
             if keep is None:
                 continue
             major, _, minor = s.partition(".")
-            out[(int(major), int(minor))] = keep
+            out.setdefault(line_set, {})[(int(major), int(minor))] = keep
     except Exception as e:  # noqa: BLE001 - the registry is advisory here
         print(f"prune: could not read configs/lines.toml ({e}); "
               "using --keep for all lines", file=sys.stderr)
+    return out
+
+
+# Every flavor-named package ends in -hardened-unredacted-[<X.Y>-]<flavor>,
+# with -dbg on the debug image: the concrete linux-image-7.2.13-hardened-
+# unredacted-amd64(-dbg) and linux-headers-..., and the metas
+# linux-image-hardened-unredacted-7.2-amd64 / -amd64.
+_FLAVOR_PKG_RE = re.compile(r"-hardened-unredacted-(?:\d+\.\d+-)?([a-z0-9]+)(?:-dbg)?$")
+
+
+def package_flavor(name: str, flavors: set[str], defaults_flavor: str | None) -> str | None:
+    """The flavor that built a package, from its name; None when the name
+    does not say (linux-libc-dev, which every flavor's build emits).
+
+    >>> fl = {"amd64", "pi5"}
+    >>> [package_flavor(n, fl, "amd64") for n in (
+    ...     "linux-image-6.18.60-hardened-unredacted-pi5",
+    ...     "linux-image-7.2.13-hardened-unredacted-amd64-dbg",
+    ...     "linux-headers-hardened-unredacted-6.18-pi5",
+    ...     "linux-image-hardened-unredacted-amd64",
+    ...     "unredacted-hardened-defaults", "linux-libc-dev")]
+    ['pi5', 'amd64', 'pi5', 'amd64', 'amd64', None]
+    """
+    if name == "unredacted-hardened-defaults":
+        return defaults_flavor
+    m = _FLAVOR_PKG_RE.search(name)
+    return m.group(1) if m and m.group(1) in flavors else None
+
+
+def select_packages_to_archive(
+    packages: list[dict],
+    flavors: set[str],
+    defaults_flavor: str | None,
+    default_keep: int = DEFAULT_KEEP_IN_MAIN,
+    keep_map: dict[str, dict[tuple[int, int], int]] | None = None,
+) -> list[dict]:
+    """The packages to archive: retention per FLAVOR, then per line.
+
+    Each flavor's versions are selected on their own (select_versions_to_archive
+    with that flavor's keep_in_main), so pi5's 6.18 builds never count against
+    amd64's lines, nor would a generic arm64 7.2 line against amd64's 7.2. A
+    package whose name names no flavor (linux-libc-dev) archives only once
+    every flavor that has its version archives that version.
+
+    >>> pk = lambda n, v: {"name": n, "version": v}
+    >>> pkgs = [pk("linux-image-hardened-unredacted-amd64", v)
+    ...         for v in ("7.2.13-hardened1", "7.2.14-hardened1",
+    ...                   "7.2.15-hardened1", "7.2.16-hardened1")]
+    >>> pkgs += [pk("linux-image-hardened-unredacted-pi5", "6.18.60-hardened0~fwd6.18.56.1")]
+    >>> pkgs += [pk("linux-libc-dev", "7.2.13-hardened1"), pk("linux-libc-dev", "7.2.16-hardened1")]
+    >>> sorted((p["name"], p["version"]) for p in select_packages_to_archive(
+    ...     pkgs, {"amd64", "pi5"}, "amd64", 3))  # doctest: +NORMALIZE_WHITESPACE
+    [('linux-image-hardened-unredacted-amd64', '7.2.13-hardened1'),
+     ('linux-libc-dev', '7.2.13-hardened1')]
+    """
+    keep_map = keep_map or {}
+    by_flavor: dict[str, set[str]] = {}
+    unattributed: list[dict] = []
+    for p in packages:
+        f = package_flavor(p["name"], flavors, defaults_flavor)
+        if f is None:
+            unattributed.append(p)
+        else:
+            by_flavor.setdefault(f, set()).add(p["version"])
+    archive: dict[str, set[str]] = {
+        f: set(select_versions_to_archive(sorted(vs, key=parse_version), default_keep,
+                                          keep_map.get(f, {})))
+        for f, vs in by_flavor.items()
+    }
+    out = [p for p in packages
+           if (f := package_flavor(p["name"], flavors, defaults_flavor)) is not None
+           and p["version"] in archive[f]]
+    for p in unattributed:
+        owners = [f for f, vs in by_flavor.items() if p["version"] in vs]
+        if not owners:
+            print(f"prune: {p['name']} {p['version']} belongs to no flavor's build; "
+                  "left in main", file=sys.stderr)
+        elif all(p["version"] in archive[f] for f in owners):
+            out.append(p)
     return out
 
 
@@ -599,8 +682,9 @@ def main(argv: list[str]) -> int:
             "distribution": args.distribution,
             "owner": args.owner,
             "default_keep": args.keep,
-            "keep_per_line": {f"{m}.{n}": k
-                              for (m, n), k in keep_map_from_registry().items()},
+            "keep_per_line": {f"{fl} {m}.{n}": k
+                              for fl, lines_ in keep_map_from_registry().items()
+                              for (m, n), k in lines_.items()},
             "note": "set FORGEJO_USER/FORGEJO_TOKEN to preview the live rotation plan",
         }, indent=2))
         return 0
@@ -610,26 +694,29 @@ def main(argv: list[str]) -> int:
     # Each selected version may span several packages (linux-image,
     # linux-headers, linux-libc-dev, and the meta-packages) — all of them
     # at that version move together.
-    keep_per_line = keep_map_from_registry()
+    keep_map = keep_map_from_registry()
+    flavor_names = set(flavors.names())
+    defaults_flavor = next((n for n in flavor_names
+                            if flavors.load(n)["defaults_package"]), None)
     packages = list_packages(args.owner, user, token)
     debian_pkgs = [p for p in packages if p.get("type") == "debian"]
     versions = sorted({p["version"] for p in debian_pkgs}, key=parse_version)
-    to_archive = set(
-        select_versions_to_archive(list(versions), args.keep, keep_per_line)
-    )
-    pkgs_to_archive = [p for p in debian_pkgs if p["version"] in to_archive]
+    pkgs_to_archive = select_packages_to_archive(
+        debian_pkgs, flavor_names, defaults_flavor, args.keep, keep_map)
+    to_archive = {p["version"] for p in pkgs_to_archive}
 
     plan = {
         "owner": args.owner,
         "distribution": args.distribution,
         "default_keep": args.keep,
-        "keep_per_line": {f"{m}.{n}": k for (m, n), k in keep_per_line.items()},
+        "keep_per_line": {f"{fl} {m}.{n}": k for fl, lines_ in keep_map.items()
+                          for (m, n), k in lines_.items()},
         "in_main_versions": list(versions),
         "to_archive_versions": sorted(to_archive, key=parse_version),
         "packages_to_archive": sorted(
             f"{p['name']}={p['version']}" for p in pkgs_to_archive
         ),
-        "rationale": "keep the newest N cores per kernel line (major.minor) in main",
+        "rationale": "keep the newest N cores per flavor and kernel line (major.minor) in main",
         "dry_run": args.dry_run,
     }
     print(json.dumps(plan, indent=2, sort_keys=True))

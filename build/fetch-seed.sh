@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 # Fetch + verify the upstream kernel-config seed for the kernel line being
 # built. The flavor descriptor's `seed_type` (configs/flavors/$FLAVOR.toml)
-# picks the source; the only one implemented is
+# picks the source:
 #   arch-git   a config file at a signed commit of a git repo -- for amd64,
 #              anthraxx's Arch packaging config.x86_64 -- verified by
 #              git verify-commit (against the pinned signer fingerprint) +
 #              sha256.
+#   apt-deb    the /boot/config-* inside a distro's signed kernel .deb -- for
+#              pi5, Raspberry Pi OS's linux-image-*-rpi-2712 -- verified along
+#              the apt chain: InRelease signature (pinned signer fingerprint,
+#              pinned keyring) -> Packages index hash -> .deb hash -> config
+#              hash. The pin (tools/pins.py) also records the .deb's hash, so
+#              the index entry must agree with what was reviewed.
 #
 # Seed selection (which pin file):
-#   - $SERIES set (X.Y derived from the build tag) + configs/seeds/$SERIES.toml
-#     exists  -> that file (the per-line path; the stable line advances 7.0 ->
-#     7.1 by adding seeds/7.1.toml and pointing lines.toml at it).
+#   - $SERIES set (X.Y derived from the build tag) + the line's pin exists ->
+#     that file. The path is a convention (tools/lines.py pin_path): amd64's
+#     line set uses configs/seeds/<X.Y>.toml (the stable line advances 7.0 ->
+#     7.1 by adding seeds/7.1.toml and pointing lines.toml at it); any other
+#     set uses configs/seeds/<set>/<X.Y>.toml.
 #   - else $SEED_PIN_PATH if set (manual override).
-#   - else configs/upstream-seed.toml (legacy; a symlink to the stable seed).
-#
-# (Tracking an LTS line whose config Arch no longer carries would add a second
-# seed source keyed off the pin — see docs/operators/config-architecture.md.
-# The project currently ships a single stable line, so only the arch-git
-# source is wired in.)
+#   - else configs/upstream-seed.toml (legacy; a symlink to amd64's stable
+#     seed). Never for another line set: that would seed it from amd64's.
 #
 # Runs in the network-ON phase of the workflow, before the network-isolated
 # configure/build step. Writes:
@@ -36,7 +40,10 @@
 #   SERIES                kernel line key (X.Y), selects configs/seeds/<X.Y>.toml
 #   SEED_PIN_PATH         explicit pin file (overrides SERIES selection)
 #   ANTHRAXX_KEYRING      default: <repo>/keys/anthraxx.gpg
-#   FETCH_SEED_URL/COMMIT/CONFIG_PATH/SHA256/SIGNER_FPR   pin overrides (repro)
+#   FETCH_SEED_URL/COMMIT/CONFIG_PATH/SHA256/SIGNER_FPR   arch-git pin
+#                         overrides (repro)
+#   FETCH_SEED_ARCHIVE/SUITE/COMPONENT/ARCH/PACKAGE/VERSION/DEB_SHA256/
+#     CONFIG_PATH/SHA256/SIGNER_FPR   apt-deb pin overrides (repro)
 
 set -euo pipefail
 umask 022
@@ -48,19 +55,31 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
 
 seed_type=$(python3 "$repo_root/tools/flavors.py" get "$FLAVOR" seed_type)
+line_set=$(python3 "$repo_root/tools/flavors.py" get "$FLAVOR" lines)
 # tools/flavors.py's validate refuses a descriptor asking for an unimplemented
-# seed type (apt-deb is Phase 2); this is the backstop.
+# seed type; this is the backstop.
 case "$seed_type" in
-    arch-git) ;;
+    arch-git|apt-deb) ;;
     *) echo "flavor $FLAVOR: seed_type '$seed_type' is not implemented by fetch-seed.sh" >&2; exit 2 ;;
 esac
-echo "seed type: $seed_type (flavor $FLAVOR)"
+echo "seed type: $seed_type (flavor $FLAVOR, line set $line_set)"
 
 [[ -d $WORKDIR ]] || { echo "WORKDIR $WORKDIR does not exist" >&2; exit 1; }
 
 # --- Resolve which seed pin to use -------------------------------------
-if [[ -n "${SERIES:-}" && -f "$repo_root/configs/seeds/${SERIES}.toml" ]]; then
-    pin_file="$repo_root/configs/seeds/${SERIES}.toml"
+# Same convention as tools/lines.py pin_path.
+if [[ $line_set == amd64 ]]; then
+    line_pin="$repo_root/configs/seeds/${SERIES:-}.toml"
+else
+    line_pin="$repo_root/configs/seeds/${line_set}/${SERIES:-}.toml"
+fi
+if [[ -n "${SERIES:-}" && -f "$line_pin" ]]; then
+    pin_file="$line_pin"
+elif [[ -n "${SERIES:-}" && $line_set != amd64 ]]; then
+    # configs/upstream-seed.toml is amd64's stable seed: never a fallback for
+    # another line set, escape hatch or not.
+    echo "no seed pin for line $SERIES of set $line_set: ${line_pin#"$repo_root/"} does not exist." >&2
+    exit 1
 elif [[ -n "${SERIES:-}" ]]; then
     # SERIES is set (so this is a tag-driven build) but its per-line seed file
     # does not exist. Falling through to configs/upstream-seed.toml here — a
@@ -101,6 +120,135 @@ else
 fi
 [[ -f $pin_file ]] || { echo "missing seed pin: $pin_file" >&2; exit 1; }
 echo "seed pin file: $pin_file"
+
+# Record the verified config hash for the next workflow step (see the comment
+# at the end of the arch-git path below for why), shared by both seed types.
+stage_seed_hash() {
+    printf '%s  %s\n' "$1" upstream-seed.config > "$WORKDIR/seed-hashes.txt"
+}
+
+# --- apt-deb: the config inside a signed distro kernel .deb ------------
+if [[ $seed_type == apt-deb ]]; then
+    pin_get() { python3 "$repo_root/tools/pins.py" get "$pin_file" "$1"; }
+    # FETCH_SEED_* replay a release's recorded seed (tools/repro-check.sh).
+    a_archive=${FETCH_SEED_ARCHIVE:-$(pin_get archive)}
+    a_suite=${FETCH_SEED_SUITE:-$(pin_get suite)}
+    a_component=${FETCH_SEED_COMPONENT:-$(pin_get component)}
+    a_arch=${FETCH_SEED_ARCH:-$(pin_get arch)}
+    a_package=${FETCH_SEED_PACKAGE:-$(pin_get package)}
+    a_version=${FETCH_SEED_VERSION:-$(pin_get version)}
+    a_deb_sha256=${FETCH_SEED_DEB_SHA256:-$(pin_get deb_sha256)}
+    a_config_path=${FETCH_SEED_CONFIG_PATH:-$(pin_get config_path)}
+    a_sha256=${FETCH_SEED_SHA256:-$(pin_get sha256)}
+    a_signer=${FETCH_SEED_SIGNER_FPR:-$(pin_get signer_fpr)}
+    a_keyring="$repo_root/$(pin_get keyring)"
+    echo "seed pin (apt-deb):"
+    for v in archive suite component arch package version deb_sha256 config_path sha256 signer; do
+        name="a_$v"
+        printf '  %-11s: %s\n' "$v" "${!name}"
+    done
+    [[ -s $a_keyring ]] || { echo "missing keyring: $a_keyring (see keys/README.md)" >&2; exit 1; }
+
+    apt_dir="$WORKDIR/seed-apt"
+    rm -rf "$apt_dir"
+    mkdir -p "$apt_dir"
+    dists="$a_archive/dists/$a_suite"
+
+    # 1. InRelease, signed by the pinned key. Everything below is read from
+    #    gpg's verified output (Release), never from the clearsigned file, so
+    #    text outside the signed block cannot influence it.
+    wget --no-verbose -O "$apt_dir/InRelease" "$dists/InRelease"
+    if ! gpg --no-default-keyring --keyring "$a_keyring" --status-file "$apt_dir/InRelease.status" \
+            --output "$apt_dir/Release" --decrypt "$apt_dir/InRelease" 2>"$apt_dir/InRelease.log"; then
+        cat "$apt_dir/InRelease.log" "$apt_dir/InRelease.status" >&2
+        echo "InRelease of $dists did not verify against $a_keyring" >&2
+        exit 2
+    fi
+    # VALIDSIG's last field is the primary key fingerprint.
+    if ! grep -q '^\[GNUPG:\] GOODSIG ' "$apt_dir/InRelease.status" \
+        || ! grep -qE "^\[GNUPG:\] VALIDSIG .* ${a_signer}\$" "$apt_dir/InRelease.status"; then
+        cat "$apt_dir/InRelease.status" >&2
+        echo "InRelease is not signed (GOODSIG + VALIDSIG) by the pinned key $a_signer" >&2
+        exit 2
+    fi
+    codename=$(sed -nE 's/^Codename:[[:space:]]*//p' "$apt_dir/Release" | head -n1)
+    if [[ $codename != "$a_suite" ]]; then
+        echo "InRelease at $dists is for codename '$codename', not '$a_suite'" >&2
+        exit 2
+    fi
+    echo "  InRelease: signed by $a_signer ($(sed -nE 's/^Date:[[:space:]]*//p' "$apt_dir/Release"))"
+
+    # 2. The Packages index, by the hash the signed Release lists.
+    index="$a_component/binary-$a_arch/Packages.gz"
+    # Captured first: `set -e` sees a failing command substitution in an
+    # assignment, not in a `read < <(...)`.
+    listed=$(python3 "$repo_root/tools/apt-index.py" release-sha256 "$apt_dir/Release" "$index")
+    read -r want_sha want_size <<<"$listed"
+    wget --no-verbose -O "$apt_dir/Packages.gz" "$dists/$index"
+    got_sha=$(sha256sum "$apt_dir/Packages.gz" | awk '{print $1}')
+    if [[ $got_sha != "$want_sha" || $(stat -c %s "$apt_dir/Packages.gz") != "$want_size" ]]; then
+        echo "$index: sha256 $got_sha, size $(stat -c %s "$apt_dir/Packages.gz");" >&2
+        echo "  the signed Release lists sha256 $want_sha, size $want_size" >&2
+        exit 2
+    fi
+    echo "  $index: OK ($got_sha)"
+
+    # 3. The .deb, by the hash the index lists, which must be the pinned one.
+    entry=$(python3 "$repo_root/tools/apt-index.py" package "$apt_dir/Packages.gz" \
+        "$a_package" "$a_version")
+    read -r deb_file index_sha <<<"$entry"
+    if [[ $index_sha != "$a_deb_sha256" ]]; then
+        echo "$a_package $a_version: the signed index lists sha256 $index_sha," >&2
+        echo "  but the pin says $a_deb_sha256" >&2
+        exit 2
+    fi
+    deb_url="$a_archive/$deb_file"
+    wget --no-verbose -O "$apt_dir/seed.deb" "$deb_url"
+    got_sha=$(sha256sum "$apt_dir/seed.deb" | awk '{print $1}')
+    if [[ $got_sha != "$a_deb_sha256" ]]; then
+        echo "$deb_url: sha256 $got_sha, want $a_deb_sha256" >&2
+        exit 2
+    fi
+    echo "  $(basename "$deb_file"): OK ($got_sha)"
+
+    # 4. The config file inside it.
+    dpkg-deb --fsys-tarfile "$apt_dir/seed.deb" \
+        | tar -xO "$a_config_path" > "$WORKDIR/upstream-seed.config"
+    got_sha=$(sha256sum "$WORKDIR/upstream-seed.config" | awk '{print $1}')
+    if [[ $got_sha != "$a_sha256" ]]; then
+        echo "seed sha256 mismatch for $a_config_path in $(basename "$deb_file"):" >&2
+        echo "  pin:    $a_sha256" >&2
+        echo "  actual: $got_sha" >&2
+        exit 2
+    fi
+    echo "  config sha256: OK ($got_sha)"
+
+    stage_seed_hash "$a_sha256"
+    release_sha=$(sha256sum "$apt_dir/InRelease" | awk '{print $1}')
+    # Provenance for the manifest (`upstream_seed`). `type` distinguishes it
+    # from an arch-git seed record, which predates it and has none.
+    cat > "$WORKDIR/seed-info.json" <<EOF
+{
+  "type": "apt-deb",
+  "archive": "$a_archive",
+  "suite": "$a_suite",
+  "component": "$a_component",
+  "arch": "$a_arch",
+  "package": "$a_package",
+  "version": "$a_version",
+  "deb_url": "$deb_url",
+  "deb_sha256": "$a_deb_sha256",
+  "config_path": "$a_config_path",
+  "sha256": "$a_sha256",
+  "signer_fpr": "$a_signer",
+  "inrelease_sha256": "$release_sha",
+  "signature_verified": true
+}
+EOF
+    rm -rf "$apt_dir"
+    echo "fetch-seed.sh: OK"
+    exit 0
+fi
 
 # Parse a simple key="value" line from the TOML pin file. The pin is
 # hand-written + reviewed (not adversarial), so a grep+sed suffices --

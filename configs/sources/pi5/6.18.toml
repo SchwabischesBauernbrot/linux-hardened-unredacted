@@ -1,0 +1,35 @@
+# Kernel source pin — pi5 line 6.18 (configs/flavors/pi5.toml, source = "rpi-git").
+#
+# The pi5 flavor builds Raspberry Pi's own kernel tree, not kernel.org's: it
+# carries the Pi 5 support the relays depend on (EEPROM device-tree nodes, the
+# tryboot reboot flag, numa_policy=, the macb/RP1 TX fixes). Raspberry Pi
+# publishes no signed tags or tarballs for it, so the pin is a commit hash,
+# which is content-addressed: nobody can move it under us.
+#
+# build/fetch-sources.sh, for every pi5 build:
+#   1. shallow-fetches exactly `commit` from `url` and checks it is the commit
+#      it asked for;
+#   2. checks the tree's Makefile declares `version`, and that the build's tag
+#      is for that version (a bump and the tag that ships it cannot drift);
+#   3. fetches and signature-verifies the kernel.org tarball of `version`, as
+#      for amd64;
+#   4. recomputes the downstream delta (every path where the two trees differ,
+#      with the Raspberry Pi side's sha256) and refuses to build unless it is
+#      byte-identical to 6.18.delta next to this file.
+#
+# Bumping the pin is a reviewed PR that changes `commit` (and `version`, when
+# Raspberry Pi has merged a new 6.18.y stable release) and regenerates
+# 6.18.delta with tools/source-delta.py. The delta's diff in that PR shows
+# every kernel.org file Raspberry Pi touches, adds or drops, so a new one is
+# visible in review. The hash authenticates the tree; the delta makes its
+# divergence from the signed upstream reviewable. It cannot make Raspberry
+# Pi's changes trustworthy by itself (docs/operators/flavors.md, "Risks").
+#
+# The patch applied on top is anthraxx's signed v6.18.B-hardenedN, so a pi5
+# build of a version anthraxx has not tagged is a forward-port
+# (pi5-v6.18.K-fwd-v6.18.B-hardenedN); see docs/users/cve-policy.md.
+
+url     = "https://github.com/raspberrypi/linux.git"
+branch  = "rpi-6.18.y"
+commit  = "0b41724521c9adf5399409d02aece6c1df0a4432"
+version = "6.18.60"

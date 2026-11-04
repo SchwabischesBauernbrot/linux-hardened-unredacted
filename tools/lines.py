@@ -7,28 +7,33 @@ the line key used for seed selection, meta-package naming, prune retention
 buckets, and drift-baseline scoping.
 
 Each line belongs to a line set, named by its optional `flavor` field; a block
-without one belongs to "amd64", which is every line registered today. A flavor
-descriptor's `lines` key (configs/flavors/<flavor>.toml) names the set it
-builds. Each set has exactly one stable line, so the umbrella meta-packages of
-one flavor never follow another flavor's stable series.
+without one belongs to "amd64". A flavor descriptor's `lines` key
+(configs/flavors/<flavor>.toml) names the set it builds. Each set has exactly
+one stable line, so the umbrella meta-packages of one flavor never follow
+another flavor's stable series. A line's key is (set, series): two sets may
+track the same series, and every per-line query takes the set (default amd64).
 
 Python consumers import this module:
 
     import lines
     lines.stable_series()                -> "7.0"   (the amd64 set)
     lines.stable_series(flavor="pi5")    -> that set's stable series
-    lines.all_series()                   -> ["7.0"]
+    lines.all_series()                   -> ["7.0"]   (the amd64 set)
+    lines.all_series(flavor="pi5")       -> ["6.18"]
+    lines.all_lines()                    -> [("amd64", "7.0"), ("pi5", "6.18")]
     lines.keep_for_series("7.0")         -> 3   (or None if unregistered)
+    lines.keep_for_series("6.18", flavor="pi5")
 
-Shell consumers (build-debs.sh, the workflows) invoke it as a CLI:
+Shell consumers (build-debs.sh, the workflows) invoke it as a CLI. An optional
+trailing SET names the line set; without it the query is about amd64's:
 
-    python3 tools/lines.py series             # all series, space-separated
-    python3 tools/lines.py stable-series      # the amd64 set's stable series
-    python3 tools/lines.py stable-series pi5  # another set's stable series
-    python3 tools/lines.py kinds              # "series=kind" pairs, one per line
-    python3 tools/lines.py seed-path 7.0      # seed pin path for a series
-    python3 tools/lines.py keep 7.0           # keep_in_main for a series
-    python3 tools/lines.py series-for 7.0.12  # series (X.Y) for a full version
+    python3 tools/lines.py series [SET]         # series, space-separated
+    python3 tools/lines.py stable-series [SET]  # the set's stable series
+    python3 tools/lines.py kinds [SET]          # "series=kind" pairs, one per line
+    python3 tools/lines.py seed-path 7.0 [SET]  # seed pin path for a series
+    python3 tools/lines.py source-path 6.18 pi5 # source pin (rpi-git sets only)
+    python3 tools/lines.py keep 7.0 [SET]       # keep_in_main for a series
+    python3 tools/lines.py series-for 7.0.12    # series (X.Y) for a full version
 
 Parsing uses the stdlib `tomllib` (Python 3.11+; the build runner is 3.13).
 """
@@ -59,12 +64,12 @@ def load(path: Path | None = None) -> list[dict]:
 
     Validates the minimal invariants the rest of the system relies on:
     every line has a well-formed `series` and `flavor`, each flavor has
-    exactly one `stable` line, and series are unique. A malformed registry
-    is a build-stopping error, not something to paper over.
+    exactly one `stable` line, and (flavor, series) pairs are unique. A
+    malformed registry is a build-stopping error, not something to paper over.
 
-    Series stay unique ACROSS flavors for now: keep_for_series() and
-    seed_path_for() are keyed on the series alone, and prune buckets by it.
-    Two flavors on one series is a Phase 2 change (docs/operators/flavors.md).
+    The same series may appear in two sets (an amd64 7.2 line and a generic
+    arm64 7.2 line): seeds, sources and retention are looked up by (set,
+    series), and tools/prune.py buckets packages by flavor before series.
     """
     path = path or _DEFAULT_REGISTRY
     with open(path, "rb") as fh:
@@ -72,18 +77,18 @@ def load(path: Path | None = None) -> list[dict]:
     out = data.get("line", [])
     if not out:
         raise ValueError(f"{path}: no [[line]] entries")
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     stable: dict[str, int] = {}
     for ln in out:
         series = ln.get("series", "")
         if not _SERIES_RE.match(str(series)):
             raise ValueError(f"{path}: bad series {series!r} (want major.minor)")
-        if series in seen:
-            raise ValueError(f"{path}: duplicate series {series!r}")
-        seen.add(series)
         flavor = flavor_of(ln)
         if not _FLAVOR_RE.match(str(flavor)):
             raise ValueError(f"{path}: line {series!r} has bad flavor {flavor!r}")
+        if (flavor, series) in seen:
+            raise ValueError(f"{path}: duplicate series {series!r} in line set {flavor!r}")
+        seen.add((flavor, series))
         stable.setdefault(flavor, 0)
         if ln.get("kind") == "stable":
             stable[flavor] += 1
@@ -94,15 +99,22 @@ def load(path: Path | None = None) -> list[dict]:
     return out
 
 
-def _by_series(series: str, path: Path | None = None) -> dict:
+def _by_series(series: str, path: Path | None = None,
+               flavor: str = DEFAULT_FLAVOR) -> dict:
     for ln in load(path):
-        if ln["series"] == series:
+        if ln["series"] == series and flavor_of(ln) == flavor:
             return ln
-    raise KeyError(f"series {series!r} not in registry")
+    raise KeyError(f"series {series!r} not in line set {flavor!r}")
 
 
-def all_series(path: Path | None = None) -> list[str]:
-    return [ln["series"] for ln in load(path)]
+def all_series(path: Path | None = None, flavor: str = DEFAULT_FLAVOR) -> list[str]:
+    """The series of one line set (default: amd64's)."""
+    return [ln["series"] for ln in load(path) if flavor_of(ln) == flavor]
+
+
+def all_lines(path: Path | None = None) -> list[tuple[str, str]]:
+    """Every registered line as (set, series)."""
+    return [(flavor_of(ln), ln["series"]) for ln in load(path)]
 
 
 def stable_series(path: Path | None = None, flavor: str = DEFAULT_FLAVOR) -> str:
@@ -118,23 +130,45 @@ def stable_series(path: Path | None = None, flavor: str = DEFAULT_FLAVOR) -> str
     raise ValueError(f"no stable line for flavor {flavor!r} in registry")
 
 
-def keep_for_series(series: str, path: Path | None = None) -> int | None:
+def keep_for_series(series: str, path: Path | None = None,
+                    flavor: str = DEFAULT_FLAVOR) -> int | None:
     """keep_in_main for a series, or None if the series isn't registered.
 
     None lets tools/prune.py fall back to its --keep default for any line
     that's present in the registry's history but not currently tracked.
     """
     try:
-        return int(_by_series(series, path)["keep_in_main"])
+        return int(_by_series(series, path, flavor)["keep_in_main"])
     except KeyError:
         return None
 
 
-def seed_path_for(series: str, path: Path | None = None) -> str:
-    """Repo-relative seed pin path for `series`, validated.
+def pin_path(kind: str, series: str, flavor: str = DEFAULT_FLAVOR) -> str:
+    """The conventional repo-relative pin path of a line.
+
+    The amd64 set keeps the original flat seed layout (configs/seeds/7.2.toml);
+    every other set gets a directory named after it, so two sets can pin the
+    same series. build/fetch-seed.sh and build/fetch-sources.sh compute the
+    same paths without reading this registry.
+
+    >>> pin_path("seeds", "7.2")
+    'configs/seeds/7.2.toml'
+    >>> pin_path("seeds", "6.18", "pi5")
+    'configs/seeds/pi5/6.18.toml'
+    >>> pin_path("sources", "6.18", "pi5")
+    'configs/sources/pi5/6.18.toml'
+    """
+    if flavor == DEFAULT_FLAVOR and kind == "seeds":
+        return f"configs/{kind}/{series}.toml"
+    return f"configs/{kind}/{flavor}/{series}.toml"
+
+
+def seed_path_for(series: str, path: Path | None = None,
+                  flavor: str = DEFAULT_FLAVOR) -> str:
+    """Repo-relative seed pin path for `series` in a line set, validated.
 
     build/fetch-seed.sh resolves the seed BY CONVENTION -- it computes
-    configs/seeds/$SERIES.toml and never reads lines.toml -- so a `seed` value
+    pin_path("seeds", ...) and never reads lines.toml -- so a `seed` value
     pointing anywhere else is silently ignored by the build while
     seed-bump.yml (which does go through here) would faithfully bump the wrong
     file. A copy-paste slip when advancing the line, e.g.
@@ -149,26 +183,45 @@ def seed_path_for(series: str, path: Path | None = None) -> str:
     retention bucketing and must keep working for a line whose seed file has
     been removed.
     """
-    seed = _by_series(series, path)["seed"]
-    expected = f"configs/seeds/{series}.toml"
-    if seed != expected:
+    return _checked_pin("seed", series, path, flavor)
+
+
+def source_path_for(series: str, path: Path | None = None,
+                    flavor: str = DEFAULT_FLAVOR) -> str:
+    """Repo-relative source pin path of a line, validated like the seed.
+
+    Only lines of a flavor that builds from a pinned git tree (source =
+    "rpi-git") carry one; build/fetch-sources.sh finds it by convention.
+    """
+    return _checked_pin("source", series, path, flavor)
+
+
+def _checked_pin(key: str, series: str, path: Path | None, flavor: str) -> str:
+    ln = _by_series(series, path, flavor)
+    if key not in ln:
+        raise ValueError(f"line {series!r} of set {flavor!r} declares no {key}")
+    pin = ln[key]
+    expected = pin_path(f"{key}s", series, flavor)
+    if pin != expected:
         raise ValueError(
-            f"line {series!r} declares seed {seed!r}, but build/fetch-seed.sh "
-            f"resolves the seed by convention as {expected!r} and never reads "
+            f"line {series!r} of set {flavor!r} declares {key} {pin!r}, but the "
+            f"build resolves it by convention as {expected!r} and never reads "
             f"this registry. Rename the file or fix configs/lines.toml so they "
             f"agree."
         )
-    # Resolve the repo-relative seed against the registry's OWN root
+    # Resolve the repo-relative pin against the registry's OWN root
     # (configs/lines.toml -> repo root), not the installed _REPO_ROOT, so an
     # injected fixture registry validates against its own tree.
     root = (path.resolve().parent.parent if path else _REPO_ROOT)
-    if not (root / seed).is_file():
+    if not (root / pin).is_file():
+        hint = (f"Stand the line up with: tools/advance-line.sh {series} <anthraxx ref>"
+                if flavor == DEFAULT_FLAVOR and key == "seed"
+                else "Add the pin file in the same change as the line.")
         raise ValueError(
-            f"line {series!r} declares seed {seed!r}, which does not exist "
-            f"under {root}. Stand the line up with: "
-            f"tools/advance-line.sh {series} <anthraxx ref>"
+            f"line {series!r} of set {flavor!r} declares {key} {pin!r}, which "
+            f"does not exist under {root}. {hint}"
         )
-    return seed
+    return pin
 
 
 def series_for_version(version: str) -> str:
@@ -190,17 +243,23 @@ def _cli(argv: list[str]) -> int:
     cmd, rest = argv[0], argv[1:]
     try:
         if cmd == "series":
-            print(" ".join(all_series()))
+            print(" ".join(all_series(flavor=rest[0] if rest else DEFAULT_FLAVOR)))
         elif cmd == "stable-series":
             print(stable_series(flavor=rest[0]) if rest else stable_series())
         elif cmd == "kinds":
-            print("\n".join(f"{ln['series']}={ln.get('kind', '')}" for ln in load()))
+            flavor = rest[0] if rest else DEFAULT_FLAVOR
+            print("\n".join(f"{ln['series']}={ln.get('kind', '')}" for ln in load()
+                            if flavor_of(ln) == flavor))
         elif cmd == "seed-path":
-            print(seed_path_for(rest[0]))
+            print(seed_path_for(rest[0], flavor=rest[1] if len(rest) > 1 else DEFAULT_FLAVOR))
+        elif cmd == "source-path":
+            print(source_path_for(rest[0], flavor=rest[1] if len(rest) > 1 else DEFAULT_FLAVOR))
         elif cmd == "keep":
-            keep = keep_for_series(rest[0])
+            flavor = rest[1] if len(rest) > 1 else DEFAULT_FLAVOR
+            keep = keep_for_series(rest[0], flavor=flavor)
             if keep is None:
-                print(f"series {rest[0]!r} not registered", file=sys.stderr)
+                print(f"series {rest[0]!r} not registered in line set {flavor!r}",
+                      file=sys.stderr)
                 return 1
             print(keep)
         elif cmd == "series-for":

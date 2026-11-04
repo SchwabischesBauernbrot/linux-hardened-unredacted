@@ -4,7 +4,7 @@
 
 The build runs `make bindeb-pkg` directly on the patched upstream tree inside the build job's single pinned `debian:trixie` container. The driver scripts are in `build/`:
 
-Every script reads its flavor-dependent choices (arch, kernel arch, source and seed type, intent fragments, LOCALVERSION, image signing) from the flavor descriptor named by `FLAVOR`, `configs/flavors/<flavor>.toml`; `build-kernel.yml`'s matrix is the list of flavors. See [config-architecture.md](config-architecture.md#flavors).
+Every script reads its flavor-dependent choices (arch, kernel arch, source and seed type, intent fragments, LOCALVERSION, image signing) from the flavor descriptor named by `FLAVOR`, `configs/flavors/<flavor>.toml`; `build-kernel.yml` routes each release tag to its flavor by the tag's prefix. See [config-architecture.md](config-architecture.md#flavors).
 
 - `fetch-sources.sh` — fetches the upstream kernel tarball and the anthraxx `linux-hardened` patch, verifying both against pinned signer fingerprints (`E240B57E…` for anthraxx, `ABAF11C6…`/`647F2865…` for kernel.org).
 - `apply-patches.sh` — applies the linux-hardened patch to the upstream tree.
@@ -44,7 +44,7 @@ Ubuntu is a Phase 2 target — **not yet published or validated**. The kernel bi
 For x86_64 targets across distros (Ubuntu, Debian point releases, etc.), the architecture is straightforward — anthraxx's seed is x86_64-only but distro-independent at the kernel level. Two pieces per target:
 
 1. **Per-target intent.** The intent is already layered: `configs/intent.common.config` plus `configs/intent.x86_64.config` is shared by every x86_64 target (the project's hardening posture doesn't change between Debian and Ubuntu). Where a target needs a distro-specific override (e.g. Ubuntu's `apparmor`-vs-Debian's posture, or distro-specific module pins), add an `intent.{distro}.config` fragment and list it after those two in the target's descriptor. A symbol may be pinned by only one fragment of a flavor, so move a pin rather than overriding it.
-2. **Descriptor + matrix.** Add a flavor descriptor `configs/flavors/<name>.toml` with the target's `distro`, `release` and `arch`, and add `<name>` to `.forgejo/workflows/build-kernel.yml`'s `strategy.matrix.flavor`. A second flavor needs its own `tag_prefix` and `localversion`, which `tools/flavors.py validate` enforces. The build container in that file may also need updating (different base image for non-Debian distros).
+2. **Descriptor + tag route.** Add a flavor descriptor `configs/flavors/<name>.toml` with the target's `distro`, `release` and `arch`, and add its `<tag_prefix>v*.*.*-hardened*` glob to `.forgejo/workflows/build-kernel.yml`'s tag triggers (`validate.yml` checks the list against `tools/flavors.py tag-globs`). A second flavor needs its own `tag_prefix` and `localversion`, which `tools/flavors.py validate` enforces. Every flavor builds in that file's one Debian trixie amd64 container (another architecture is cross-compiled), so a non-Debian distro target would also need a different container.
 
 For non-x86_64 (arm64), anthraxx doesn't currently publish a per-arch config. The `73946f6` "prepare for multi-arch" commit in their packaging repo is scaffolding only. Options for arm64 would be:
 

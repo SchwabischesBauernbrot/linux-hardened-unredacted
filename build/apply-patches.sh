@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Extract the vanilla kernel tarball and apply the linux-hardened patch.
+# Extract the kernel tree the flavor builds and apply the linux-hardened patch.
 # Aborts on rejected hunks; rejected hunks are surfaced via .rej files.
+#
+# The tree is the vanilla kernel.org tarball, or for a flavor whose source is
+# a pinned downstream tree (source = "rpi-git") the tar of it that
+# fetch-sources.sh made (the kernel.org tarball is only its delta reference).
 #
 # Required env:
 #   WORKDIR
 #   KERNEL_VERSION
 #   HARDENED_REVISION
+#   FLAVOR                build flavor, configs/flavors/<FLAVOR>.toml
 #
 # Optional:
 #   HARDENED_BASE_VERSION forward-port mode (see fetch-sources.sh): apply the
@@ -20,9 +25,18 @@ umask 022
 : "${WORKDIR:?WORKDIR required}"
 : "${KERNEL_VERSION:?KERNEL_VERSION required}"
 : "${HARDENED_REVISION:?HARDENED_REVISION required}"
+: "${FLAVOR:?FLAVOR required (a configs/flavors/<FLAVOR>.toml)}"
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+source_type=$(python3 "$repo_root/tools/flavors.py" get "$FLAVOR" source)
 
 base_version="${HARDENED_BASE_VERSION:-$KERNEL_VERSION}"
-tarball="linux-${KERNEL_VERSION}.tar.xz"
+case "$source_type" in
+    kernelorg-tarball) tarball="linux-${KERNEL_VERSION}.tar.xz" ;;
+    # Named by fetch-sources.sh; listed in input-hashes.txt like the tarball.
+    rpi-git)           tarball="source-${KERNEL_VERSION}.tar" ;;
+    *) echo "flavor $FLAVOR: source '$source_type' is not implemented by apply-patches.sh" >&2; exit 2 ;;
+esac
 hardened_patch="linux-hardened-v${base_version}-hardened${HARDENED_REVISION}.patch"
 
 cd "$WORKDIR"

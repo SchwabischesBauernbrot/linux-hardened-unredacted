@@ -76,6 +76,18 @@ deb_arch=$(flavor_get arch)
 kernel_arch=$(flavor_get kernel_arch)
 # The configs/lines.toml line set whose stable series gets the umbrella metas.
 line_set=$(flavor_get lines)
+# How the meta-package descriptions name the target ("amd64", "Raspberry Pi 5").
+display_name=$(flavor_get display_name)
+# Whether this flavor emits unredacted-hardened-defaults (exactly one does).
+defaults_package=$(flavor_get defaults_package)
+
+# Cross-compile when the build host is not the flavor's architecture; the same
+# derivation as build/configure-kernel.sh (see the comment there). Empty for a
+# native build. bindeb-pkg then runs dpkg-buildpackage for the target arch.
+cross=()
+if [[ $(dpkg --print-architecture) != "$deb_arch" ]]; then
+    cross=("CROSS_COMPILE=$(dpkg-architecture -a"$deb_arch" -qDEB_HOST_GNU_TYPE 2>/dev/null)-")
+fi
 
 # Must match build/configure-kernel.sh's MODULE_SIG_KEY_BASENAME and the value
 # configs/intent.common.config pins for CONFIG_MODULE_SIG_KEY. Not the kernel's
@@ -265,13 +277,14 @@ echo "=== end pre-build sanity ==="
 echo "running make bindeb-pkg"
 echo "  KDEB_PKGVERSION=$new_version"
 echo "  LOCALVERSION=$local_version"
-echo "  ARCH=$kernel_arch  -j$(nproc)"
+echo "  ARCH=$kernel_arch ${cross[*]} -j$(nproc)"
 
 # DEB_HOST_ARCH tells dpkg-buildpackage (which bindeb-pkg calls
 # internally) what arch the .deb should target. The kernel make
 # call uses ARCH=$kernel_arch (x86_64) for the kernel build itself.
 make \
     ARCH="$kernel_arch" \
+    "${cross[@]}" \
     -j"$(nproc)" \
     KDEB_PKGVERSION="$new_version" \
     LOCALVERSION="$local_version" \
@@ -524,45 +537,60 @@ emit_umbrella_meta() {
 # the documented sysctl policy. Admins override individual values with a
 # higher-numbered file in /etc/sysctl.d/ (which wins over /usr/lib).
 # repo_root is captured near the top, before the cd into the kernel tree.
+#
+# Only the flavor whose descriptor sets defaults_package builds it (amd64). It
+# is Architecture: all and versioned from the kernel, so a second line building
+# it (pi5's 6.18.x) would publish a LOWER version of the same package into the
+# same suite. The other flavors' image metas depend on it without a version
+# and get amd64's from the suite.
+defaults_pkg="unredacted-hardened-defaults"
+if [[ $defaults_package == true ]]; then
+    defaults_dep="${defaults_pkg} (>= ${new_version})"
+else
+    defaults_dep="${defaults_pkg}"
+fi
 sysctl_src="$repo_root/configs/sysctl.d/99-hardened.conf"
 [[ -f $sysctl_src ]] || { echo "missing $sysctl_src" >&2; exit 1; }
 
-echo "generating defaults package"
-defaults_pkg="unredacted-hardened-defaults"
-ddir=$(mktemp -d)
-mkdir -p "$ddir/DEBIAN" "$ddir/usr/lib/sysctl.d"
-cp "$sysctl_src" "$ddir/usr/lib/sysctl.d/99-hardened.conf"
-{
-    echo "Package: ${defaults_pkg}"
-    echo "Source: linux-hardened-unredacted"
-    echo "Version: ${new_version}"
-    echo "Architecture: all"
-    echo "Maintainer: Unredacted <security@unredacted.org>"
-    echo "Section: admin"
-    echo "Priority: optional"
-    echo "Description: Hardened runtime defaults (sysctl) for the unredacted kernel"
-    echo " Ships /usr/lib/sysctl.d/99-hardened.conf, the sysctl policy"
-    echo " documented in the project's POLICY.md: unprivileged user"
-    echo " namespaces, ptrace, BPF, and perf restricted to root. Admins"
-    echo " override individual values with a higher-numbered file in"
-    echo " /etc/sysctl.d/. Pulled in by linux-image-hardened-unredacted-${FLAVOR}."
-} > "$ddir/DEBIAN/control"
-# Apply the sysctls on install so a reboot isn't required. `|| true`
-# because a key may not exist on the running (possibly stock) kernel;
-# sysctl --system logs and continues, and a missing key must not fail
-# package configuration.
-cat > "$ddir/DEBIAN/postinst" <<'POSTINST'
+if [[ $defaults_package == true ]]; then
+    echo "generating defaults package"
+    ddir=$(mktemp -d)
+    mkdir -p "$ddir/DEBIAN" "$ddir/usr/lib/sysctl.d"
+    cp "$sysctl_src" "$ddir/usr/lib/sysctl.d/99-hardened.conf"
+    {
+        echo "Package: ${defaults_pkg}"
+        echo "Source: linux-hardened-unredacted"
+        echo "Version: ${new_version}"
+        echo "Architecture: all"
+        echo "Maintainer: Unredacted <security@unredacted.org>"
+        echo "Section: admin"
+        echo "Priority: optional"
+        echo "Description: Hardened runtime defaults (sysctl) for the unredacted kernel"
+        echo " Ships /usr/lib/sysctl.d/99-hardened.conf, the sysctl policy"
+        echo " documented in the project's POLICY.md: unprivileged user"
+        echo " namespaces, ptrace, BPF, and perf restricted to root. Admins"
+        echo " override individual values with a higher-numbered file in"
+        echo " /etc/sysctl.d/. Pulled in by linux-image-hardened-unredacted-${FLAVOR}."
+    } > "$ddir/DEBIAN/control"
+    # Apply the sysctls on install so a reboot isn't required. `|| true`
+    # because a key may not exist on the running (possibly stock) kernel;
+    # sysctl --system logs and continues, and a missing key must not fail
+    # package configuration.
+    cat > "$ddir/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
 if [ "$1" = "configure" ]; then
     sysctl --system >/dev/null 2>&1 || true
 fi
 POSTINST
-chmod 0755 "$ddir/DEBIAN/postinst"
-dpkg-deb --build --root-owner-group "$ddir" \
-    "$WORKDIR/${defaults_pkg}_${new_version}_all.deb" >/dev/null
-rm -rf "$ddir"
-echo "  emitted ${defaults_pkg}_${new_version}_all.deb"
+    chmod 0755 "$ddir/DEBIAN/postinst"
+    dpkg-deb --build --root-owner-group "$ddir" \
+        "$WORKDIR/${defaults_pkg}_${new_version}_all.deb" >/dev/null
+    rm -rf "$ddir"
+    echo "  emitted ${defaults_pkg}_${new_version}_all.deb"
+else
+    echo "not generating ${defaults_pkg} (flavor $FLAVOR: defaults_package = false)"
+fi
 
 echo "generating meta-packages"
 series="${KERNEL_VERSION%.*}"   # X.Y line key (7.0.12 -> 7.0)
@@ -571,16 +599,16 @@ echo "  line series: $series (stable line of the $line_set line set: $stable_ser
 
 # Per-line metas (always). Both image metas pull in the defaults package
 # themselves, now that the umbrella no longer reaches it via the per-line meta.
-emit_versioned_meta image   "Hardened Linux kernel image for ${deb_arch} (${series} line)" \
-    "${defaults_pkg} (>= ${new_version})"
-emit_versioned_meta headers "Hardened Linux kernel headers for ${deb_arch} (${series} line)"
+emit_versioned_meta image   "Hardened Linux kernel image for ${display_name} (${series} line)" \
+    "$defaults_dep"
+emit_versioned_meta headers "Hardened Linux kernel headers for ${display_name} (${series} line)"
 
 # Umbrella metas only for the stable line, so publishing a non-stable (LTS)
 # line never moves the unversioned name off current stable.
 if [[ $series == "$stable_series" ]]; then
-    emit_umbrella_meta image   "Hardened Linux kernel image for ${deb_arch} (latest stable)" \
-        "${defaults_pkg} (>= ${new_version})"
-    emit_umbrella_meta headers "Hardened Linux kernel headers for ${deb_arch} (latest stable)"
+    emit_umbrella_meta image   "Hardened Linux kernel image for ${display_name} (latest stable)" \
+        "$defaults_dep"
+    emit_umbrella_meta headers "Hardened Linux kernel headers for ${display_name} (latest stable)"
 else
     echo "  series $series != stable $stable_series: skipping unversioned umbrella metas"
 fi

@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # Fetch and verify upstream sources for a single (flavor, kernel_version)
 # target. The flavor descriptor (configs/flavors/$FLAVOR.toml) names the
-# source type and the distro/release/arch it is built for.
+# source type and the distro/release/arch it is built for:
+#
+#   kernelorg-tarball  the signed kernel.org tarball (amd64).
+#   rpi-git            Raspberry Pi's tree at the commit pinned in
+#                      configs/sources/<line set>/<X.Y>.toml (pi5). The signed
+#                      kernel.org tarball of the same version is still fetched
+#                      and verified: the build refuses unless the downstream
+#                      delta between the two equals the one committed next to
+#                      the pin (tools/source-delta.py).
+#
+# Both apply anthraxx's signed linux-hardened patch.
 #
 # Outputs are placed in $WORKDIR. Hashes of fetched inputs are recorded in
 # $WORKDIR/input-hashes.txt; tools/publish.py rolls these into the release
@@ -41,10 +51,10 @@ source_type=$(flavor_get source)
 distro=$(flavor_get distro)
 release=$(flavor_get release)
 arch=$(flavor_get arch)
-# Only the signed kernel.org tarball is implemented. tools/flavors.py's
-# validate refuses a descriptor asking for anything else; this is the backstop.
+# tools/flavors.py's validate refuses a descriptor asking for anything else;
+# this is the backstop.
 case "$source_type" in
-    kernelorg-tarball) ;;
+    kernelorg-tarball|rpi-git) ;;
     *) echo "flavor $FLAVOR: source '$source_type' is not implemented by fetch-sources.sh" >&2; exit 2 ;;
 esac
 kernel_org_keyring="${KERNEL_ORG_KEYRING:-$repo_root/keys/kernel-org.gpg}"
@@ -187,6 +197,90 @@ if ! signer_is_pinned "$hardened_patch.verify.log" "$ANTHRAXX_FPR"; then
     exit 4
 fi
 
+# --- Downstream tree (source = rpi-git) ------------------------------------
+# The tree comes from Raspberry Pi's git, pinned by commit hash: they publish
+# no signed tags or tarballs, and a commit hash is content-addressed. The
+# kernel.org tarball verified above is not built here; it is the reference the
+# downstream delta is computed against.
+src_tar=""
+if [[ $source_type == rpi-git ]]; then
+    series="${KERNEL_VERSION%.*}"
+    line_set=$(flavor_get lines)
+    # lines.py checks the line is registered and its `source` follows the
+    # path convention; pins.py validates every field of the pin.
+    pin_rel=$(python3 "$repo_root/tools/lines.py" source-path "$series" "$line_set")
+    pin="$repo_root/$pin_rel"
+    pin_get() { python3 "$repo_root/tools/pins.py" get "$pin" "$1"; }
+    src_url=$(pin_get url)
+    src_branch=$(pin_get branch)
+    src_commit=$(pin_get commit)
+    src_version=$(pin_get version)
+    echo "source pin $pin_rel: $src_url $src_branch @ $src_commit ($src_version)"
+
+    # The tag names the kernel version; the pin names the commit. They must
+    # agree, or a tag for one version would ship another's tree.
+    if [[ $src_version != "$KERNEL_VERSION" ]]; then
+        echo "$pin_rel pins $src_version, but this build is for $KERNEL_VERSION." >&2
+        echo "Bump the source pin (and its .delta) in a reviewed PR before tagging $KERNEL_VERSION." >&2
+        exit 5
+    fi
+
+    clone="$WORKDIR/source.git"
+    rm -rf "$clone"
+    git init --quiet --bare "$clone"
+    # Fetch exactly the pinned commit. GitHub serves any reachable commit by
+    # hash; there is no fallback to a branch tip, which could be anything.
+    git -C "$clone" fetch --quiet --depth 1 --no-tags "$src_url" "$src_commit"
+    got=$(git -C "$clone" rev-parse --verify "FETCH_HEAD^{commit}")
+    if [[ $got != "$src_commit" ]]; then
+        echo "fetched $got, not the pinned commit $src_commit" >&2
+        exit 5
+    fi
+    tree_id=$(git -C "$clone" rev-parse --verify "$src_commit^{tree}")
+
+    # The tree's own Makefile must declare the version, with no EXTRAVERSION
+    # (an -rc or a downstream suffix would mean the pin is not the release it
+    # claims to be).
+    mk=$(git -C "$clone" show "$src_commit:Makefile")
+    mk_get() { grep -m1 -E "^$1[[:space:]]*=" <<<"$mk" | sed -E 's/^[^=]*=[[:space:]]*//'; }
+    mk_version="$(mk_get VERSION).$(mk_get PATCHLEVEL).$(mk_get SUBLEVEL)"
+    if [[ $mk_version != "$KERNEL_VERSION" || -n $(mk_get EXTRAVERSION) ]]; then
+        echo "$src_commit's Makefile declares ${mk_version}$(mk_get EXTRAVERSION), not $KERNEL_VERSION" >&2
+        exit 5
+    fi
+
+    # A tar of the tree laid out like the kernel.org tarball, which
+    # apply-patches.sh extracts instead of it. Uncompressed: it never leaves
+    # $WORKDIR, and its hash goes into input-hashes.txt below.
+    src_tar="source-${KERNEL_VERSION}.tar"
+    git -C "$clone" archive --format=tar --prefix="linux-${KERNEL_VERSION}/" \
+        "$src_commit" > "$src_tar"
+    rm -rf "$clone"
+
+    # The downstream delta against the signed kernel.org tarball. Comparing it
+    # with the committed copy turns every source bump into a reviewable diff
+    # of what the downstream tree changes relative to kernel.org.
+    echo "computing the downstream delta against $tarball"
+    committed_delta="${pin%.toml}.delta"
+    python3 "$repo_root/tools/source-delta.py" "$tarball" "$src_tar" \
+        --base-label "$tarball sha256 $(sha256sum "$tarball" | awk '{print $1}')" \
+        --tree-label "$src_url $src_commit" > source-delta.txt
+    sed -n '5p' source-delta.txt
+    if [[ ! -f $committed_delta ]] || ! cmp -s "$committed_delta" source-delta.txt; then
+        echo "the downstream delta of $src_commit against $tarball differs from" >&2
+        echo "${committed_delta#"$repo_root/"} (first 200 lines of the difference):" >&2
+        diff -u "${committed_delta}" source-delta.txt 2>&1 | head -n 200 >&2 || true
+        echo "" >&2
+        echo "Regenerate it in the PR that moves the pin, and review the change:" >&2
+        echo "  python3 tools/source-delta.py linux-${KERNEL_VERSION}.tar.xz <git archive of the commit> \\" >&2
+        echo "      --base-label '<as above>' --tree-label '$src_url $src_commit'" >&2
+        echo "The computed delta is $WORKDIR/source-delta.txt." >&2
+        exit 5
+    fi
+    delta_sha=$(sha256sum source-delta.txt | awk '{print $1}')
+    echo "  downstream delta matches ${committed_delta#"$repo_root/"} ($delta_sha)"
+fi
+
 # --- Distro packaging marker ---------------------------------------------
 # The actual `apt-get source linux` happens inside the build container,
 # where the matching distro release is configured. Record the expectation
@@ -200,7 +294,7 @@ recorded_at=$(date -u +%FT%TZ)
 EOF
 
 # --- Input hashes --------------------------------------------------------
-sha256sum "$tarball" "$signature" "$hardened_patch" "$hardened_sig" \
+sha256sum "$tarball" "$signature" "$hardened_patch" "$hardened_sig" ${src_tar:+"$src_tar"} \
     > input-hashes.txt
 
 # --- Provenance inputs (consumed by tools/build-manifest.py) -------------
@@ -211,11 +305,30 @@ sha256sum "$tarball" "$signature" "$hardened_patch" "$hardened_sig" \
 # heredoc cannot produce malformed JSON.
 tarball_sha=$(sha256sum "$tarball" | awk '{print $1}')
 patch_sha=$(sha256sum "$hardened_patch" | awk '{print $1}')
-cat > inputs.json <<EOF
+if [[ $source_type == rpi-git ]]; then
+    # The tree actually built, plus the delta that ties it to kernel_tarball.
+    # The commit and tree ids are content addresses; the delta's own lines are
+    # in the tagged commit, next to the pin.
+    delta_counts=$(sed -nE '5s/^# ([0-9]+) added, ([0-9]+) modified, ([0-9]+) deleted.*/"added": \1, "modified": \2, "deleted": \3/p' source-delta.txt)
+    [[ -n $delta_counts ]] || { echo "could not read the delta summary line" >&2; exit 5; }
+    cat > inputs.json <<EOF
+{
+  "kernel_tarball": { "url": "$tarball_url", "sha256": "$tarball_sha" },
+  "hardened_patch": { "url": "${hardened_base}/${hardened_patch}", "sha256": "$patch_sha" },
+  "source_tree": {
+    "type": "$source_type", "url": "$src_url", "branch": "$src_branch",
+    "commit": "$src_commit", "tree": "$tree_id", "version": "$src_version",
+    "delta_file": "${pin_rel%.toml}.delta", "delta_sha256": "$delta_sha", $delta_counts
+  }
+}
+EOF
+else
+    cat > inputs.json <<EOF
 {
   "kernel_tarball": { "url": "$tarball_url", "sha256": "$tarball_sha" },
   "hardened_patch": { "url": "${hardened_base}/${hardened_patch}", "sha256": "$patch_sha" }
 }
 EOF
+fi
 
 echo "fetch-sources.sh: OK"

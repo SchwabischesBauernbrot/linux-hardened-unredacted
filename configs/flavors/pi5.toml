@@ -1,0 +1,70 @@
+# Build flavor: pi5 — Raspberry Pi's rpi-X.Y.y kernel tree at a pinned commit
+# + anthraxx's linux-hardened patch for the same series, seeded from Raspberry
+# Pi OS's packaged rpi-2712 config, for Raspberry Pi 5 boards running Raspberry
+# Pi OS (Debian trixie, arm64). Built for the project's Pi 5 Tor relays.
+#
+# Field reference: docs/operators/config-architecture.md (section "Flavors");
+# design and rollout: docs/operators/flavors.md. Everything here is read via
+# tools/flavors.py, which validates it on every read.
+
+name          = "pi5"
+
+# Shown in the meta-packages' descriptions ("... for Raspberry Pi 5").
+display_name  = "Raspberry Pi 5"
+
+# dpkg architecture and the kernel's ARCH=. Cross-compiled on the amd64
+# runner (build/install-flavor-deps.sh installs the cross toolchain).
+arch          = "arm64"
+kernel_arch   = "arm64"
+
+# Raspberry Pi OS trixie is Debian trixie with Raspberry Pi's archive on top;
+# the packages are published to the same trixie suite as amd64's.
+distro        = "debian"
+release       = "trixie"
+
+# Raspberry Pi's tree at the commit pinned per line in
+# configs/sources/pi5/<X.Y>.toml, cross-checked against the signed kernel.org
+# tarball of the same version (build/fetch-sources.sh), plus anthraxx's signed
+# patch for the series (usually a forward-port: Raspberry Pi merges stable
+# releases faster than anthraxx tags them).
+source        = "rpi-git"
+
+# configs/lines.toml blocks with flavor = "pi5": the 6.18 line Raspberry Pi
+# OS ships.
+lines         = "pi5"
+
+# The config inside Raspberry Pi's signed linux-image-*-rpi-2712 .deb, pinned
+# per line in configs/seeds/pi5/<X.Y>.toml and verified InRelease -> Packages
+# -> .deb -> config by build/fetch-seed.sh.
+seed_type     = "apt-deb"
+
+intent        = [
+    "configs/intent.common.config",
+    "configs/intent.arm64.config",
+    "configs/intent.pi5.config",
+]
+
+# kernelrelease 6.18.60-hardened-unredacted-pi5. Never "-rpi": see
+# tools/flavors.py and configs/intent.pi5.config.
+localversion  = "-hardened-unredacted-pi5"
+
+# pi5-v6.18.60-fwd-v6.18.56-hardened1 and the like.
+tag_prefix    = "pi5-"
+
+# Pi firmware has no UEFI Secure Boot, and sbsign cannot sign Image.gz.
+# Modules are signed at build time like every flavor's.
+image_signing = "none"
+
+required_y    = ["CONFIG_ARM64", "CONFIG_ARM64_16K_PAGES", "CONFIG_ARCH_BCM2835"]
+
+# unredacted-hardened-defaults (Architecture: all) comes from the amd64
+# build; this flavor's image metas depend on it without a version.
+defaults_package = false
+
+# Phase 3 adds unredacted-rpi5-boot (kernel staging, tryboot, promote/revert).
+boot_package  = ""
+
+# Boot the built kernel under qemu-system-aarch64 (virt, cortex-a76) before
+# signing: lockdown, LSMs, mmap ASLR bits and module-signature enforcement
+# (tools/qemu-smoke.sh).
+qemu_smoke    = true
