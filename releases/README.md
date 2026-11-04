@@ -113,7 +113,7 @@ Notes on the schema:
 2. Verifies every input URL still resolves and hashes match.
 3. Rebuilds in the recorded container image (by digest) on the recorded `build_arch`, under the recorded `build_dir`, with the recorded `source_date_epoch`.
 4. Hashes each rebuilt `.deb` with `tools/canonical-deb-hash.py` (no repack, so no dependence on the local `dpkg`/`xz`).
-5. Compares per package against `key_independent_sha256` (hard pass/fail, except `UNVERIF` for the kernel-built packages of a schema-3 release) and `canonical_sha256` (pass/fail only with `REPRO_SIGNING_KEY_PATH`, otherwise reported as not verifiable).
-6. On mismatch, writes per-member JSON to `repro-diff/` naming the archive member that differs.
+5. Compares per package against `key_independent_sha256` (hard pass/fail, except `UNVERIF` for the kernel-built packages of a schema-3 release) and `canonical_sha256` (pass/fail only with `REPRO_SIGNING_KEY_PATH`, otherwise reported as not verifiable). That key is mounted read-only into the rebuild, which signs with it; without it the rebuild signs with a throwaway key.
+6. On mismatch, writes the rebuilt package's per-member JSON to `repro-diff/`. Diffing it against `tools/canonical-deb-hash.py --json` of the released `.deb` names the archive member that differs.
 
 A diverging rebuild is a reproducibility bug worth fixing before the next release.
