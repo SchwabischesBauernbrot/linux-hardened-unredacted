@@ -327,8 +327,17 @@ runs "try $KR2 from $KR" tool try "$KR2"
 assert "tryboot.txt names $KR2" grep -qx "os_prefix=$KR2/" "$FW/tryboot.txt"
 assert "and does not keep $KR's block" sh -c "! grep -qx 'os_prefix=$KR/' '$FW/tryboot.txt'"
 assert "config.txt still names $KR" grep -qx "os_prefix=$KR/" "$FW/config.txt"
-# A plain reboot instead of the trial: the trial is cancelled.
-runs "boot-cleanup after a plain reboot" tool boot-cleanup
+# The trial boot, never confirmed: the dead-man fires.
+boot "$KR2" 1
+runs "deadman-check fires on $KR2's trial boot" tool deadman-check
+runs "deadman-fire" tool deadman-fire
+assert "it rebooted, with no tryboot flag" sh -c "tail -n1 '$T/reboots' | grep -qx 'reboot reboot'"
+runs "status after the dead-man fired" tool status
+assert "status says the dead-man fired" grep -q "dead-man fired" "$T/out"
+refuses "deadman-check does not fire twice" "" tool deadman-check
+# The next boot is the default ($KR, no flag): the trial is over.
+boot "$KR" 0
+runs "boot-cleanup after the dead-man's reboot" tool boot-cleanup
 assert "the trial is disarmed" test ! -e "$R/etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d"
 assert "tryboot.txt is the stock fallback again" same "$FW/tryboot.txt" "$T/tb.save"
 assert "stock files untouched" stock_ok

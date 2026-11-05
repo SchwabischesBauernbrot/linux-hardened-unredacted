@@ -158,6 +158,24 @@ The package's own tests ([`packages/unredacted-rpi5-boot/tests/run.sh`](../../pa
 
 The firmware part was tested on a Pi 5 relay: see [the trial record](#trial-on-a-pi-5-relay) below.
 
+A dpkg-level test in an arm64 trixie container covered the real `.deb`s and maintainer scripts, with `/boot/firmware` a tmpfs mount. It ran install, staging, `update-initramfs -u`, `try`, `promote`, `revert`, removal of the promoted kernel, and removal and purge of this package. `/boot/firmware` ended byte-identical.
+
 ### Trial on a Pi 5 relay
 
-_Filled in by the Phase 3 test on `pi-exit-relay1-tor-ce`._
+The trial ran on 2026-11-04 on `pi-exit-relay1-tor-ce`, a Pi 5 Model B Rev 1.0 running Raspberry Pi OS trixie with the stock `6.18.50+rpt-rpi-2712` kernel and the 2026-09-25 bootloader. The kernel was a test build of `pi5-v6.18.60-fwd-v6.18.56-hardened1` from this pipeline, with a throwaway signing key.
+
+1. **Install.** `unredacted-rpi5-boot` installed first, then the kernel package alone. raspi-firmware's hooks skipped the kernel ("Unsupported kernel version"), and ours staged it (25 MB). All 435 stock files stayed byte-identical.
+2. **The trial boot.** `try` was followed by `reboot '0 tryboot'`. The relay was back on SSH about a minute later, running the hardened kernel with the tryboot flag set. Tor had bootstrapped and passed its ORPort self-test within two minutes of the reboot.
+3. **`verify`: `fails=0`.**
+   - Hardening: lockdown `[integrity]`; LSMs `lockdown,capability,landlock,yama,bpf`; `mmap_rnd_bits` 30 and compat 16; `sig_enforce=Y`; no `/dev/mem`, `/proc/kcore`, `/dev/vcio` or `/dev/vc-mem`; BTF present; 16K pages.
+   - Platform: the temperature (46.8 °C) read, and the BCM2835 watchdog was active. `rpi-eeprom-update` read the bootloader version, and its service succeeded.
+   - Memory: 8 NUMA nodes, from the firmware's `numa=fake=8 numa_policy=interleave`.
+   - Network and services: the same MAC and addresses, every relay service up, and no newly failed units.
+
+   The three gaps of the 2026-11-02 trial on kernel.org's tree are gone: missing BTF, the failed `rpi-eeprom-update.service`, and no temperature.
+4. **`promote --dry-run`** printed the `config.txt` block and the stock-fallback `tryboot.txt`, and wrote nothing.
+5. **The dead-man.** The trial was left unconfirmed, and the dead-man rebooted it 15 minutes after boot. The relay came back on the stock kernel, where the cleanup unit disarmed the trial and removed `tryboot.txt`.
+6. **`try`, then `revert`, on stock:** `tryboot.txt` was removed and the dead-man disarmed.
+7. **Removal.** Purging the kernel (its `postrm.d` hook unstaged it) and then this package left `/boot/firmware` byte-identical to before the test: the same 435 files, nothing added.
+
+`config.txt` did not change at any point. `promote` itself (writing `config.txt`, then booting it) ran in the tests above, but not on hardware. Booting a promoted kernel on the relays is the last rollout phase.

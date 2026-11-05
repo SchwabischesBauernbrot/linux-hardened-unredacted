@@ -51,6 +51,9 @@
   - **Result:** 0 failed hunks in our existing forward-port mode (`-F0`, Makefile EXTRAVERSION hunk dropped), and no hunk needed fuzz.
   - **Overlap:** 77 of the 83 files the patch modifies are byte-identical to kernel.org v6.18.60. The remaining offsets come from long-lived Raspberry Pi changes in `arch/arm64/Kconfig`, `drivers/char/Kconfig`, `include/linux/usb.h` and `mm/page_alloc.c`.
   - **Cadence:** Raspberry Pi merges every 6.18.y stable release, about weekly.
+- **Boot-package trial, 2026-11-04, `pi-exit-relay1-tor-ce`** (Phase 3). Raspberry Pi's 6.18.60 + `v6.18.56-hardened1` (a forward-port test build), booted through `unredacted-rpi5-boot`.
+  - **The commands:** `try`, a tryboot boot, `verify`, and `promote --dry-run`. Then the dead-man's reboot back to stock, `try` + `revert`, and removal of both packages.
+  - **Result:** `verify` had `fails=0`. The 2026-11-02 gaps are closed: BTF, `rpi-eeprom-update`, temperature. `config.txt` never changed, and after removal all 435 stock boot files were byte-identical. Details: [install-rpi5.md](../users/install-rpi5.md#trial-on-a-pi-5-relay).
 - **QEMU smoke test** (`virt`, `-cpu cortex-a76`, TCG). Lockdown integrity; a signed module loads and a signature-stripped copy is rejected ("Key was rejected by service").
 
 ## Design

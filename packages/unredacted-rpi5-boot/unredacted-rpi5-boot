@@ -816,8 +816,13 @@ cmd_status() {
     done
     [[ -n $(staged_krs)$(installed_krs) ]] || echo "  (none)"
     if [[ -f $STATE/trial ]]; then
+        case $(trial_get armed) in
+            1) why="armed" ;;
+            fired) why="fired (the trial was not confirmed in time)" ;;
+            *) why="not armed" ;;
+        esac
         printf 'last trial:  %s, written %s from %s, dead-man %s\n' "$(trial_get kr)" "$(trial_get written)" \
-            "$(trial_get from)" "$([[ $(trial_get armed) == 1 ]] && echo armed || echo not armed)"
+            "$(trial_get from)" "$why"
     fi
     if systemctl is-active --quiet "$DEADMAN_TIMER" 2>/dev/null; then
         printf 'dead-man:    ACTIVE: %s\n' "$(systemctl list-timers --no-legend "$DEADMAN_TIMER" 2>/dev/null | awk '{print $1, $2, $3, $4, "(" $5, $6 ")"}')"
