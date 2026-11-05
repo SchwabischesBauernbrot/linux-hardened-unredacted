@@ -1,0 +1,15 @@
+#!/bin/sh
+# /etc/initramfs/post-update.d/z70-unredacted-rpi5-boot (unredacted-rpi5-boot)
+#
+# update-initramfs rebuilt the initrd of a hardened Pi 5 kernel: copy it into
+# that kernel's staged directory, so the next boot of it uses the new one
+# (raspi-firmware's own hook does the same for the stock kernel). Other
+# kernels: nothing.
+set -e
+version="$1"
+initrd="$2"
+case "$version" in *-hardened-unredacted-pi5) ;; *) exit 0 ;; esac
+tool="${UNREDACTED_RPI5_BOOT_ROOT:-}/usr/sbin/unredacted-rpi5-boot"
+[ -x "$tool" ] || exit 0
+[ -n "$initrd" ] && [ -f "$initrd" ] || exit 0
+exec "$tool" refresh-initrd "$version" "$initrd" </dev/null >&2

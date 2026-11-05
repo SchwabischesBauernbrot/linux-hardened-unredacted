@@ -553,21 +553,26 @@ def keep_map_from_registry() -> dict[str, dict[tuple[int, int], int]]:
 _FLAVOR_PKG_RE = re.compile(r"-hardened-unredacted-(?:\d+\.\d+-)?([a-z0-9]+)(?:-dbg)?$")
 
 
-def package_flavor(name: str, flavors: set[str], defaults_flavor: str | None) -> str | None:
+def package_flavor(name: str, flavors: set[str], defaults_flavor: str | None,
+                   boot_packages: dict[str, str] | None = None) -> str | None:
     """The flavor that built a package, from its name; None when the name
     does not say (linux-libc-dev, which every flavor's build emits).
+    boot_packages maps each descriptor's boot_package to its flavor: that
+    package ships with, and is versioned like, its flavor's kernels.
 
     >>> fl = {"amd64", "pi5"}
-    >>> [package_flavor(n, fl, "amd64") for n in (
+    >>> [package_flavor(n, fl, "amd64", {"unredacted-rpi5-boot": "pi5"}) for n in (
     ...     "linux-image-6.18.60-hardened-unredacted-pi5",
     ...     "linux-image-7.2.13-hardened-unredacted-amd64-dbg",
     ...     "linux-headers-hardened-unredacted-6.18-pi5",
     ...     "linux-image-hardened-unredacted-amd64",
-    ...     "unredacted-hardened-defaults", "linux-libc-dev")]
-    ['pi5', 'amd64', 'pi5', 'amd64', 'amd64', None]
+    ...     "unredacted-hardened-defaults", "unredacted-rpi5-boot", "linux-libc-dev")]
+    ['pi5', 'amd64', 'pi5', 'amd64', 'amd64', 'pi5', None]
     """
     if name == "unredacted-hardened-defaults":
         return defaults_flavor
+    if boot_packages and name in boot_packages:
+        return boot_packages[name]
     m = _FLAVOR_PKG_RE.search(name)
     return m.group(1) if m and m.group(1) in flavors else None
 
@@ -578,6 +583,7 @@ def select_packages_to_archive(
     defaults_flavor: str | None,
     default_keep: int = DEFAULT_KEEP_IN_MAIN,
     keep_map: dict[str, dict[tuple[int, int], int]] | None = None,
+    boot_packages: dict[str, str] | None = None,
 ) -> list[dict]:
     """The packages to archive: retention per FLAVOR, then per line.
 
@@ -602,7 +608,7 @@ def select_packages_to_archive(
     by_flavor: dict[str, set[str]] = {}
     unattributed: list[dict] = []
     for p in packages:
-        f = package_flavor(p["name"], flavors, defaults_flavor)
+        f = package_flavor(p["name"], flavors, defaults_flavor, boot_packages)
         if f is None:
             unattributed.append(p)
         else:
@@ -613,7 +619,7 @@ def select_packages_to_archive(
         for f, vs in by_flavor.items()
     }
     out = [p for p in packages
-           if (f := package_flavor(p["name"], flavors, defaults_flavor)) is not None
+           if (f := package_flavor(p["name"], flavors, defaults_flavor, boot_packages)) is not None
            and p["version"] in archive[f]]
     for p in unattributed:
         owners = [f for f, vs in by_flavor.items() if p["version"] in vs]
@@ -698,11 +704,13 @@ def main(argv: list[str]) -> int:
     flavor_names = set(flavors.names())
     defaults_flavor = next((n for n in flavor_names
                             if flavors.load(n)["defaults_package"]), None)
+    boot_packages = {flavors.load(n)["boot_package"]: n for n in flavor_names
+                     if flavors.load(n)["boot_package"]}
     packages = list_packages(args.owner, user, token)
     debian_pkgs = [p for p in packages if p.get("type") == "debian"]
     versions = sorted({p["version"] for p in debian_pkgs}, key=parse_version)
     pkgs_to_archive = select_packages_to_archive(
-        debian_pkgs, flavor_names, defaults_flavor, args.keep, keep_map)
+        debian_pkgs, flavor_names, defaults_flavor, args.keep, keep_map, boot_packages)
     to_archive = {p["version"] for p in pkgs_to_archive}
 
     plan = {

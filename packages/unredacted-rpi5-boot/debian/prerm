@@ -1,0 +1,11 @@
+#!/bin/sh
+# unredacted-rpi5-boot prerm: on removal, put the stock boot back exactly as
+# it was: config.txt without our block, no tryboot.txt of ours, no staged
+# kernels, no dead-man. Not on an upgrade of this package.
+set -e
+case "$1" in
+    remove)
+        /usr/sbin/unredacted-rpi5-boot pkg-remove
+        ;;
+esac
+exit 0

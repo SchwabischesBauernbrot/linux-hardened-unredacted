@@ -1,0 +1,12 @@
+# Started by unredacted-rpi5-boot-deadman.timer. Reboots only on the trial
+# boot the timer was armed for: the running kernel is the trial kernel, the
+# bootloader set the tryboot flag, and the trial is still armed. The reboot
+# carries no tryboot flag, so the firmware boots config.txt's default.
+[Unit]
+Description=Hardened kernel trial dead-man: reboot to the default boot
+Documentation=file:/usr/share/doc/unredacted-rpi5-boot/README.md
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/sbin/unredacted-rpi5-boot deadman-check
+ExecStart=/usr/sbin/unredacted-rpi5-boot deadman-fire

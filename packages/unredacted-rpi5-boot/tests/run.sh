@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+# Hermetic tests for unredacted-rpi5-boot (run by validate.yml).
+#
+# Builds a fake Raspberry Pi OS root -- /boot/firmware as the stock image
+# ships it, a stock and two hardened kernels "installed", a Pi 5 device tree,
+# the sysfs/procfs files `verify` reads -- and drives the real tool and kernel
+# hooks against it through UNREDACTED_RPI5_BOOT_ROOT, with systemctl, ip and
+# mountpoint stubbed. Covers the whole life cycle: install hooks, try, a trial
+# boot, verify, confirm, promote, an upgrade tried from the hardened kernel,
+# try stock, revert, kernel removal, package removal; and the refusals. The
+# invariant checked throughout: no stock boot file ever changes, and config.txt
+# comes back byte-identical.
+#
+# What it cannot cover is the firmware itself (os_prefix, tryboot); that was
+# tested on a Pi 5 (docs/users/install-rpi5.md, "How it was tested").
+#
+# Needs GNU coreutils/sed/findutils, util-linux (flock), gzip. Linux only.
+
+set -euo pipefail
+umask 022
+export LC_ALL=C
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+src=$(cd "$here/.." && pwd)
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+R=$T/root
+FW=$R/boot/firmware
+KR=6.18.60-hardened-unredacted-pi5
+KR2=6.18.61-hardened-unredacted-pi5
+STOCK=6.18.50+rpt-rpi-2712
+TOOL=$R/usr/sbin/unredacted-rpi5-boot
+export UNREDACTED_RPI5_BOOT_ROOT=$R
+
+n=0; fails=0
+pass() { n=$((n + 1)); echo "ok $n - $*"; }
+fail() { n=$((n + 1)); fails=$((fails + 1)); echo "not ok $n - $*"; [[ ! -s $T/out ]] || sed 's/^/#   /' "$T/out"; }
+# assert LABEL CMD...: CMD succeeds.
+assert() { local l=$1; shift; if "$@"; then pass "$l"; else fail "$l"; fi; }
+# runs LABEL CMD...: CMD succeeds; its output is kept in $T/out.
+runs() { local l=$1; shift; : > "$T/out"; if "$@" > "$T/out" 2>&1; then pass "$l"; else fail "$l"; fi; }
+# refuses LABEL PATTERN CMD...: CMD fails, and says PATTERN.
+refuses() {
+    local l=$1 pat=$2; shift 2
+    : > "$T/out"
+    if "$@" > "$T/out" 2>&1; then fail "$l (it succeeded)"
+    elif [[ -z $pat ]] || grep -qE -- "$pat" "$T/out"; then pass "$l"
+    else fail "$l (failed without saying /$pat/)"; fi
+}
+same() { cmp -s "$1" "$2"; }
+rand() { head -c "$2" /dev/urandom > "$1"; }
+
+# --- Stubs ---------------------------------------------------------------
+mkdir -p "$T/bin"
+cat > "$T/bin/systemctl" <<EOF
+#!/bin/bash
+echo "\$*" >> "$T/systemctl.log"
+case "\$*" in
+    *is-enabled*) [[ -f $T/enabled ]] ;;
+    *is-active*) exit 3 ;;
+    *--failed*) cat "$T/failed" 2>/dev/null; exit 0 ;;
+    *is-system-running*) echo running ;;
+    *" enable "*|"enable "*) touch "$T/enabled" ;;
+    *disable*) rm -f "$T/enabled" ;;
+    *reboot*) echo "reboot \$*" >> "$T/reboots" ;;
+esac
+exit 0
+EOF
+cat > "$T/bin/ip" <<'EOF'
+#!/bin/bash
+case "$*" in
+    "route show default") echo "default via 192.0.2.1 dev eth0 proto dhcp" ;;
+    "-br link") printf 'lo UNKNOWN 00:00:00:00:00:00\neth0 UP 2c:cf:67:00:00:01\n' ;;
+    "-br link show dev eth0") echo "eth0 UP 2c:cf:67:00:00:01" ;;
+    "-4 -o addr show scope global") echo "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0" ;;
+    "-4 -o addr show dev eth0") echo "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0" ;;
+esac
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/mountpoint"
+printf '#!/bin/sh\nexit 1\n' > "$T/bin/ischroot"
+printf '#!/bin/sh\nexit 0\n' > "$T/bin/logger"
+printf '#!/bin/sh\nexit 1\n' > "$T/bin/dpkg-query"
+printf '#!/bin/sh\necho 4096\n' > "$T/bin/getconf"
+chmod 0755 "$T"/bin/*
+export PATH="$T/bin:$PATH"
+
+# --- The fake root ---------------------------------------------------------
+mkdir -p "$FW/overlays" "$FW/.Spotlight-V100" "$R/proc/sys/kernel" "$R/proc/sys/vm" \
+    "$R/proc/device-tree/chosen/bootloader" "$R/sys/kernel/security" "$R/sys/kernel/btf" \
+    "$R/sys/module/module/parameters" "$R/sys/class/thermal/thermal_zone0" "$R/dev" "$R/run"
+# config.txt as Raspberry Pi OS trixie ships it (abridged), ending in [all].
+cat > "$FW/config.txt" <<'EOF'
+# For more options and information see
+# http://rptl.io/configtxt
+dtparam=audio=on
+camera_auto_detect=1
+display_auto_detect=1
+auto_initramfs=1
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+disable_fw_kms_setup=1
+arm_64bit=1
+disable_overscan=1
+arm_boost=1
+
+[cm4]
+otg_mode=1
+
+[cm5]
+dtoverlay=dwc2,dr_mode=host
+
+[all]
+EOF
+printf 'console=serial0,115200 console=tty1 root=PARTUUID=7a6e05ec-02 rootfstype=ext4 fsck.repair=yes rootwait\n' > "$FW/cmdline.txt"
+for f in kernel_2712.img kernel8.img initramfs_2712 initramfs8 bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb \
+         bcm2711-rpi-4-b.dtb start4.elf fixup4.dat overlays/vc4-kms-v3d-pi5.dtbo overlays/overlay_map.dtb; do
+    rand "$FW/$f" 4096
+done
+echo "stock overlays README" > "$FW/overlays/README"
+echo "macOS junk" > "$FW/.Spotlight-V100/store"
+
+printf 'raspberrypi,5-model-b\0brcm,bcm2712\0' > "$R/proc/device-tree/compatible"
+printf 'Raspberry Pi 5 Model B Rev 1.0\0' > "$R/proc/device-tree/model"
+tryboot() {  # the 4-byte big-endian cell: 0 or 1
+    if [[ $1 == 1 ]]; then printf '\0\0\0\1'; else printf '\0\0\0\0'; fi > "$R/proc/device-tree/chosen/bootloader/tryboot"
+}
+banner() { echo "Linux version $1 (hardened@builder) (aarch64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0) #1 SMP PREEMPT Wed Nov  4 00:00:00 UTC 2026"; }
+# boot KR TRYBOOT: what the fake /proc says after the firmware booted KR.
+boot() { echo "$1" > "$R/proc/sys/kernel/osrelease"; banner "$1" > "$R/proc/version"; tryboot "$2"; }
+boot "$STOCK" 0
+echo "console=ttyAMA0,115200 root=PARTUUID=7a6e05ec-02 rootwait panic=10" > "$R/proc/cmdline"
+echo "none [integrity] confidentiality" > "$R/sys/kernel/security/lockdown"
+echo "lockdown,capability,landlock,yama,bpf" > "$R/sys/kernel/security/lsm"
+echo 30 > "$R/proc/sys/vm/mmap_rnd_bits"
+echo 16 > "$R/proc/sys/vm/mmap_rnd_compat_bits"
+echo Y > "$R/sys/module/module/parameters/sig_enforce"
+echo 52300 > "$R/sys/class/thermal/thermal_zone0/temp"
+: > "$R/sys/kernel/btf/vmlinux"
+
+# install_kernel KR: what linux-image-KR's files look like once unpacked.
+install_kernel() {
+    local kr=$1 lib=$R/usr/lib/linux-image-$1
+    mkdir -p "$lib/broadcom" "$lib/overlays"
+    { rand /dev/stdout 8192; banner "$kr"; rand /dev/stdout 8192; } | gzip -n > "$R/boot/vmlinuz-$kr"
+    rand "$R/boot/initrd.img-$kr" 16384
+    cat > "$R/boot/config-$kr" <<'EOF'
+CONFIG_LOCK_DOWN_KERNEL_FORCE_INTEGRITY=y
+CONFIG_LSM="landlock,lockdown,yama,integrity,bpf"
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_SECURITY_LOCKDOWN_LSM=y
+CONFIG_SECURITY_YAMA=y
+CONFIG_BPF_LSM=y
+CONFIG_ARCH_MMAP_RND_BITS=30
+CONFIG_ARCH_MMAP_RND_COMPAT_BITS=16
+CONFIG_DEBUG_INFO_BTF=y
+# CONFIG_DEVMEM is not set
+# CONFIG_BCM_VCIO is not set
+EOF
+    for f in bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb bcm2712-rpi-500.dtb bcm2711-rpi-4-b.dtb; do
+        rand "$lib/broadcom/$f" 2048
+    done
+    for f in vc4-kms-v3d-pi5.dtbo disable-bt.dtbo overlay_map.dtb; do rand "$lib/overlays/$f" 1024; done
+}
+install_kernel "$KR"
+
+# The package's files, where build/build-boot-package.sh puts them.
+install -D -m 0755 "$src/unredacted-rpi5-boot" "$TOOL"
+install -D -m 0755 "$src/hooks/kernel-preinst" "$R/etc/kernel/preinst.d/z70-unredacted-rpi5-boot"
+install -D -m 0755 "$src/hooks/kernel-postinst" "$R/etc/kernel/postinst.d/z70-unredacted-rpi5-boot"
+install -D -m 0755 "$src/hooks/kernel-postrm" "$R/etc/kernel/postrm.d/z70-unredacted-rpi5-boot"
+install -D -m 0755 "$src/hooks/initramfs-post-update" "$R/etc/initramfs/post-update.d/z70-unredacted-rpi5-boot"
+install -D -m 0644 "$src/default" "$R/etc/default/unredacted-rpi5-boot"
+
+hook() {  # hook preinst|postinst|postrm KR "DEB_MAINT_PARAMS"
+    DEB_MAINT_PARAMS=$3 "$R/etc/kernel/$1.d/z70-unredacted-rpi5-boot" "$2" "/boot/vmlinuz-$2"
+}
+tool() { "$TOOL" "$@"; }
+
+# The stock files' bytes as they are now: the invariant. config.txt is read
+# without our block (which promote adds and revert removes); the sections
+# that test those compare it byte for byte on their own.
+stock_sums() {
+    (cd "$FW" && find . -path ./.Spotlight-V100 -prune -o -path "./*-hardened-unredacted-pi5" -prune \
+        -o -name tryboot.txt -prune -o -name config.txt -prune -o -type f -print0 | sort -z | xargs -0 sha256sum)
+    sed '/^# BEGIN unredacted-rpi5-boot/,/^# END unredacted-rpi5-boot/d' "$FW/config.txt" | sha256sum
+}
+cp "$FW/config.txt" "$T/config.orig"
+stock_sums > "$T/stock.orig"
+stock_ok() { stock_sums | cmp -s - "$T/stock.orig"; }
+
+echo "# unredacted-rpi5-boot tests in $T"
+
+# --- preinst guard ---------------------------------------------------------
+pre=$src/debian/preinst
+runs "package preinst accepts a Pi 5" "$pre" install
+printf 'raspberrypi,4-model-b\0brcm,bcm2711\0' > "$T/compat4"
+cp "$R/proc/device-tree/compatible" "$T/compat5"; cp "$T/compat4" "$R/proc/device-tree/compatible"
+refuses "package preinst refuses a Pi 4" "not a Raspberry Pi 5" "$pre" install
+runs "package preinst: UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK=1 overrides" env UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK=1 "$pre" install
+cp "$T/compat5" "$R/proc/device-tree/compatible"
+
+# --- Package configure: baseline, and stage what is installed ----------------
+runs "package configure stages the installed hardened kernel" tool pkg-configure
+assert "the stock baseline is recorded" test -s "$R/var/lib/unredacted-rpi5-boot/stock-at-install.sha256"
+assert "$KR staged" test -d "$FW/$KR"
+assert "stock files untouched" stock_ok
+
+# --- fingerprint -------------------------------------------------------------
+runs "fingerprint" tool fingerprint
+assert "fingerprint covers every stock file (and only those)" \
+    test "$(wc -l < "$T/out")" -eq "$(wc -l < "$T/stock.orig")"
+assert "fingerprint skips .Spotlight-V100" sh -c "! grep -q Spotlight '$T/out'"
+
+# --- Install a hardened kernel: the hooks stage it ---------------------------
+runs "preinst.d hook snapshots the stock files" hook preinst "$KR" install
+assert "snapshot written" test -f "$R/var/lib/unredacted-rpi5-boot/pending/$KR.stock"
+runs "postinst.d hook stages $KR" hook postinst "$KR" "configure "
+assert "it reports the stock files unchanged across the install" grep -q "unchanged across the install" "$T/out"
+P=$FW/$KR
+assert "staged kernel is the package's vmlinuz" same "$P/kernel_2712.img" "$R/boot/vmlinuz-$KR"
+assert "staged initramfs is the package's initrd" same "$P/initramfs_2712" "$R/boot/initrd.img-$KR"
+assert "every bcm2712 DTB staged, and no other" sh -c "ls '$P' | grep -c '\.dtb$' | grep -qx 3 && test ! -e '$P/bcm2711-rpi-4-b.dtb'"
+assert "overlays staged from the kernel package" same "$P/overlays/vc4-kms-v3d-pi5.dtbo" "$R/usr/lib/linux-image-$KR/overlays/vc4-kms-v3d-pi5.dtbo"
+assert "overlays/README exists (the firmware uses the prefix's overlays only then)" test -s "$P/overlays/README"
+assert "staged cmdline.txt is the stock one plus panic=10" \
+    test "$(cat "$P/cmdline.txt")" = "$(cat "$FW/cmdline.txt") panic=10"
+assert "pending snapshot consumed" test ! -e "$R/var/lib/unredacted-rpi5-boot/pending/$KR.stock"
+assert "stock files untouched" stock_ok
+mkdir -p "$R/etc/unredacted-rpi5-boot/overlays"
+rand "$R/etc/unredacted-rpi5-boot/overlays/vendor-hat.dtbo" 512
+runs "stage picks up /etc/unredacted-rpi5-boot/overlays" tool stage "$KR"
+assert "the administrator's overlay is staged" same "$P/overlays/vendor-hat.dtbo" "$R/etc/unredacted-rpi5-boot/overlays/vendor-hat.dtbo"
+assert "and is in the manifest" grep -q "  overlays/vendor-hat.dtbo$" "$P/unredacted-rpi5-boot.sha256"
+rm -rf "$R/etc/unredacted-rpi5-boot/overlays"
+runs "postinst.d hook ignores the stock kernel" hook postinst "$STOCK" "configure "
+assert "nothing staged for it" test ! -e "$FW/$STOCK"
+runs "postrm.d hook ignores an upgrade of the same package" hook postrm "$KR" "upgrade 6.18.60-hardened1"
+assert "$KR still staged" test -d "$P"
+
+# A hook that copied our kernel over the stock one (what raspi-firmware's z50
+# hook would do to a kernelrelease containing "-rpi-") is caught.
+hook preinst "$KR" "upgrade x" > /dev/null
+cp "$FW/kernel_2712.img" "$T/k.save"; cp "$R/boot/vmlinuz-$KR" "$FW/kernel_2712.img"
+refuses "postinst.d hook fails when the stock kernel became a copy of ours" "became copies" hook postinst "$KR" "configure x"
+cp "$T/k.save" "$FW/kernel_2712.img"; rm -f "$R/var/lib/unredacted-rpi5-boot/pending/$KR.stock"
+# ...while another package changing a stock file in the same run is only noted.
+hook preinst "$KR" "upgrade x" > /dev/null
+cp "$FW/bcm2711-rpi-4-b.dtb" "$T/d.save"; rand "$FW/bcm2711-rpi-4-b.dtb" 4096
+runs "postinst.d hook tolerates another package's stock change" hook postinst "$KR" "configure x"
+assert "and names it" grep -q "changed ./bcm2711-rpi-4-b.dtb" "$T/out"
+cp "$T/d.save" "$FW/bcm2711-rpi-4-b.dtb"
+assert "stock files untouched" stock_ok
+
+runs "status" tool status
+assert "status: default is stock" grep -q "^default: *stock" "$T/out"
+
+# --- try --------------------------------------------------------------------
+runs "try --dry-run" tool try "$KR" --dry-run
+assert "dry run writes nothing" test ! -e "$FW/tryboot.txt"
+assert "dry run shows the os_prefix it would write" grep -q "^+os_prefix=$KR/" "$T/out"
+refuses "promote refuses a kernel never tried" "has not passed" tool promote "$KR"
+echo "smartmontools.service loaded failed failed SMART" > "$T/failed"
+runs "try $KR" tool try "$KR"
+assert "tryboot.txt names the prefix" grep -qx "os_prefix=$KR/" "$FW/tryboot.txt"
+assert "tryboot.txt carries the whole of config.txt, after its 5-line header" \
+    sh -c "sed '1,5d' '$FW/tryboot.txt' | sed '/^# BEGIN unredacted-rpi5-boot/,\$d' | cmp -s - '$T/config.orig'"
+assert "config.txt untouched" same "$FW/config.txt" "$T/config.orig"
+assert "dead-man enabled" grep -q "enable --quiet unredacted-rpi5-boot-deadman.timer" "$T/systemctl.log"
+assert "dead-man gated by ConditionKernelVersion=$KR" \
+    grep -qx "ConditionKernelVersion=$KR" "$R/etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d/50-trial.conf"
+assert "stock files untouched" stock_ok
+runs "status after try" tool status
+assert "status: tryboot boots $KR" grep -q "^tryboot: *$KR" "$T/out"
+refuses "confirm refuses off the trial boot" "not on the trial boot" tool confirm
+refuses "deadman-check never fires off the trial boot" "" tool deadman-check
+
+# --- The trial boot -----------------------------------------------------------
+boot "$KR" 1
+runs "deadman-check fires on the trial boot" tool deadman-check
+runs "boot-cleanup leaves a trial boot alone" tool boot-cleanup
+assert "tryboot.txt still names $KR" grep -qx "os_prefix=$KR/" "$FW/tryboot.txt"
+runs "verify on the trial boot" tool verify
+assert "verify: running kernel is the staged one" grep -q "ok    the running kernel is the one staged" "$T/out"
+assert "verify: stock files unchanged since try" grep -q "ok    stock boot files unchanged since" "$T/out"
+assert "verify ignored a unit already failing before the trial" grep -q "ok    no newly failed units" "$T/out"
+assert "verify recorded $KR as verified" test -f "$R/var/lib/unredacted-rpi5-boot/verified/$KR"
+echo 18 > "$R/proc/sys/vm/mmap_rnd_bits"
+refuses "verify fails on a hardening regression" "FAIL  vm.mmap_rnd_bits=18" tool verify
+echo 30 > "$R/proc/sys/vm/mmap_rnd_bits"
+echo "bird.service loaded failed failed BIRD" >> "$T/failed"
+refuses "verify fails on a newly failed unit" "FAIL  no newly failed units \(bird.service\)" tool verify
+sed -i '$d' "$T/failed"
+mkdir -p "$R/etc/unredacted-rpi5-boot/verify.d"
+printf '#!/bin/sh\necho "  FAIL  site check"\nexit 1\n' > "$R/etc/unredacted-rpi5-boot/verify.d/50-site"
+chmod 0755 "$R/etc/unredacted-rpi5-boot/verify.d/50-site"
+refuses "verify runs the site checks" "50-site exited non-zero" tool verify
+rm -rf "$R/etc/unredacted-rpi5-boot"
+runs "confirm on the trial boot" tool confirm
+assert "dead-man disabled" sh -c "grep -q 'disable --quiet --now unredacted-rpi5-boot-deadman.timer' '$T/systemctl.log' && test ! -e '$R/etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d'"
+refuses "deadman-check no longer fires" "" tool deadman-check
+
+# --- promote ----------------------------------------------------------------------
+runs "promote --dry-run" tool promote --dry-run
+assert "dry run changes nothing" same "$FW/config.txt" "$T/config.orig"
+runs "promote (the running kernel)" tool promote
+assert "config.txt = the original + our block" \
+    sh -c "head -n \$(wc -l < '$T/config.orig') '$FW/config.txt' | cmp -s - '$T/config.orig'"
+assert "config.txt's block names $KR" grep -qx "os_prefix=$KR/" "$FW/config.txt"
+assert "config.txt minus our block is byte-identical" \
+    sh -c "sed '/^# BEGIN unredacted-rpi5-boot/,/^# END unredacted-rpi5-boot/d' '$FW/config.txt' | cmp -s - '$T/config.orig'"
+assert "tryboot.txt now boots stock" sh -c "grep -q 'tryboot.txt for stock' '$FW/tryboot.txt' && ! grep -q '^os_prefix' '$FW/tryboot.txt'"
+assert "stock files untouched" stock_ok
+runs "promote again is a no-op" tool promote
+assert "it says so" grep -q "already the default" "$T/out"
+boot "$KR" 0
+cp "$FW/tryboot.txt" "$T/tb.save"
+runs "boot-cleanup on the promoted kernel's normal boot" tool boot-cleanup
+assert "a current fallback tryboot.txt is left alone" same "$FW/tryboot.txt" "$T/tb.save"
+
+# --- An upgrade: a new kernel, tried from the running hardened one -------------------
+install_kernel "$KR2"
+hook preinst "$KR2" install > /dev/null
+runs "postinst.d hook stages $KR2 in a second prefix" hook postinst "$KR2" "configure "
+assert "both prefixes staged" test -d "$FW/$KR" -a -d "$FW/$KR2"
+assert "default still $KR" grep -qx "os_prefix=$KR/" "$FW/config.txt"
+runs "try $KR2 from $KR" tool try "$KR2"
+assert "tryboot.txt names $KR2" grep -qx "os_prefix=$KR2/" "$FW/tryboot.txt"
+assert "and does not keep $KR's block" sh -c "! grep -qx 'os_prefix=$KR/' '$FW/tryboot.txt'"
+assert "config.txt still names $KR" grep -qx "os_prefix=$KR/" "$FW/config.txt"
+# The trial boot, never confirmed: the dead-man fires.
+boot "$KR2" 1
+runs "deadman-check fires on $KR2's trial boot" tool deadman-check
+runs "deadman-fire" tool deadman-fire
+assert "it rebooted, with no tryboot flag" sh -c "tail -n1 '$T/reboots' | grep -qx 'reboot reboot'"
+runs "status after the dead-man fired" tool status
+assert "status says the dead-man fired" grep -q "dead-man fired" "$T/out"
+refuses "deadman-check does not fire twice" "" tool deadman-check
+# The next boot is the default ($KR, no flag): the trial is over.
+boot "$KR" 0
+runs "boot-cleanup after the dead-man's reboot" tool boot-cleanup
+assert "the trial is disarmed" test ! -e "$R/etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d"
+assert "tryboot.txt is the stock fallback again" same "$FW/tryboot.txt" "$T/tb.save"
+assert "stock files untouched" stock_ok
+
+# --- initramfs refresh ------------------------------------------------------------
+rand "$R/boot/initrd.img-$KR" 16384
+runs "post-update.d hook refreshes $KR's staged initramfs" \
+    "$R/etc/initramfs/post-update.d/z70-unredacted-rpi5-boot" "$KR" "$R/boot/initrd.img-$KR"
+assert "staged initramfs updated" same "$P/initramfs_2712" "$R/boot/initrd.img-$KR"
+assert "staged manifest still checks" sh -c "cd '$P' && sha256sum --quiet -c unredacted-rpi5-boot.sha256"
+assert "the verified record is dropped (a new initrd needs a new trial)" test ! -e "$R/var/lib/unredacted-rpi5-boot/verified/$KR"
+runs "post-update.d hook ignores the stock kernel" \
+    "$R/etc/initramfs/post-update.d/z70-unredacted-rpi5-boot" "$STOCK" "$R/boot/initrd.img-$STOCK"
+
+# --- try stock, revert -------------------------------------------------------------
+runs "try stock (the default is hardened)" tool try stock
+assert "tryboot.txt has no os_prefix" sh -c "! grep -q '^os_prefix' '$FW/tryboot.txt'"
+assert "no dead-man for the stock kernel" test ! -e "$R/etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d"
+runs "revert --dry-run" tool revert --dry-run
+assert "dry run changes nothing" grep -qx "os_prefix=$KR/" "$FW/config.txt"
+runs "revert" tool revert
+assert "config.txt byte-identical to the original" same "$FW/config.txt" "$T/config.orig"
+assert "tryboot.txt removed" test ! -e "$FW/tryboot.txt"
+assert "staged kernels kept" test -d "$FW/$KR" -a -d "$FW/$KR2"
+refuses "try stock refuses when stock is the default" "already the default" tool try stock
+assert "stock files untouched" stock_ok
+
+# --- Removing the default kernel reverts to stock -------------------------------------
+runs "promote --force $KR2 (untried)" tool promote "$KR2" --force
+rm -rf "$R/boot/"*"-$KR2" "$R/usr/lib/linux-image-$KR2"
+runs "postrm.d hook removes $KR2" hook postrm "$KR2" "remove"
+assert "it warns that the default went back to stock" grep -q "reverting to the stock kernel" "$T/out"
+assert "config.txt byte-identical to the original" same "$FW/config.txt" "$T/config.orig"
+assert "$KR2's prefix removed" test ! -e "$FW/$KR2"
+assert "tryboot.txt removed (it was $KR2's fallback)" test ! -e "$FW/tryboot.txt"
+assert "stock files untouched" stock_ok
+
+# --- Refusals -----------------------------------------------------------------------
+refuses "unstage refuses a path-like release" "not a hardened Pi 5 kernelrelease" tool unstage "../../etc"
+refuses "stage refuses another flavor's release" "not a hardened Pi 5 kernelrelease" tool stage 7.2.13-hardened-unredacted-amd64
+printf 'os_prefix=other/\n' >> "$FW/config.txt"
+refuses "try refuses a config.txt that already uses os_prefix" "unsupported config.txt" tool try "$KR"
+cp "$T/config.orig" "$FW/config.txt"
+printf 'cmdline=alt.txt\n' > "$FW/extra.txt"; printf 'include extra.txt\n' >> "$FW/config.txt"
+refuses "try checks an included file too" "cmdline= in /boot/firmware/extra.txt" tool try "$KR"
+cp "$T/config.orig" "$FW/config.txt"; rm "$FW/extra.txt"
+echo "someone else's" > "$FW/tryboot.txt"
+refuses "try refuses a tryboot.txt it did not write" "not written by" tool try "$KR"
+rm "$FW/tryboot.txt"
+printf '%s' "$(cat "$T/config.orig")" > "$FW/config.txt"
+refuses "promote refuses a config.txt without a final newline" "does not end with a newline" tool promote "$KR" --force
+cp "$T/config.orig" "$FW/config.txt"
+printf '# BEGIN unredacted-rpi5-boot\nos_prefix=%s/\n' "$KR" >> "$FW/config.txt"
+refuses "a damaged block is refused" "damaged unredacted-rpi5-boot block" tool revert
+cp "$T/config.orig" "$FW/config.txt"
+touch "$FW/autoboot.txt"
+refuses "autoboot.txt (partition A/B) is refused" "autoboot.txt" tool try "$KR"
+rm "$FW/autoboot.txt"
+rm "$FW/$KR/bcm2712-rpi-5-b.dtb"
+refuses "try refuses an incomplete prefix" "do not match their manifest" tool try "$KR"
+runs "stage --all re-stages it" tool stage --all
+assert "complete again" sh -c "cd '$P' && sha256sum --quiet -c unredacted-rpi5-boot.sha256"
+assert "stock files untouched" stock_ok
+
+# --- Package removal puts the stock boot back exactly -------------------------------
+boot "$STOCK" 0
+runs "promote --force $KR" tool promote "$KR" --force
+runs "package removal (prerm remove)" tool pkg-remove
+assert "config.txt byte-identical to the original" same "$FW/config.txt" "$T/config.orig"
+assert "no tryboot.txt" test ! -e "$FW/tryboot.txt"
+assert "it compares against the install-time baseline" grep -q "identical to when unredacted-rpi5-boot was installed" "$T/out"
+assert "no staged kernels" sh -c "! ls -d '$FW'/*-hardened-unredacted-pi5 2>/dev/null"
+assert "every stock file byte-identical to the start" stock_ok
+assert "no temporary files left in /boot/firmware" sh -c "! find '$FW' -name '*.tmp' -o -name '.*.new' -o -name '.*.old' | grep -q ."
+
+echo
+if (( fails )); then echo "$fails of $n FAILED"; exit 1; fi
+echo "all $n passed"

@@ -1,0 +1,15 @@
+# After every normal (non-tryboot) boot: a pending or finished trial is over.
+# Disarm the dead-man, and point tryboot.txt back at the stock kernel when a
+# hardened one is the default (or remove it when the stock kernel is). Writes
+# /boot/firmware only when something is stale, with the stock boot files
+# fingerprinted before and after.
+[Unit]
+Description=Reset the hardened kernel's tryboot.txt after a trial
+Documentation=file:/usr/share/doc/unredacted-rpi5-boot/README.md
+RequiresMountsFor=/boot/firmware
+After=local-fs.target
+ConditionPathIsDirectory=/var/lib/unredacted-rpi5-boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unredacted-rpi5-boot boot-cleanup

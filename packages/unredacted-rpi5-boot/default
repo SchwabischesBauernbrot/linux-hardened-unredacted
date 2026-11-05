@@ -1,0 +1,17 @@
+# Settings for unredacted-rpi5-boot (sourced by /usr/sbin/unredacted-rpi5-boot
+# as shell). Changes apply from the next stage, try or promote.
+
+# Appended to the stock /boot/firmware/cmdline.txt to form each staged
+# kernel's own cmdline.txt. panic=10 reboots 10 seconds after a kernel panic
+# (initramfs-tools honours it for a failed root mount too), so a broken trial
+# lands back on the default boot instead of hanging.
+CMDLINE_APPEND="panic=10"
+
+# Minutes a trial boot stays up before the dead-man reboots it back to the
+# default boot, unless 'unredacted-rpi5-boot confirm' runs.
+DEADMAN_MINUTES=15
+
+# Failed units 'unredacted-rpi5-boot verify' ignores, space-separated (units
+# that also fail on the stock kernel). Units already failed when 'try' ran
+# are ignored anyway.
+VERIFY_IGNORE_FAILED_UNITS=""

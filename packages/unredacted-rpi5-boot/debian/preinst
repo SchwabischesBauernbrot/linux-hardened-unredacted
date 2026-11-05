@@ -1,0 +1,22 @@
+#!/bin/sh
+# unredacted-rpi5-boot preinst: refuse to install anywhere but a Raspberry Pi 5.
+#
+# The hardened pi5 kernel is built for the Pi 5 (BCM2712) and boots only via
+# its firmware; this package is what makes it boot, so this is where a wrong
+# machine is stopped. Image builders working in a chroot on another host can
+# set UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK=1.
+set -e
+case "$1" in
+    install|upgrade)
+        if [ "${UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK:-}" != 1 ]; then
+            dt="${UNREDACTED_RPI5_BOOT_ROOT:-}/proc/device-tree/compatible"
+            if ! { [ -r "$dt" ] && tr '\0' '\n' < "$dt" | grep -qx 'raspberrypi,5-model-b'; }; then
+                echo "unredacted-rpi5-boot: this machine is not a Raspberry Pi 5" >&2
+                echo "  (/proc/device-tree/compatible does not list raspberrypi,5-model-b)." >&2
+                echo "  The hardened pi5 kernel is for the Raspberry Pi 5 only; refusing to install." >&2
+                exit 1
+            fi
+        fi
+        ;;
+esac
+exit 0

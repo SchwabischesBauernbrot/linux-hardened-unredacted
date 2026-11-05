@@ -1,0 +1,19 @@
+#!/bin/sh
+# /etc/kernel/postinst.d/z70-unredacted-rpi5-boot (unredacted-rpi5-boot)
+#
+# After a hardened Pi 5 kernel package is configured (and after
+# initramfs-tools has built its initrd: this hook sorts after it): stage the
+# kernel, initrd, DTBs and overlays into /boot/firmware/<kernelrelease>/. The
+# stock boot files are fingerprinted before and after, and the hook fails if
+# anything changed. Staging alone changes no boot: see 'unredacted-rpi5-boot
+# try'. Other kernels: nothing.
+set -e
+version="$1"
+case "$version" in *-hardened-unredacted-pi5) ;; *) exit 0 ;; esac
+tool="${UNREDACTED_RPI5_BOOT_ROOT:-}/usr/sbin/unredacted-rpi5-boot"
+[ -x "$tool" ] || exit 0
+if [ -n "${DEB_MAINT_PARAMS:-}" ]; then
+    eval set -- "$DEB_MAINT_PARAMS"
+    case "$1" in configure) ;; *) exit 0 ;; esac
+fi
+exec "$tool" stage "$version" </dev/null >&2

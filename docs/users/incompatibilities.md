@@ -152,3 +152,34 @@ These apply to the Raspberry Pi 5 kernel (`linux-image-hardened-unredacted-pi5`)
 For a one-off `vcgencmd` query, boot the stock Raspberry Pi kernel.
 
 **Status:** Working as designed.
+
+## Raspberry Pi 5: boot setup (`unredacted-rpi5-boot`)
+
+These come with `unredacted-rpi5-boot`, the package that boots the pi5 kernel from the Pi firmware ([install-rpi5.md](install-rpi5.md)).
+
+**No `vcgencmd`, no `/dev/vcio`.** See the section above. `rpi-eeprom-update` reads the bootloader version from the device tree instead; `unredacted-rpi5-boot verify` checks that it can.
+
+**Overlays come from the kernel package, not from raspi-firmware.**
+- **Symptom:** a `.dtbo` you copied into `/boot/firmware/overlays/` works on the stock kernel, but the hardened kernel does not load it.
+- **Cause:** each staged kernel's directory has an `overlays/README`, so the firmware loads that kernel's overlays from `/boot/firmware/<kernelrelease>/overlays/` instead (`os_prefix` + `overlay_prefix`). Those overlays are built from the same tree as the kernel, so they always match it. `/boot/firmware/overlays/` belongs to the stock kernel and is never written. `dtoverlay=` lines in `config.txt` apply to both kernels, by name.
+- **Workaround:** put your own overlays in `/etc/unredacted-rpi5-boot/overlays/`, then `sudo unredacted-rpi5-boot stage --all`. They are copied into every staged kernel on every stage.
+
+**The stock kernel is kept as the fallback.**
+- **Keep it installed:** do not remove `linux-image-rpi-2712`. `reboot '0 tryboot'` boots it once while a hardened kernel is the default, and `unredacted-rpi5-boot revert` makes it the default again.
+- **Leave stock updates on:** its updates and raspi-firmware's go on writing `/boot/firmware` as usual, and the hardened boot is unaffected. `unredacted-rpi5-boot status` lists the stock files that changed since its last command, so you can see who touched them.
+
+**`update-initramfs -u` updates the hardened kernel's initramfs, not the stock one's.**
+- **Cause:** without `-k`, `update-initramfs -u` picks the highest-versioned kernel, and 6.18.60 sorts above Raspberry Pi's 6.18.50.
+- **Workaround:** after changing initramfs configuration, run `sudo update-initramfs -u -k all`.
+
+**`config.txt` settings the tool refuses.**
+- **Symptom:** `try` and `promote` stop with "unsupported config.txt setting(s)".
+- **Cause:** `os_prefix`, `overlay_prefix`, `cmdline`, `device_tree` and `tryboot_a_b` (in `config.txt` or a file it `include`s) change what a prefix boots or how tryboot works, in ways the tool does not model. So does an `autoboot.txt`.
+- **Workaround:** remove the setting, or boot the hardened kernel by hand.
+
+**Only the Raspberry Pi 5 Model B.**
+- **Symptom:** `unredacted-rpi5-boot` refuses to install.
+- **Cause:** `/proc/device-tree/compatible` does not list `raspberrypi,5-model-b`. The CM5 and the Pi 500 are not tested yet.
+- **Image builders:** working in a chroot on another machine, set `UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK=1`.
+
+**Status:** Working as designed.

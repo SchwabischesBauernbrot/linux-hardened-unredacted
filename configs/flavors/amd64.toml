@@ -72,8 +72,9 @@ required_y    = ["CONFIG_X86_64", "CONFIG_EFI", "CONFIG_EFI_STUB"]
 # its kernel-derived version always sorts highest.
 defaults_package = true
 
-# Boot-integration package built alongside the kernel ("" = none; GRUB and
-# the distro's kernel hooks handle amd64).
+# Boot-integration package built alongside the kernel from
+# packages/<name>/ by build/build-boot-package.sh, and pulled in by the image
+# metas ("" = none; GRUB and the distro's kernel hooks handle amd64).
 boot_package  = ""
 
 # Boot the built kernel under QEMU in CI before signing (arm64 flavors).

@@ -80,6 +80,9 @@ line_set=$(flavor_get lines)
 display_name=$(flavor_get display_name)
 # Whether this flavor emits unredacted-hardened-defaults (exactly one does).
 defaults_package=$(flavor_get defaults_package)
+# The flavor's boot-integration package ("" = none): pi5's
+# unredacted-rpi5-boot, which makes the kernel bootable from the Pi firmware.
+boot_package=$(flavor_get boot_package)
 
 # Cross-compile when the build host is not the flavor's architecture; the same
 # derivation as build/configure-kernel.sh (see the comment there). Empty for a
@@ -650,22 +653,48 @@ else
     echo "not generating ${defaults_pkg} (flavor $FLAVOR: defaults_package = false)"
 fi
 
-echo "generating meta-packages"
 series="${KERNEL_VERSION%.*}"   # X.Y line key (7.0.12 -> 7.0)
 stable_series=$(python3 "$repo_root/tools/lines.py" stable-series "$line_set")
 echo "  line series: $series (stable line of the $line_set line set: $stable_series)"
 
+# --- Boot package --------------------------------------------------------
+# The flavor's boot-integration package (packages/<name>/, built by
+# build-boot-package.sh). On the Pi 5 it is what makes the kernel boot at all:
+# its kernel hooks stage each hardened kernel into /boot/firmware, and its
+# try/promote/revert put it in front of the firmware. So the image metas
+# depend on it, as on the defaults package.
+#
+# Versioned with this build, so it upgrades alongside the kernel and a fix to
+# it ships with the next kernel. Only the stable line's build emits it, for the
+# same reason only one flavor emits the defaults package: a second line would
+# publish a competing, lower version of the same package. A non-stable line's
+# metas take whatever version the suite has.
+image_extra_dep=$defaults_dep
+if [[ -n $boot_package ]]; then
+    if [[ $series == "$stable_series" ]]; then
+        echo "generating boot package $boot_package"
+        WORKDIR="$WORKDIR" FLAVOR="$FLAVOR" BOOT_PKG_VERSION="$new_version" \
+            "$repo_root/build/build-boot-package.sh"
+        image_extra_dep="${image_extra_dep}, ${boot_package} (>= ${new_version})"
+    else
+        echo "not generating $boot_package (series $series is not the stable $stable_series)"
+        image_extra_dep="${image_extra_dep}, ${boot_package}"
+    fi
+fi
+
+echo "generating meta-packages"
 # Per-line metas (always). Both image metas pull in the defaults package
-# themselves, now that the umbrella no longer reaches it via the per-line meta.
+# (and the boot package, for a flavor that has one) themselves, now that the
+# umbrella no longer reaches it via the per-line meta.
 emit_versioned_meta image   "Hardened Linux kernel image for ${display_name} (${series} line)" \
-    "$defaults_dep"
+    "$image_extra_dep"
 emit_versioned_meta headers "Hardened Linux kernel headers for ${display_name} (${series} line)"
 
 # Umbrella metas only for the stable line, so publishing a non-stable (LTS)
 # line never moves the unversioned name off current stable.
 if [[ $series == "$stable_series" ]]; then
     emit_umbrella_meta image   "Hardened Linux kernel image for ${display_name} (latest stable)" \
-        "$defaults_dep"
+        "$image_extra_dep"
     emit_umbrella_meta headers "Hardened Linux kernel headers for ${display_name} (latest stable)"
 else
     echo "  series $series != stable $stable_series: skipping unversioned umbrella metas"

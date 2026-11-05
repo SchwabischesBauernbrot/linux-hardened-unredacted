@@ -14,6 +14,59 @@ jobs:
       - run: apt-get update && apt-get install -y shellcheck
       - run: shellcheck build/*.sh tools/*.sh
 
+  rpi5-boot:
+    # unredacted-rpi5-boot (packages/unredacted-rpi5-boot/) is what boots the
+    # pi5 kernel from the Pi firmware, and the one piece of this repo that
+    # writes to a machine's boot partition. Its tests drive the real tool and
+    # kernel hooks against a fake Raspberry Pi OS root (tests/run.sh): install
+    # hooks, try, a trial boot, verify, confirm, promote, an upgrade, revert,
+    # removal, and the refusals, checking that no stock boot file ever changes.
+    # Then the .deb is built twice, as build-debs.sh builds it, and must come
+    # out identical: a rebuild (tools/repro-check.sh) has to match its
+    # key-independent digest exactly.
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y --no-install-recommends shellcheck
+      - run: >-
+          shellcheck packages/unredacted-rpi5-boot/unredacted-rpi5-boot
+          packages/unredacted-rpi5-boot/hooks/* packages/unredacted-rpi5-boot/debian/*
+          packages/unredacted-rpi5-boot/tests/run.sh
+          packages/unredacted-rpi5-boot/doc/examples/verify.d/*
+      - run: bash packages/unredacted-rpi5-boot/tests/run.sh
+      - name: the .deb builds, and reproducibly
+        run: |
+          set -euo pipefail
+          for i in 1 2; do
+            mkdir -p "/tmp/boot$i"
+            WORKDIR=/tmp/boot$i FLAVOR=pi5 BOOT_PKG_VERSION=6.18.60-hardened1 \
+              SOURCE_DATE_EPOCH=1793750400 ./build/build-boot-package.sh
+          done
+          deb=unredacted-rpi5-boot_6.18.60-hardened1_arm64.deb
+          dpkg-deb -I "/tmp/boot1/$deb"
+          dpkg-deb -c "/tmp/boot1/$deb"
+          cmp "/tmp/boot1/$deb" "/tmp/boot2/$deb"
+          a=$(python3 tools/canonical-deb-hash.py "/tmp/boot1/$deb" | cut -f2-)
+          b=$(python3 tools/canonical-deb-hash.py "/tmp/boot2/$deb" | cut -f2-)
+          [[ $a == "$b" ]] || { echo "::error::canonical digests differ: $a vs $b" >&2; exit 1; }
+          # Key-independent (no kernel in it), so both digests are the same.
+          [[ $(cut -f1 <<<"$a") == $(cut -f2 <<<"$a") ]] || {
+            echo "::error::the boot package has key-dependent members" >&2; exit 1; }
+          # The paths the tool, dpkg and the firmware rely on.
+          dpkg-deb -c "/tmp/boot1/$deb" | awk '{print $6}' > /tmp/boot.paths
+          for f in ./usr/sbin/unredacted-rpi5-boot \
+                   ./etc/kernel/preinst.d/z70-unredacted-rpi5-boot \
+                   ./etc/kernel/postinst.d/z70-unredacted-rpi5-boot \
+                   ./etc/kernel/postrm.d/z70-unredacted-rpi5-boot \
+                   ./etc/initramfs/post-update.d/z70-unredacted-rpi5-boot \
+                   ./usr/lib/systemd/system/unredacted-rpi5-boot-deadman.timer \
+                   ./usr/lib/systemd/system/multi-user.target.wants/unredacted-rpi5-boot-cleanup.service; do
+            grep -qx -- "$f" /tmp/boot.paths || { echo "::error::$f missing from $deb" >&2; exit 1; }
+          done
+          dpkg-deb --ctrl-tarfile "/tmp/boot1/$deb" | tar -xO ./conffiles | tee /tmp/boot.conffiles
+          grep -qx /etc/default/unredacted-rpi5-boot /tmp/boot.conffiles
+          echo "unredacted-rpi5-boot .deb OK and reproducible: $a"
+
   yamllint:
     runs-on: linux-hardened
     steps:
