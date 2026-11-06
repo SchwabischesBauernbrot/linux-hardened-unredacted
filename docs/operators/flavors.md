@@ -30,7 +30,7 @@
 
 4. **Proposed default: no `/dev/vcio` and no `/dev/vc-mem` on the Pi flavor** (`CONFIG_BCM_VCIO=n`, `CONFIG_BCM2708_VCMEM=n`). `/dev/vcio` passes any firmware mailbox property list straight to the VideoCore with no filtering, and `/dev/vc-mem` maps VideoCore memory. Both hand root a path around `lockdown=integrity`. The cost is that `vcgencmd` stops working. Neither EEPROM updates nor temperature readings need it: `rpi-eeprom-update` prefers the device tree and only falls back to `vcgencmd`, and the thermal zone is a normal sysfs device. `/dev/gpiomem*` and `/dev/pio0` stay, since they only expose GPIO and PIO blocks to the `gpio` group.
 
-5. **Hardening-for-speed trades are decided after the soak, not before** (see [Performance](#performance)). The soak's data and recommendation (keep all three) are in [pi5-soak-2026-11.md](pi5-soak-2026-11.md#the-trades); the decision is pending review.
+5. **Hardening-for-speed trades are decided after the soak, not before** (see [Performance](#performance)). **Decided 2026-11-06: keep all three** (`init_on_free=1`, full preemption, `DEBUG_LIST=y`), on the soak data in [pi5-soak-2026-11.md](pi5-soak-2026-11.md#the-trades).
 
 ## Evidence
 
@@ -166,11 +166,11 @@ From the 2026-11-02 research on this relay and workload. The relay is not CPU-bo
 | Item | Where | Status |
 |---|---|---|
 | 16K pages; NUMA interleave via the firmware; Raspberry Pi's `macb` coalescing | Pi flavor (inherited from Raspberry Pi's tree and seed) | build in |
-| Full `PREEMPT`, plus `PREEMPT_DYNAMIC` so `preempt=lazy` can be tried at boot | pi5 intent | built in. Soak: `preempt=lazy` saved nothing (Tor +5% CPU per GB); recommend keeping full |
+| Full `PREEMPT`, plus `PREEMPT_DYNAMIC` so `preempt=lazy` can be tried at boot | pi5 intent | built in. Soak: `preempt=lazy` saved nothing (Tor +5% CPU per GB). **Decided: keep full preemption** |
 | `fq` + `bbr` applied by `systemd-sysctl` before interfaces come up. Today eth0 runs `fq_codel`: `sysctl-late.service` applies `fq` after eth0 exists, so BBR paces ~5,000 sockets in software. | shipped `sysctl.d` defaults (opt-in tuning package) | build in |
 | RPS for eth0. All NET_RX softirq lands on CPU0, and RP1's chained interrupt has no settable affinity. | shipped udev rule | measured: not needed at today's load (CPU0 softirq 2–4% at 30–40 Mbit/s); revisit above ~25% |
-| `init_on_free=0`, keeping `init_on_alloc=1`. Kernel docs say 3–8%; linux-hardened's verify reads add to it on every packet buffer. | cmdline A/B, no rebuild | **hardening trade.** Soak: no gain (−1%, interval −7% to +5%); the verify reads become zeroing on allocation. Recommend keeping `init_on_free=1`; decision pending review |
-| `DEBUG_LIST=n`, keeping `LIST_HARDENED=y`. Upstream: use `LIST_HARDENED` alone "if you care about performance"; the commit adding it measured netperf +7% (built with Clang; GCC builds probably gain less). | intent | **hardening trade.** Soak estimate: at most ~0.4% of busy CPU. Recommend keeping `DEBUG_LIST=y`; decision pending review |
+| `init_on_free=0`, keeping `init_on_alloc=1`. Kernel docs say 3–8%; linux-hardened's verify reads add to it on every packet buffer. | cmdline A/B, no rebuild | **hardening trade.** Soak: no gain (−1%, interval −7% to +5%); the verify reads become zeroing on allocation. **Decided: keep `init_on_free=1`** |
+| `DEBUG_LIST=n`, keeping `LIST_HARDENED=y`. Upstream: use `LIST_HARDENED` alone "if you care about performance"; the commit adding it measured netperf +7% (built with Clang; GCC builds probably gain less). | intent | **hardening trade.** Soak estimate: at most ~0.4% of busy CPU. **Decided: keep `DEBUG_LIST=y`** |
 | Keep KSTACK_ERASE, SHADOW_CALL_STACK, ZERO_CALL_USED_REGS, KFENCE | — | keep: cheap, or no alternative |
 
 **Not kernel work, for the relay operators:**
