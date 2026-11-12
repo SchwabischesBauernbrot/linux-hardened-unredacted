@@ -165,7 +165,7 @@ In the Forgejo Actions UI, manually dispatch `publish.yml`:
 
 There is **no `component` input** — one dispatch publishes both components: the workflow splits the `-dbg` package into the `debug` component and everything else into `main`, in a single run.
 
-Watch the workflow. It downloads the `.debs` from the draft release, uploads them to the Debian registry (main + debug), purges Fastly, and commits the manifest + `final.config` back to main.
+Watch the workflow. It downloads the `.debs` from the draft release, uploads them to the Debian registry (main + debug), purges Fastly, commits the manifest + `final.config` back to main, and un-drafts the release (step 10a).
 
 Verify the registry:
 
@@ -176,17 +176,30 @@ curl -fsS https://repo.unredacted.org/debian/dists/trixie/main/binary-amd64/Pack
 
 Then dispatch `repro-check.yml` for this tag to verify reproducibility. It is `workflow_dispatch`-only (Forgejo has no `workflow_run` trigger, so it cannot auto-chain off publish); the nightly cron is the backstop. It needs a docker-capable runner.
 
-## 10a. Publish the release (un-draft it) — manual
+## 10a. Check that the release was published (un-drafted)
 
-`build-kernel.yml` creates the Forgejo release as a **draft** by design: that is the human review gate before anything becomes public. `publish.yml` can read a draft's assets because it sends the release token, so the registry publish above works while the release is still a draft — which is exactly why this step is easy to forget.
+`build-kernel.yml` creates the Forgejo release as a **draft** by design: that is the human review gate before anything becomes public. `publish.yml` un-drafts it as its **last** step, after the registry upload and the manifest commit, so a failure earlier leaves the release a draft rather than announcing a half-published one. The step then fetches `unredacted-hardened.der` without credentials and warns if that is not a 200.
 
-Nothing in any workflow un-drafts the release. Until you do it by hand, anonymous users get a 404 on the release assets, which breaks:
+Check the end of the publish run's log for:
+
+```
+published release <tag> (id <id>)
+anonymous asset fetch OK (200): https://git.unredacted.org/unredacted/linux-hardened-unredacted/releases/download/<tag>/unredacted-hardened.der
+```
+
+A release that stays a draft breaks the anonymous download of its assets, which these depend on:
 
 - [../users/secure-boot.md](../users/secure-boot.md) — users `wget` `unredacted-hardened.der` from the release URL to enroll MOK. Without it they cannot boot the kernel they just installed on a Secure Boot machine.
 - [../users/verifying-packages.md](../users/verifying-packages.md) — the same download, plus the fingerprint published in the release notes.
 - [../users/cve-policy.md](../users/cve-policy.md) — the Forgejo releases RSS feed is the announced CVE-response channel, and drafts do not appear in it.
 
-In the Forgejo UI: **Releases → the draft → Edit → untick "This is a draft" → Update release**. Or via the API:
+Confirm it yourself before announcing:
+
+```
+curl -sI "https://git.unredacted.org/unredacted/linux-hardened-unredacted/releases/download/$TAG/unredacted-hardened.der" | head -1
+```
+
+If the publish run failed before its last step, fix the cause and dispatch `publish.yml` again: every step is idempotent, and the un-draft step does nothing to a release that is already published. To un-draft by hand instead, use **Releases → the draft → Edit → untick "This is a draft" → Update release** in the Forgejo UI, or the API:
 
 ```
 # Resolve the id from the LIST endpoint, not /releases/tags/{tag}: some Forgejo
@@ -197,12 +210,6 @@ id=$(curl -fsS -H "Authorization: token $RELEASE_TOKEN" \
 curl -fsS -X PATCH -H "Authorization: token $RELEASE_TOKEN" \
   -H "Content-Type: application/json" -d '{"draft":false}' \
   "https://git.unredacted.org/api/v1/repos/unredacted/linux-hardened-unredacted/releases/$id"
-```
-
-Confirm it is reachable without credentials before announcing:
-
-```
-curl -sI "https://git.unredacted.org/unredacted/linux-hardened-unredacted/releases/download/$TAG/unredacted-hardened.der" | head -1
 ```
 
 ## 11. Install on a clean Debian 13 VM
