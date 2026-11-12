@@ -1,7 +1,5 @@
 # Installing on a Raspberry Pi 5
 
-> **Not published yet.** The pi5 packages are built and test-signed in CI, but go to the apt repo only after the soak on the project's own relays (Phase 5 of [flavors.md](../operators/flavors.md#rollout)). Until then this page is what the packages do and how they were tested.
-
 > No warranty. This software is distributed under the GNU General Public License version 2. There is no warranty. Use at your own risk.
 
 The Raspberry Pi 5 kernel is Raspberry Pi's own `rpi-6.18.y` tree with anthraxx's `linux-hardened` patch, built from Raspberry Pi OS's own kernel config plus this project's hardening ([flavors.md](../operators/flavors.md)). It installs **next to** the stock Raspberry Pi OS kernel. The stock kernel stays the fallback: a power cycle, or one `reboot '0 tryboot'`, gets you back to it.
@@ -18,7 +16,7 @@ The Raspberry Pi 5 kernel is Raspberry Pi's own `rpi-6.18.y` tree with anthraxx'
 
 The Pi 5 boots from firmware that reads `/boot/firmware/config.txt`. GRUB and UEFI are not involved, so the kernel package alone does not make the Pi boot it. A second package, `unredacted-rpi5-boot`, does:
 
-- When a hardened kernel is installed, its hooks **stage** it into a directory of its own, named after its kernelrelease: `/boot/firmware/6.18.60-hardened-unredacted-pi5/`. The directory holds `kernel_2712.img`, `initramfs_2712`, the `bcm2712` device trees, the kernel's own overlays and a `cmdline.txt`. The `cmdline.txt` is the stock one plus `panic=10`. Staging boots nothing.
+- When a hardened kernel is installed, its hooks **stage** it into a directory of its own, named after its kernelrelease: `/boot/firmware/6.18.62-hardened-unredacted-pi5/`. The directory holds `kernel_2712.img`, `initramfs_2712`, the `bcm2712` device trees, the kernel's own overlays and a `cmdline.txt`. The `cmdline.txt` is the stock one plus `panic=10`. Staging boots nothing.
 - The firmware boots a staged kernel only when a config file names its directory in `os_prefix=`. If that directory lacks the kernel or the device tree, the firmware ignores the prefix and boots the stock files.
 - `tryboot.txt` is read **instead of** `config.txt` for one boot only: the boot after `reboot '0 tryboot'`. That boot consumes the flag, so every reboot after it boots `config.txt` again.
 - The stock boot files are never written. Every command that changes `/boot/firmware` fingerprints them before and after, and fails if anything changed. Those files are `kernel_2712.img`, `initramfs_2712`, the DTBs, `overlays/`, `cmdline.txt`, the firmware, and `config.txt` outside the tool's own block. `unredacted-rpi5-boot fingerprint` prints that set.
@@ -40,16 +38,15 @@ sudo apt install linux-image-hardened-unredacted-pi5
 
 That pulls in three packages:
 
-- the kernel, `linux-image-6.18.60-hardened-unredacted-pi5`;
+- the kernel, `linux-image-6.18.62-hardened-unredacted-pi5`;
 - `unredacted-rpi5-boot`;
 - `unredacted-hardened-defaults`, the sysctl policy. Its postinst applies it to the **running** kernel straight away, so unprivileged user namespaces, BPF and perf are restricted before any reboot (see [incompatibilities.md](incompatibilities.md)).
 
 The kernel's hook stages it and reports that the stock boot files did not change:
 
 ```
-  stock boot files unchanged across the install of linux-image-6.18.60-hardened-unredacted-pi5 (435 files)
-  staged 6.18.60-hardened-unredacted-pi5 in /boot/firmware/6.18.60-hardened-unredacted-pi5 (8 DTBs, 386 overlay files)
-  stock boot files unchanged (435 files)
+  staged 6.18.62-hardened-unredacted-pi5 in /boot/firmware/6.18.62-hardened-unredacted-pi5 (8 DTBs, 388 overlay files)
+  stock boot files unchanged (439 files)
 ```
 
 Check with `sudo unredacted-rpi5-boot status`. The default boot is still the stock kernel.
@@ -57,7 +54,7 @@ Check with `sudo unredacted-rpi5-boot status`. The default boot is still the sto
 ## Try it once
 
 ```bash
-sudo unredacted-rpi5-boot try 6.18.60-hardened-unredacted-pi5
+sudo unredacted-rpi5-boot try 6.18.62-hardened-unredacted-pi5
 sudo reboot '0 tryboot'
 ```
 
@@ -101,7 +98,7 @@ sudo unredacted-rpi5-boot promote
 ```
 # BEGIN unredacted-rpi5-boot (boots the hardened kernel; remove with: unredacted-rpi5-boot revert)
 [all]
-os_prefix=6.18.60-hardened-unredacted-pi5/
+os_prefix=6.18.62-hardened-unredacted-pi5/
 kernel=kernel_2712.img
 initramfs initramfs_2712 followkernel
 # END unredacted-rpi5-boot
@@ -111,10 +108,10 @@ initramfs initramfs_2712 followkernel
 
 ## Upgrades
 
-A new hardened kernel (say `6.18.61-hardened-unredacted-pi5`) is staged into a second directory next to the running one. The default boot does not move, so try the new kernel from the running hardened one:
+A new hardened kernel (say `6.18.63-hardened-unredacted-pi5`) is staged into a second directory next to the running one. The default boot does not move, so try the new kernel from the running hardened one:
 
 ```bash
-sudo unredacted-rpi5-boot try 6.18.61-hardened-unredacted-pi5
+sudo unredacted-rpi5-boot try 6.18.63-hardened-unredacted-pi5
 sudo reboot '0 tryboot'
 # on the trial boot:
 sudo unredacted-rpi5-boot verify && sudo unredacted-rpi5-boot promote
