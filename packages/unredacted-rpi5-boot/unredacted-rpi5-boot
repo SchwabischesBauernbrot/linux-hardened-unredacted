@@ -309,8 +309,24 @@ guarded() {
     n=$(wc -l < "$after")
     echo "  stock boot files unchanged ($n files)"
     mkdir -p "$STATE"
-    { echo "# $(date -u +%FT%TZ) after: $*"; cat "$after"; } > "$STATE/stock.sha256"
+    { echo "# $(date -u +%FT%TZ) after: $(one_line "$@")"; cat "$after"; } > "$STATE/stock.sha256"
 }
+
+# "$@" as one line for a header: an argument spanning lines (promote and
+# revert pass all of config.txt) is shown as "<N lines>". A header must stay
+# one line, or its lines would be read back as fingerprint entries.
+one_line() {
+    local a out=$1
+    for a in "${@:2}"; do
+        [[ $a == *$'\n'* ]] && a="<$(printf '%s\n' "$a" | wc -l | tr -d ' ') lines>"
+        out+=" $a"
+    done
+    printf '%s' "${out//[[:cntrl:]]/ }"
+}
+
+# The entries of a saved fingerprint, without its header (or anything else
+# that is not "<sha256>  <path>").
+fp_entries() { grep -E '^[0-9a-f]{64}  ' "$1" || true; }
 
 # --- Staging -------------------------------------------------------------------
 
@@ -831,12 +847,12 @@ cmd_status() {
     tmpdir; now=$(mktemp -p "$TMPD")
     fingerprint > "$now"; n=$(wc -l < "$now")
     if [[ -f $base ]]; then
-        if [[ -z $(fp_changes <(grep -v '^#' "$base") "$now") ]]; then
+        if [[ -z $(fp_changes <(fp_entries "$base") "$now") ]]; then
             printf 'stock files: %s, unchanged since %s\n' "$n" "$(head -n1 "$base" | cut -d' ' -f2)"
         else
             printf 'stock files: %s; changed since %s (by another package, not by %s):\n' "$n" \
                 "$(head -n1 "$base" | cut -d' ' -f2)" "$ME"
-            fp_changes <(grep -v '^#' "$base") "$now" | sed 's/^/  /'
+            fp_changes <(fp_entries "$base") "$now" | sed 's/^/  /'
         fi
     else
         printf 'stock files: %s\n' "$n"
@@ -1061,11 +1077,11 @@ cmd_pkg_remove() {
     base=$STATE/stock-at-install.sha256
     if [[ -f $base ]]; then
         tmpdir; now=$(mktemp -p "$TMPD"); fingerprint > "$now"
-        if [[ -z $(fp_changes <(grep -v '^#' "$base") "$now") ]]; then
+        if [[ -z $(fp_changes <(fp_entries "$base") "$now") ]]; then
             echo "  stock boot files identical to when $ME was installed ($(wc -l < "$now") files)"
         else
             echo "  stock boot files changed since $ME was installed (by other packages):"
-            fp_changes <(grep -v '^#' "$base") "$now" | sed 's/^/    /'
+            fp_changes <(fp_entries "$base") "$now" | sed 's/^/    /'
         fi
     fi
 }

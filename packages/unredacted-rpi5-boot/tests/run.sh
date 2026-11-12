@@ -187,6 +187,21 @@ stock_sums() {
 cp "$FW/config.txt" "$T/config.orig"
 stock_sums > "$T/stock.orig"
 stock_ok() { stock_sums | cmp -s - "$T/stock.orig"; }
+# The baseline `status` compares against: one header line, then only
+# "<sha256>  <path>" entries. promote and revert pass all of config.txt to
+# guarded(); its lines once leaked into the header and `status` read them back
+# as files "removed" by another package.
+baseline_ok() {
+    local b=$R/var/lib/unredacted-rpi5-boot/stock.sha256
+    [[ $(head -c1 "$b") == "#" ]] && ! tail -n +2 "$b" | grep -qvE '^[0-9a-f]{64}  '
+}
+# status_unchanged LABEL: status reports the stock files unchanged.
+status_unchanged() {
+    runs "status after $1" tool status
+    assert "status after $1: stock files unchanged" grep -q "^stock files: .*, unchanged since" "$T/out"
+    assert "status after $1: nothing reported removed" sh -c "! grep -q 'removed' '$T/out'"
+    assert "status after $1: the baseline header is one line" baseline_ok
+}
 
 echo "# unredacted-rpi5-boot tests in $T"
 
@@ -310,6 +325,7 @@ assert "config.txt minus our block is byte-identical" \
     sh -c "sed '/^# BEGIN unredacted-rpi5-boot/,/^# END unredacted-rpi5-boot/d' '$FW/config.txt' | cmp -s - '$T/config.orig'"
 assert "tryboot.txt now boots stock" sh -c "grep -q 'tryboot.txt for stock' '$FW/tryboot.txt' && ! grep -q '^os_prefix' '$FW/tryboot.txt'"
 assert "stock files untouched" stock_ok
+status_unchanged "promote"
 runs "promote again is a no-op" tool promote
 assert "it says so" grep -q "already the default" "$T/out"
 boot "$KR" 0
@@ -364,6 +380,7 @@ assert "tryboot.txt removed" test ! -e "$FW/tryboot.txt"
 assert "staged kernels kept" test -d "$FW/$KR" -a -d "$FW/$KR2"
 refuses "try stock refuses when stock is the default" "already the default" tool try stock
 assert "stock files untouched" stock_ok
+status_unchanged "revert"
 
 # --- Removing the default kernel reverts to stock -------------------------------------
 runs "promote --force $KR2 (untried)" tool promote "$KR2" --force
