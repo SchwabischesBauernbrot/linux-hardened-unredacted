@@ -1,6 +1,6 @@
 # Build flavors: amd64, Raspberry Pi 5, generic arm64
 
-**Status: Phases 1–3 implemented (2026-11-04); the soak (Phase 4) is next.** Originally proposed 2026-11-02. This is the plan for adding Raspberry Pi 5 support, shaped so a generic arm64 kernel can follow later without another redesign.
+**Status: Phases 1–3 implemented (2026-11-04); the soak (Phase 4) ran 2026-11-05 ([report](pi5-soak-2026-11.md)). Phase 5 follows review of the report.** Originally proposed 2026-11-02. This is the plan for adding Raspberry Pi 5 support, shaped so a generic arm64 kernel can follow later without another redesign.
 
 [per-distro-build.md](per-distro-build.md) describes two independent axes: the distro/arch target and the kernel line ([config-architecture.md](config-architecture.md#kernel-lines-single-stable-line-multi-line-capable)). A **flavor** is a third axis. It changes what the other two can't: the source tree, the config seed, the page size, the boot path and the image signing.
 
@@ -30,7 +30,7 @@
 
 4. **Proposed default: no `/dev/vcio` and no `/dev/vc-mem` on the Pi flavor** (`CONFIG_BCM_VCIO=n`, `CONFIG_BCM2708_VCMEM=n`). `/dev/vcio` passes any firmware mailbox property list straight to the VideoCore with no filtering, and `/dev/vc-mem` maps VideoCore memory. Both hand root a path around `lockdown=integrity`. The cost is that `vcgencmd` stops working. Neither EEPROM updates nor temperature readings need it: `rpi-eeprom-update` prefers the device tree and only falls back to `vcgencmd`, and the thermal zone is a normal sysfs device. `/dev/gpiomem*` and `/dev/pio0` stay, since they only expose GPIO and PIO blocks to the `gpio` group.
 
-5. **Hardening-for-speed trades are decided after the soak, not before** (see [Performance](#performance)).
+5. **Hardening-for-speed trades are decided after the soak, not before** (see [Performance](#performance)). **Decided 2026-11-06: keep all three** (`init_on_free=1`, full preemption, `DEBUG_LIST=y`), on the soak data in [pi5-soak-2026-11.md](pi5-soak-2026-11.md#the-trades).
 
 ## Evidence
 
@@ -54,6 +54,11 @@
 - **Boot-package trial, 2026-11-04, `pi-exit-relay1-tor-ce`** (Phase 3). Raspberry Pi's 6.18.60 + `v6.18.56-hardened1` (a forward-port test build), booted through `unredacted-rpi5-boot`.
   - **The commands:** `try`, a tryboot boot, `verify`, and `promote --dry-run`. Then the dead-man's reboot back to stock, `try` + `revert`, and removal of both packages.
   - **Result:** `verify` had `fails=0`. The 2026-11-02 gaps are closed: BTF, `rpi-eeprom-update`, temperature. `config.txt` never changed, and after removal all 435 stock boot files were byte-identical. Details: [install-rpi5.md](../users/install-rpi5.md#trial-on-a-pi-5-relay).
+- **Soak, 2026-11-05, `pi-exit-relay1-tor-ce`** (Phase 4). The draft `pi5-v6.18.60-hardened1` against stock, in one day of interleaved 4-hour windows. Details: [pi5-soak-2026-11.md](pi5-soak-2026-11.md).
+  - **Stability:** no incidents. 5 reboots, `verify` fails=0 on all four trial boots, no `macb` TX timeouts.
+  - **Cost:** Tor CPU per relayed byte +11%; the kernel's network path +32% per frame. The relay used 0.18 of its four cores on hardened vs 0.15 on stock.
+  - **EEPROM:** `rpi-eeprom-update -f` from the hardened kernel flashed and verified, and the next boot ran the image it wrote.
+  - **Trades:** neither `init_on_free=0` nor `preempt=lazy` saved anything measurable, and `DEBUG_LIST` is at most ~0.4% of busy CPU.
 - **QEMU smoke test** (`virt`, `-cpu cortex-a76`, TCG). Lockdown integrity; a signed module loads and a signature-stripped copy is rejected ("Key was rejected by service").
 
 ## Design
@@ -161,11 +166,11 @@ From the 2026-11-02 research on this relay and workload. The relay is not CPU-bo
 | Item | Where | Status |
 |---|---|---|
 | 16K pages; NUMA interleave via the firmware; Raspberry Pi's `macb` coalescing | Pi flavor (inherited from Raspberry Pi's tree and seed) | build in |
-| Full `PREEMPT`, plus `PREEMPT_DYNAMIC` so `preempt=lazy` can be tried at boot | pi5 intent | build in; A/B in soak |
+| Full `PREEMPT`, plus `PREEMPT_DYNAMIC` so `preempt=lazy` can be tried at boot | pi5 intent | built in. Soak: `preempt=lazy` saved nothing (Tor +5% CPU per GB). **Decided: keep full preemption** |
 | `fq` + `bbr` applied by `systemd-sysctl` before interfaces come up. Today eth0 runs `fq_codel`: `sysctl-late.service` applies `fq` after eth0 exists, so BBR paces ~5,000 sockets in software. | shipped `sysctl.d` defaults (opt-in tuning package) | build in |
-| RPS for eth0. All NET_RX softirq lands on CPU0, and RP1's chained interrupt has no settable affinity. | shipped udev rule | measure |
-| `init_on_free=0`, keeping `init_on_alloc=1`. Kernel docs say 3–8%; linux-hardened's verify reads add to it on every packet buffer. | cmdline A/B, no rebuild | **hardening trade, decide after soak** |
-| `DEBUG_LIST=n`, keeping `LIST_HARDENED=y`. Upstream: use `LIST_HARDENED` alone "if you care about performance"; the commit adding it measured netperf +7% (built with Clang; GCC builds probably gain less). | intent | **hardening trade, decide after soak** |
+| RPS for eth0. All NET_RX softirq lands on CPU0, and RP1's chained interrupt has no settable affinity. | shipped udev rule | measured: not needed at today's load (CPU0 softirq 2–4% at 30–40 Mbit/s); revisit above ~25% |
+| `init_on_free=0`, keeping `init_on_alloc=1`. Kernel docs say 3–8%; linux-hardened's verify reads add to it on every packet buffer. | cmdline A/B, no rebuild | **hardening trade.** Soak: no gain (−1%, interval −7% to +5%); the verify reads become zeroing on allocation. **Decided: keep `init_on_free=1`** |
+| `DEBUG_LIST=n`, keeping `LIST_HARDENED=y`. Upstream: use `LIST_HARDENED` alone "if you care about performance"; the commit adding it measured netperf +7% (built with Clang; GCC builds probably gain less). | intent | **hardening trade.** Soak estimate: at most ~0.4% of busy CPU. **Decided: keep `DEBUG_LIST=y`** |
 | Keep KSTACK_ERASE, SHADOW_CALL_STACK, ZERO_CALL_USED_REGS, KFENCE | — | keep: cheap, or no alternative |
 
 **Not kernel work, for the relay operators:**
@@ -199,7 +204,7 @@ A single arm64 package would force one page size and one source tree on both tar
 | 1 | PR: flavor descriptors, intent split, flavor-aware drift guard with value symbols, per-flavor signing | amd64 rebuild is byte-identical to the current release; `validate.yml` green |
 | 2 | PR: pi5 flavor (rpi-git source + delta record, apt-deb seed + keyring, 6.18 line, cross-build, QEMU smoke in CI, cve-watch for the pi5 line) | CI builds a test-signed pi5 kernel that passes the smoke test; the inherited-gap audit is done |
 | 3 | PR: `unredacted-rpi5-boot`, plus docs (`docs/users/install-rpi5.md` and incompatibilities: no `vcgencmd`, overlays come from our package) | `try` / `verify` / `revert` work on the relay; stock boot files untouched |
-| 4 | Soak on `pi-exit-relay1-tor-ce`: 24–48 h hardened vs 24–48 h stock | Tor CPU per relayed byte, CPU0 softirq load and `macb` TX timeouts measured; one real EEPROM update applied from the hardened kernel; `init_on_free`, `DEBUG_LIST` and `preempt=lazy` decided |
+| 4 | Soak on `pi-exit-relay1-tor-ce`: 24–48 h hardened vs 24–48 h stock (ran as one day of interleaved 4-hour windows, 2026-11-05: [report](pi5-soak-2026-11.md)) | Tor CPU per relayed byte, CPU0 softirq load and `macb` TX timeouts measured; one real EEPROM update applied from the hardened kernel; `init_on_free`, `DEBUG_LIST` and `preempt=lazy` decided |
 | 5 | `promote` on this relay, then the other Pi relays; publish the pi5 packages | a week without unplanned reboots or TX stalls |
 | 6 | (later) generic arm64 flavor | — |
 
