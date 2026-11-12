@@ -31,5 +31,5 @@
 
 url     = "https://github.com/raspberrypi/linux.git"
 branch  = "rpi-6.18.y"
-commit  = "0b41724521c9adf5399409d02aece6c1df0a4432"
-version = "6.18.60"
+commit  = "8cc8cd1dab2318d89c164e6961eefdd734f41126"
+version = "6.18.62"
