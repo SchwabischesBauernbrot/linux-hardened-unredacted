@@ -1,8 +1,8 @@
 # Downstream delta against kernel.org (tools/source-delta.py; checked by
 # build/fetch-sources.sh, so regenerate it in the PR that moves the pin).
-# base: linux-6.18.60.tar.xz sha256 3c2f44ef6acc021a7ad444d9a2e6ec1ef488ff09368793d0004a6080f69d621e
-# tree: https://github.com/raspberrypi/linux.git 0b41724521c9adf5399409d02aece6c1df0a4432
-# 814 added, 704 modified, 2 deleted of 91247 kernel.org paths
+# base: linux-6.18.62.tar.xz sha256 490a7aedf1b355c565d3a6c05333ccccb5da82064eca46b590448a7099d7d651
+# tree: https://github.com/raspberrypi/linux.git 8cc8cd1dab2318d89c164e6961eefdd734f41126
+# 816 added, 704 modified, 2 deleted of 91255 kernel.org paths
 # <status A|M|D> <mode 644|755|link|-> <sha256 or -> <path>
 A 644 71910704411d74e1526dc55b1d1677590685215840e4968adea0b0e32d61ebf6 .github/ISSUE_TEMPLATE/bug_report.yml
 A 644 29688cf216c7ed74240cacdf32ed718d663229892b4f246b8dcdf9662c511762 .github/ISSUE_TEMPLATE/config.yml
@@ -105,8 +105,8 @@ A 644 006d5757405ee6c7eb7b26d09d68b7727a55b81262b5357eeb2d71dd60eac74b arch/arm/
 A 644 27d603b57ea61f2552ac45574dae0c6751fba9a4e1ef9503cdcf9a07a269438d arch/arm/boot/dts/broadcom/bcm283x-rpi-i2c0mux_0_28.dtsi
 A 644 ec3234c7e3c80c2c9f5a1428218d8563a83839c9aab5afc595355c549cf8cee6 arch/arm/boot/dts/broadcom/bcm283x-rpi-i2c0mux_0_44.dtsi
 M 644 7448dadeacb1b2050dcd92d7917410fcb80ef6e65673aa6694358becd761b479 arch/arm/boot/dts/broadcom/bcm283x.dtsi
-A 644 9ee0664e67214a7039c49f8b963d4fc5ed3102d3e5a006eb2b2e73502d7e4fd0 arch/arm/boot/dts/overlays/Makefile
-A 644 05dc19ba8585cd922eeb8fbe89c07feeaced53441d7381e742b21c622452b7f3 arch/arm/boot/dts/overlays/README
+A 644 046da1434cea71bf0f7d6bc4a6549077d384d98354580203e447e284b2e1e6f4 arch/arm/boot/dts/overlays/Makefile
+A 644 7090c4b10aabdf5e31ae163cbbafc601fc5eb535bcc30db847ebf5d8c1871bf7 arch/arm/boot/dts/overlays/README
 A 644 71c08382e26f5af1504bdef7b05a38b8929ca479b486e5bf503df3e89a869c23 arch/arm/boot/dts/overlays/act-led-overlay.dts
 A 644 2b8f63fe29a8232c03414c65c028475812e913e06a084c3fb227dc1d61d52dda arch/arm/boot/dts/overlays/adafruit-st7735r-overlay.dts
 A 644 d2fc3d0739d6f1c00ad969cbc406c029973a5f18d59e09a679ba6def0d6241a6 arch/arm/boot/dts/overlays/adafruit18-overlay.dts
@@ -149,10 +149,10 @@ A 644 155b302faae8349d03929ab416a72fb0bf5140e7fd393f24d981767c64c299c3 arch/arm/
 A 644 1a65d17ba93ccd6cc66d8792d64394796dc33365f2b967441f5992e17392ebb1 arch/arm/boot/dts/overlays/cirrus-wm5102-overlay.dts
 A 644 111c950935b599198f5f7a676f3d2f3690451713d391cdc4a5099e2c0896036a arch/arm/boot/dts/overlays/cm-swap-i2c0-overlay.dts
 A 644 a6846aac7f4523f14ac6b693f40bce203b9926905211970d634251f2305b30ef arch/arm/boot/dts/overlays/cma-overlay.dts
-A 644 b6b0a4c79f480f8b5faa1b665861d9ccaf4c132731770a8e93f63963f775b321 arch/arm/boot/dts/overlays/crystalfontz-cfa050_pi_m-overlay.dts
+A 644 267bfab3e89bf2385a1b9bdeddc0b62120f6640ae3491fc1847cc2a37b9c353a arch/arm/boot/dts/overlays/crystalfontz-cfa050_pi_m-overlay.dts
 A 644 4bac5714aa091c17e5433262a2d91067ec1a6590c1ff7224adbf3e5922e9048e arch/arm/boot/dts/overlays/cutiepi-panel-overlay.dts
 A 644 f2f6e95c2500ea78ab60a5d680379d7ef814b3099c795a46527e5970e694df76 arch/arm/boot/dts/overlays/dacberry400-overlay.dts
-A 644 5d13b6dab09e3f2a35dd179698305a908947a8c77aa3299e69d8646e23d18de0 arch/arm/boot/dts/overlays/dht11-overlay.dts
+A 644 8837fb881806a9542886fdee0e778f9a4246794ac2d54ceeca848fdf884c04d4 arch/arm/boot/dts/overlays/dht11-overlay.dts
 A 644 accdba1376600ea8e1f50117a134ed6ce3279174e8cd65e0eb5e7a4f590b1d39 arch/arm/boot/dts/overlays/dionaudio-kiwi-overlay.dts
 A 644 ca2cd8d902f7cae1388a9acfb5782b5f2d1619b057a2e4daec17a5bcfebcbf65 arch/arm/boot/dts/overlays/dionaudio-loco-overlay.dts
 A 644 acd2b2ececf2022b11e7a3e1601b1b2716f233b974c9c8c33a8d33da1911b741 arch/arm/boot/dts/overlays/dionaudio-loco-v2-overlay.dts
@@ -164,7 +164,7 @@ A 644 841a73b0085a713486d4c32a28a9d1df63ac97ae253402b768ef8a349cf36742 arch/arm/
 A 644 15eb50d97c5718a3e4b2cd99106ab003e482ceda063af847732721a9c6277d89 arch/arm/boot/dts/overlays/dpi18-overlay.dts
 A 644 2432e311ff1388bc5be23d02f200d9859abd57613909d74ae1c23b098b3d977d arch/arm/boot/dts/overlays/dpi18cpadhi-overlay.dts
 A 644 d61e84c1d3206f91fe633d1efd26c04f96865fae8ba9227e79b2e019ad37a4af arch/arm/boot/dts/overlays/dpi24-overlay.dts
-A 644 4b29caa87af16e676d76c44e3f454b3d1bdd2d9afa3ef313f29c86f535470608 arch/arm/boot/dts/overlays/draws-overlay.dts
+A 644 a91326c568af1ec7115eaa51b870f1d646852d1d5104e1a244d1e1c4ecb2da65 arch/arm/boot/dts/overlays/draws-overlay.dts
 A 644 ea247ca804e7866232f3d7820dc6d0d989a3da0a84b236f276e1ee7777da2cd4 arch/arm/boot/dts/overlays/draws-pi5-overlay.dts
 A 644 c52f014d9d0d5c03e5f6a6c7cb29dd75be88eda3cc6c2b87c986bb88b99fc9d9 arch/arm/boot/dts/overlays/dwc-otg-deprecated-overlay.dts
 A 644 8aebb5826acab10357b3dd6d923e54b5d4f2abc2bd64de96cdb237ed0aee5104 arch/arm/boot/dts/overlays/dwc2-overlay.dts
@@ -181,6 +181,7 @@ A 644 2d3bdeda2f6c83efab9ce1d3baea155cf80279d09e8d6cd18283b2adfe996ff9 arch/arm/
 A 644 3e16963a70693fcc305954bb2e461a2cc9f7a673f82d05672b16e47af8801010 arch/arm/boot/dts/overlays/fe-pi-audio-overlay.dts
 A 644 fc13a24f4b00c780e91353a953c808b45dedc032c24eafe8830b681da3f47350 arch/arm/boot/dts/overlays/fsm-demo-overlay.dts
 A 644 0c92850bd4c18aa72a2c255e48fd6965c73a977ef9486007a89fa1e16d60693d arch/arm/boot/dts/overlays/gc9a01-overlay.dts
+A 644 ffabed37fe35799fa7652b00f66f4e2e23ff7728c8e256050a42bff51a5653ab arch/arm/boot/dts/overlays/geekworm-x120x-overlay.dts
 A 644 867c531f278ef37d7940b6b2f1fdf1b270fc31c55eee863cf69284b1a416445a arch/arm/boot/dts/overlays/ghost-amp-overlay.dts
 A 644 fba1607f807777cf26d5d8cdb2ef2567ac7af7b0b4f81904d8c8216b1961a318 arch/arm/boot/dts/overlays/goodix-overlay.dts
 A 644 6a0b3eb662f0d5acda5d30d258d82a7e7dcd7a924f6f81a4f0cc81ec64c22b31 arch/arm/boot/dts/overlays/googlevoicehat-soundcard-overlay.dts
@@ -382,7 +383,7 @@ A 644 a9873ad1b0f8f7bc4ee3fbaf0feeebc5390346d463d1d9b7f7b4c9108254e78c arch/arm/
 A 644 df12227c61e1f716aa2295d0f9d84c0ca8f4a3c9326d1641e9db3a64b2586213 arch/arm/boot/dts/overlays/ramoops-overlay.dts
 A 644 de8afe5987b7112c0cc0d86a46ddfe6381784b003b66321cabf36d00dec8fe06 arch/arm/boot/dts/overlays/ramoops-pi4-overlay.dts
 A 644 95ac3884683552694234578fb5712f22fe8a409d3a80ee0aa7eb95d422bc3c2a arch/arm/boot/dts/overlays/ramoops-pi5-overlay.dts
-A 644 e4b7a7e2785fb34711f4ca37ff4135af6d9c01110a475a34c63167cc64fd5b79 arch/arm/boot/dts/overlays/rootmaster-overlay.dts
+A 644 d29765f43eea826ad7c1f2089087d1b41846715666a3ee927a1396f3b04c9880 arch/arm/boot/dts/overlays/rootmaster-overlay.dts
 A 644 6466428c440bc1bc14e3258c18e90f4a918aa96abebeaca67b4ab176f9d516d3 arch/arm/boot/dts/overlays/rotary-encoder-overlay.dts
 A 644 f6606117a1de284a8f4655fabd74d6e35b5f6296dd25aa62edeacf72ef736fcb arch/arm/boot/dts/overlays/rp1-pio-uart-overlay.dts
 A 644 e629ac42766fad0049406360e49d7a9be46f0d1d7c5ced02bb677d2751be76f3 arch/arm/boot/dts/overlays/rpi-backlight-overlay.dts
@@ -417,6 +418,7 @@ A 644 3297d895652843f4736a0209ee1cd06fd883086aef94ef921ef1fe510668854e arch/arm/
 A 644 b18f516dfe7e8d82a5d0982fe6c454da63c02f4b4a38a461a5efca19aa9ef76c arch/arm/boot/dts/overlays/smi-dev-overlay.dts
 A 644 b9ef115ee83e63a80e6e788be241568d74cc3558404e80461a86aa2c5429eb56 arch/arm/boot/dts/overlays/smi-nand-overlay.dts
 A 644 c1c97abd2742fe97692e2b1c785c389f397549cc434865fede4042cccf7ac552 arch/arm/boot/dts/overlays/smi-overlay.dts
+A 644 64581599833fb306f623f74bb27ee3cc2b3403c0ddd9a9c9245fb973c255d56f arch/arm/boot/dts/overlays/spdif-gpio21-overlay.dts
 A 644 dc8aa209b3d8153a2aa6ad658708252150e8844a5dd169948b63ebeae2a7a7c0 arch/arm/boot/dts/overlays/spi-gpio35-39-overlay.dts
 A 644 60d88ab9739f1e954281c8817c5ac3d5ff957afacb743e9da4ee07cd9f8e78db arch/arm/boot/dts/overlays/spi-gpio40-45-overlay.dts
 A 644 2831d74cb1f7efdb036324a71c0864baad92f12ef332ebb67cc3a397e91c95a1 arch/arm/boot/dts/overlays/spi-rtc-overlay.dts
@@ -452,14 +454,14 @@ A 644 1615720b7c93eb313c62c9b5f5505d062216ca585f16ef9eaa0ea258af086d11 arch/arm/
 A 644 30b9d21247b4195614bc0362dbcfb2ff5c26c1a06bdbdbe9f95dbb89246af6c1 arch/arm/boot/dts/overlays/starvis2-overlay.dts
 A 644 c5a8d45f9977f9069f04a04b34a3b93e54d0811a13ad9959b80647f13967b921 arch/arm/boot/dts/overlays/starvis2.dtsi
 A 644 04540946b6854d55b29bd1173999ec3f7b0fb6276fa3fc6212a1931f6af3ad7c arch/arm/boot/dts/overlays/sunfounder-pipower3-overlay.dts
-A 644 c7942dfd9e89307f407a02b9694f600a54963b995b92ccf6cb2b723e95298ee4 arch/arm/boot/dts/overlays/sunfounder-pironman5-overlay.dts
+A 644 9bce76b91cd02afe45c28c5b44fd4fb3777ca4306db03ea58e91fc8648f1c3b9 arch/arm/boot/dts/overlays/sunfounder-pironman5-overlay.dts
 A 755 04c2229f53f0142a163ac4555aebba8f45f2aa654da5dc59d1536b8c54b18016 arch/arm/boot/dts/overlays/superaudioboard-overlay.dts
 A 644 6219a071bf934ef7b3f5bd381f2e11c67069385fc9b341656d089f85e5233f45 arch/arm/boot/dts/overlays/sx150x-overlay.dts
 A 644 f5cad57c935b4c07b7b610940832e19ecdd1813822ae1f81b38450538fd0e10b arch/arm/boot/dts/overlays/tc358743-audio-overlay.dts
 A 644 43363fe1947cc957046fc4cd6fd4dec121e6c0fd9fde3c101a819029e8eb4699 arch/arm/boot/dts/overlays/tc358743-overlay.dts
 A 644 9bd45524f6f17625ea3a3e46459516753d40f7aea1f06b80aba39c01afd8b853 arch/arm/boot/dts/overlays/tc358743-pi5-overlay.dts
 A 644 3c1bd8b63f54745a9b305ad85078ca75ceb785e47d17395d5687378f677abdb5 arch/arm/boot/dts/overlays/tc358743.dtsi
-A 644 0de0ff45a19d486a0caa926b0737e7cc4c66f630f1925091948d49d9442cca52 arch/arm/boot/dts/overlays/tinylcd35-overlay.dts
+A 644 77b186f6adb07fc8e97f4ac93c464adbe2e9c68e3be402b57821d64f2e13b397 arch/arm/boot/dts/overlays/tinylcd35-overlay.dts
 A 644 74655ede193b974f38e251f82fa19c6f223101699312b7694f60c7dbc62ab132 arch/arm/boot/dts/overlays/tpm-slb9670-overlay.dts
 A 644 4dd8e52763ff0ed6c65b2d77f41d621477f84243aa12f59853c3a8d250a9046f arch/arm/boot/dts/overlays/tpm-slb9673-overlay.dts
 A 755 1af412c315d3956eeeda9730f239e988496fce481daed3e9ab6276dcdd6e729c arch/arm/boot/dts/overlays/uart0-overlay.dts
@@ -487,8 +489,8 @@ A 644 57601de042f4ba907f82ac32650e9c42df1dd8d0a8fd1785d7bc58d75312ed29 arch/arm/
 A 644 edb251f91c274db76df00834838f61cf98f56a3a533589355ad2464e1be129fd arch/arm/boot/dts/overlays/vc4-kms-dpi-panel-overlay.dts
 A 644 349401cdf846f57c1f3a85192b19286e77e266a08a44c6b34cfb1d5f34ea2ec4 arch/arm/boot/dts/overlays/vc4-kms-dpi.dtsi
 A 644 2ace19bf9bd8b0b7b4c46bbfc9c4ec9e9436cd5942e94ff1949c442d2bd38433 arch/arm/boot/dts/overlays/vc4-kms-dsi-7inch-overlay.dts
-A 644 75d85f5bce34b0efa2904430761a75cf1cb9c1f0e970ac6f9f9c480133d24931 arch/arm/boot/dts/overlays/vc4-kms-dsi-edatec-panel-070c-overlay.dts
-A 644 607a4e224b98d4da2e9698fe65de45a88319583f412c5ea3f9c7adb3f6d161ad arch/arm/boot/dts/overlays/vc4-kms-dsi-edatec-panel-101c-overlay.dts
+A 644 e27d9a93e50dbc3b5088c28602670e38d45431741a14b515d54f6284cbd99a79 arch/arm/boot/dts/overlays/vc4-kms-dsi-edatec-panel-070c-overlay.dts
+A 644 30521a4fd7df9499a1b8278d1504a01680d98e25f8fcd67356b7cc27eda408d0 arch/arm/boot/dts/overlays/vc4-kms-dsi-edatec-panel-101c-overlay.dts
 A 644 9c36a9bc83befebde3aa1f9617c35e265a5fafb07b7359506dd53752908814ef arch/arm/boot/dts/overlays/vc4-kms-dsi-generic-overlay.dts
 A 644 94887c5365058a0ab3a3d0d60aed8aa8f6cb461c0f3eac6394508392ac4865f3 arch/arm/boot/dts/overlays/vc4-kms-dsi-ili79600-10-1inch-overlay.dts
 A 644 472689900d29ab1094db9409b606e3745090c3594fa19b034b7bd5ba5198e674 arch/arm/boot/dts/overlays/vc4-kms-dsi-ili9881-5inch-overlay.dts
@@ -513,10 +515,10 @@ A 644 39ff85553c1d46bb8838eaf7fa0d16fc2c6d19f8fa7cb1fb46adcc09c85f2e9e arch/arm/
 A 644 ea1a7cbdd44bb2b765894c081e67668c8e3f0a8a49c09fb8d2dada0f53bd584b arch/arm/boot/dts/overlays/vec-gpio-pi5-overlay.dts
 A 644 cee5bd1f2733182950be498fd1fad9f9fa4c06df17bf45ef645b93d1ea447733 arch/arm/boot/dts/overlays/vga666-overlay.dts
 A 644 ad0620ff337956d48d94dfc867e6e194c018fe211c66a3e5034e5fd0a48c8799 arch/arm/boot/dts/overlays/vl805-overlay.dts
-A 644 c34808f6ac929ad2d4c2626bcc006006e6d961cd45230f429d7ab2317ef562ea arch/arm/boot/dts/overlays/w1-gpio-overlay.dts
-A 644 a42ccb95efcac3272445ba1dbe66279eca031066c7f14100f791cfe62815c404 arch/arm/boot/dts/overlays/w1-gpio-pi5-overlay.dts
-A 644 83df4cf16e2de85095d6fc2017f8674dfb2f44474febf315059770ed2d7bbec3 arch/arm/boot/dts/overlays/w1-gpio-pullup-overlay.dts
-A 644 80cb31696318c903e195b468c1a260d353c15ec321c7f70111e7af681e0faba8 arch/arm/boot/dts/overlays/w1-gpio-pullup-pi5-overlay.dts
+A 644 1dbffb0124fb8d0f5c7336686ad2af9a88afa619778df878caf17c747126e24c arch/arm/boot/dts/overlays/w1-gpio-overlay.dts
+A 644 ecd83d15242ff802c635d22e4155251bfb9d6d14c5fe5e9dc792cf5e32a2b09f arch/arm/boot/dts/overlays/w1-gpio-pi5-overlay.dts
+A 644 fd2afb95075fa8213e392aaeae7be5a54d6a8948a1091c57e86f2559e0e1327e arch/arm/boot/dts/overlays/w1-gpio-pullup-overlay.dts
+A 644 ce7e48a9610e5497ade8268bae9bc46e9d4e17e307ad8c188ba03f158976c4e7 arch/arm/boot/dts/overlays/w1-gpio-pullup-pi5-overlay.dts
 A 644 f08bca73f7400224ec42334b9187fb04b4d0fa7ee6ff6ab7131bc1af8d47c63d arch/arm/boot/dts/overlays/w5500-overlay.dts
 A 644 b9bff66aab32d7e1c36ff6df7fd739b2a0cdc94351d2ea9ae40b3bd61ff2a1e7 arch/arm/boot/dts/overlays/watterott-display-overlay.dts
 A 644 4f246ce471168ffb13c59ef92263e3ccc07b0c0e1653d0cf4664f0676fe0ebaa arch/arm/boot/dts/overlays/waveshare-can-fd-hat-mode-a-overlay.dts
@@ -525,8 +527,8 @@ A 644 74f53ebe1e18e2b3c48fe8ef4b3f4cdcfd4bd66e7fdc8503ff82e6ce3ec872a8 arch/arm/
 A 644 3c8ff5356e74f4c02787000e8cf4c505578577ba41a0812f0b41588d0edbc90c arch/arm/boot/dts/overlays/wittypi-overlay.dts
 A 644 c09123267f60d00788a50b3d6635ada252888aa706eb3d5e5bfe9570e671d1f6 arch/arm/boot/dts/overlays/wm8960-soundcard-overlay.dts
 A 644 50e32226f72141141e69e85823c3b1420da5ba13832160c85dbf7ce595c0ce2f arch/arm/boot/dts/overlays/ws2812-pio-overlay.dts
-A 644 a89bc857fa41fb971ff316d4c0a4448a679ad2a7d5995ff8b7a50c7df2f5deaf arch/arm/configs/bcm2709_defconfig
-A 644 de3d9601ea8a7d591985bd205c583c229c4f233ee932867f78bd4a905e0167cb arch/arm/configs/bcmrpi_defconfig
+A 644 097ec993fdd0bbfd04024fdadf82f1802ad73f559ef0ff4ed45f8c74aee80072 arch/arm/configs/bcm2709_defconfig
+A 644 9838c7ecda72335071cb89b5a19d318717f2064d7bdb7a8a180d6e0455322ec1 arch/arm/configs/bcmrpi_defconfig
 M 644 4def45a643c48ecb781312e8d79669913bceb1e9726d95079942d98cb4f51f07 arch/arm/include/asm/irqflags.h
 M 644 5a1def325f17ff6319493f7687d2ee7d5c1f5e770165132843d6f356e47e80f8 arch/arm/include/asm/string.h
 M 644 765e1182c0553e99d7ed4e26d2528facd27abaa4193772db87ed6cb1f45ce023 arch/arm/include/asm/uaccess.h
@@ -562,7 +564,6 @@ A 644 5a0723fdea114ef78fec4f34575b84bd5121633813b55e446cc4f2aaf08aedd7 arch/arm6
 A 644 562ea38dae3f68771017c3d88ffc0c2fd1a52dc283ae9e782e51cc20d265a863 arch/arm64/boot/dts/broadcom/bcm2711-rpi-cm4.dts
 A 644 279fcbf9b2526a4fc1c08e540cd81fb2bc6c873ce25877f1aae1498e606535c0 arch/arm64/boot/dts/broadcom/bcm2711-rpi-cm4s.dts
 A 644 b8ceb8c5bc52674f2ebb467e6cf67fcaccb254402bf4c7a8cae895b980ae8178 arch/arm64/boot/dts/broadcom/bcm2711-rpi-zero-3-w.dts
-M 644 47b23ce06c4edb0f96e7fadd192c064f76670b1bd48bed7f96d528c960f86ebd arch/arm64/boot/dts/broadcom/bcm2712-d-rpi-5-b.dts
 A 644 2dfcfb67316b9098c15a0cd6c9213d698dc0b2556c26bb247115a8450269ca29 arch/arm64/boot/dts/broadcom/bcm2712-ds.dtsi
 D - - arch/arm64/boot/dts/broadcom/bcm2712-rpi-5-b-ovl-rp1.dts
 M 644 b90fe894f860fac4f99f6be31d7d696bab8c2a5871b2ac1a25a29c3386ba59d3 arch/arm64/boot/dts/broadcom/bcm2712-rpi-5-b.dts
@@ -581,9 +582,9 @@ A 644 e6821a5f56b11e5aec19d862205aa950af95d9fdb6d9f479b6932172cf33b7cc arch/arm6
 A 644 e8c537ab4f2a9b1a62ec8284c45085a3767d2316b0ad921a1d9f5fcfdfbda45a arch/arm64/boot/dts/broadcom/rp1.dtsi
 D - - arch/arm64/boot/dts/broadcom/rp1.dtso
 A link 005ca11aca4d8356e91b0a50b3e87f99fd7a40cb1b638ac06cd55a7f3335038f arch/arm64/boot/dts/overlays
-A 644 1e8090097bcd07462f01471d3408ef9c4e799bb94d9f9e1c9f826f5405d4d6c8 arch/arm64/configs/bcm2711_defconfig
-A 644 8295a9ccdecd396ec42d5676f42ebd0bbf4e73f5476b319fb589555333d9e13a arch/arm64/configs/bcm2711_rt_defconfig
-A 644 d4fcd52eb74e2d20ed0d594b7163705e0cabb6cdf892c8c6576cfc4aadba412b arch/arm64/configs/bcm2712_defconfig
+A 644 2c3755f17335f8f033e2d077e3a7b5536a54b0619eb619296c26c9e8cb0a6c54 arch/arm64/configs/bcm2711_defconfig
+A 644 c91526ddee3bfa893743fcc163b8e863dc7120bd54f481a209a098fe89456e22 arch/arm64/configs/bcm2711_rt_defconfig
+A 644 53a6d2683323e542e974c724e2d1e03c32ed9d15169e29a1fc103b333f6a313f arch/arm64/configs/bcm2712_defconfig
 M 644 2a4e62fbff9a78dd31fed126488d2af9783ca620ba1dc3cd6532a712c1015129 arch/arm64/configs/defconfig
 M 644 34d3239d8e9818d110a3e825917562f888beaf439d07862d0f48537da7a92984 arch/arm64/crypto/aes-cipher-glue.c
 M 644 d7b49d04049bc7531e97d77317c84708df5650db1b307b74abe350b06f9b54e8 arch/arm64/crypto/aes-glue.c
@@ -672,7 +673,7 @@ A 644 87d98fdc75da0aa40c9820a0143ab88d4e0d47902806e9f3a508903be7bed6c8 drivers/g
 M 644 307361232567898c2c446d3a1fdc15a60f22f9e0c6fa6e650330ff528855a1e5 drivers/gpu/drm/panel/panel-ilitek-ili9881c.c
 M 644 88dfb87c242176c6ccacc02766be1012b872a09b3e05c7407c3d6b9bbd721d4b drivers/gpu/drm/panel/panel-jdi-lt070me05000.c
 M 644 a97633e1def75d06b5689d7c6065ebd36d9423b44c522d01f6ac21d4f39cb305 drivers/gpu/drm/panel/panel-raspberrypi-touchscreen.c
-M 644 8a8ce790bd716bbd242d7d51196160e2e6aaec28130520d9be2a75b1ceddd8b5 drivers/gpu/drm/panel/panel-simple.c
+M 644 bfbd6e7cb58052f6343800d27a2e5ac8579edd941bc13e33cc03735c9721c943 drivers/gpu/drm/panel/panel-simple.c
 M 644 aa337d6c6d2f94ac6a178ae05cf90db6822a242cde9700f159e50c7d8f5c1ec3 drivers/gpu/drm/panel/panel-sitronix-st7701.c
 A 644 acf784ff15c46fdb716caf1865a66938310da16857741f799b7728c9f22382ad drivers/gpu/drm/panel/panel-tdo-dsi-v1.c
 A 644 653e52ea31dc46a4b8703a0ff03a65872be8fbd0f82ec6d712f466a75e5777e1 drivers/gpu/drm/panel/panel-tdo-y17p.c
@@ -728,7 +729,7 @@ M 644 8360bc4004f6516cfa9906899f2803352532e8e594aaabfef79f58965bab5e80 drivers/g
 M 644 3d65ebb728f286c6bed2f56ab3ff750481bafa30ed533f2df66aed0ee0976112 drivers/gpu/drm/vc4/vc4_drv.h
 M 644 cbc749eefb410667f75bd3828e7761b1f714464df410a4e755710a6f3978d961 drivers/gpu/drm/vc4/vc4_dsi.c
 A 644 4d09700cad802cbd5c6fcb658d1bbcc0741c51dcb7e4c106b2092b9a7c30732b drivers/gpu/drm/vc4/vc4_firmware_kms.c
-M 644 d2d8fb30a4f56d0b4ac2d2144baee5faee99988156553f825a37aaf400044a74 drivers/gpu/drm/vc4/vc4_hdmi.c
+M 644 193acbd2c330fe7114e3b7d77e85cb469ed4efd914ae421d49e1f9fbb45840d3 drivers/gpu/drm/vc4/vc4_hdmi.c
 M 644 56a2a720970007ba558d68428613019b7ef8634b5d44570194f14623bd8958a4 drivers/gpu/drm/vc4/vc4_hdmi.h
 M 644 9c865f2a3234a8757577d394915bb41b96fafa5e62a84d849797d925aabcf842 drivers/gpu/drm/vc4/vc4_hdmi_phy.c
 M 644 3bbeb9ebeac9399d66f21c1e32c02f9763e7e16e3f9e3f1b60b42f8179494466 drivers/gpu/drm/vc4/vc4_hdmi_regs.h
@@ -740,8 +741,8 @@ M 644 ce439e69b785ecbd9b02dcefa1e94e8adda197a5d9157c8b42af0e25567031a5 drivers/g
 M 644 b5e464eeaa876ed60cc76f87e2da4c2d367aa9bb3029f93c056df1fccb1336f7 drivers/gpu/drm/vc4/vc4_v3d.c
 M 644 6c36c035af5ab5b59406160fcf038ec0e914be843acf5f460366767643fa1ff6 drivers/gpu/drm/vc4/vc4_vec.c
 A 644 2b0e0e2ff30e0f51f5e506ec34cf2c6bbc1ed83e26063b1d316a7f51fcc583b1 drivers/gpu/drm/vc4/vc_image_types.h
-M 644 43d2a9fd8103016382a663c2b48b1e8d0c8a9114fb6716308ea3679096d631b7 drivers/hid/hid-ids.h
-M 644 0c813c2c74fa8dac16f290e5794dcd6c01796b4c837f148a174e78976c739621 drivers/hid/hid-quirks.c
+M 644 5d4ac5af14988defeb6372e9612a3d2199dc70de68539763b201234af8eb57eb drivers/hid/hid-ids.h
+M 644 102b4355c0a5defd84ba45879ba5078697a7f72340ed8b75055cf8531d027b88 drivers/hid/hid-quirks.c
 M 644 6bcc33413647e3ebacd5ed9b78c7fbe57a68404cfb0efea932abd915d3dc3ae2 drivers/hid/usbhid/hid-core.c
 M 644 7963bf8defa98148b0d8307a92678f110c6b40968d43d2a3afd4cdc34484119b drivers/hwmon/Kconfig
 M 644 a6e39d9adc120dd46ac5f5eafa73257af4c45e6356ec27db79e9f2e8434d6c8f drivers/hwmon/Makefile
@@ -815,7 +816,7 @@ A 644 a745395c60a58e6a1e5f0b29a8b5a5aa3fda394006ac6fc0d3a8cc0f701fc9fb drivers/m
 A 644 cf3ce61f323822d493cebe4df4d165dcc71ae74cc6932d957b423f486e19c477 drivers/media/i2c/ov2311.c
 M 644 78a6a25b8da7657edf8fa31e67c3943965289f47fa2763ec8d44c62c3db7df3f drivers/media/i2c/ov5647.c
 M 644 65bff6842a3666e15a82a61c96cc853cc76b552207b5cf268e2d097af9e0233a drivers/media/i2c/ov7251.c
-M 644 e3cbe822bc9823eac88c218dcfc9464aa7cd31cd9c45a73864c7b77670ca4bef drivers/media/i2c/ov9282.c
+M 644 27b3496868bf7078e7e79adf1000117b428e9831be7cfd5bc6ab357a56505beb drivers/media/i2c/ov9282.c
 A 644 f172756e934b981cb5a4c76b4ee028cdecf284b1806a62dea2953e35b932da58 drivers/media/i2c/sony-starvis2.c
 M 644 3ad129a5cbc9322770cbdfdb4da4eb3e76a2a346e85ee671978d1763d111a2d6 drivers/media/i2c/vd55g1.c
 M 644 301976fb102774692ca20cd0c433578eece7f74e306e2d136ee75892a269a11b drivers/media/mc/mc-device.c
@@ -832,13 +833,13 @@ M 644 704acb44f18e1f4cd9bc48aee818eb6c75fdea95ef6070fd46b84b4c27283a7d drivers/m
 M 644 0db31aadc71f3f10803a6a3a319850edb1ca82c24286834c59fc6943ec1da2a5 drivers/media/platform/raspberrypi/Makefile
 A 644 582e2120f86f3c55662d576dbdc0942d20dbfcab42baa88b47cfd4143a6f853a drivers/media/platform/raspberrypi/hevc_dec/Kconfig
 A 644 a4a9209b4e8a275765f2e8266bf1140f57dba52ae2788ecce1944050aa8faed7 drivers/media/platform/raspberrypi/hevc_dec/Makefile
-A 644 1a67bff4cd20e8cb73bd72343f518c9b5364cbc0db15b5824bf2aa13067f379a drivers/media/platform/raspberrypi/hevc_dec/hevc_d.c
+A 644 3ad7abd526cbc6e072385a7ba8bd698117978c5edb3802ad3f76f45d94281c83 drivers/media/platform/raspberrypi/hevc_dec/hevc_d.c
 A 644 d57f8f2d4c3f12f9dd1ac9917780819c7ba9fa82203d6d212c1092c26901cf97 drivers/media/platform/raspberrypi/hevc_dec/hevc_d.h
-A 644 f4b464f387b294a835bab6a740424f9fa0362a08d91dec0e75322c44404585ee drivers/media/platform/raspberrypi/hevc_dec/hevc_d_h265.c
-A 644 7283661565eb28ce56e4d819e4e271f1bdb7db75197e12890828e28473601a29 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_h265.h
-A 644 1b8a23308c8a31c961e382d01d366d22ef5342ba1d7ccc12e8090a1da0217958 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_hw.c
-A 644 d5f7533ffbb1e80cce85405c7faf57d2b11b703cac08083ce0751346f4dd5ce2 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_hw.h
-A 644 94a9b84d20cf70ef2f98f49c6fce379cf5ff1e8d2a15e820c4867412c88e11f9 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_video.c
+A 644 9884d1267a1db2c449377453dcd1a0ee1cf3b8d8eba5635b961c326f8cc05d86 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_h265.c
+A 644 3e1dc764692dfab06e068a50de009d32e349ef25b1ef6cfb45777d1c978ce327 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_h265.h
+A 644 34c2a1b724bb7a3a7c0e20981aa5852efe89871293efb444f7ff95d8de9604cc drivers/media/platform/raspberrypi/hevc_dec/hevc_d_hw.c
+A 644 d4d60699af86214631886b4ea57d548471d9d3fa2a9a5b72eed61533468854b4 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_hw.h
+A 644 dcd5f01618d63bf25411d17d857f555d853dbfdacba1cbcd9a82e0028f029b22 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_video.c
 A 644 9b6b9c6ee316e0f94384f433f46670ea5b60d9c96ac715eb5266b5327d88af38 drivers/media/platform/raspberrypi/hevc_dec/hevc_d_video.h
 M 644 3d1c1ec93e44b07388c0bf660dbb2e664fd8c0a880c8fa4110eda44ea78d5f0a drivers/media/platform/raspberrypi/pisp_be/Kconfig
 M 644 6d36c1076af7276aeb5b3f5f9d8f3f88ee6a3deb16477d1e3a977ca2459adbce drivers/media/platform/raspberrypi/pisp_be/pisp_be.c
@@ -879,7 +880,7 @@ A 644 733720291547253033b972e601dc5e2d4dadefd18a8522022a476b2f0ffc5cd6 drivers/m
 A 644 48ab550ba6929a6b99913e94dbd5f68eb06f8dc3420e40d8118a4d8c0144a1ea drivers/misc/rp1-fw-pio.h
 A 644 630b5c969ad9cdd3e17b2fd3ca4df144e13eaeb7d4d080784eb00848da9c77d9 drivers/misc/rp1-pio.c
 A 644 61198f14020d8b0432baf17b44ce7c8803069b4aa3edb051b09ad399e5ce0a7e drivers/misc/ws2812-pio-rp1.c
-M 644 ef0405a5041859882b8cebf2a8ee895f04bacee4e1a2713d298c04d3d682971c drivers/mmc/core/block.c
+M 644 5d6b55b474da3748f168b2185e34cad24a2d9923cbeba6dc9be824a86f62d1e3 drivers/mmc/core/block.c
 M 644 66c8724de0e38af6f568b920e7d8e0bca530d3a862b57f0b787a9643fc5d1ab4 drivers/mmc/core/bus.c
 M 644 17481f2884b6c0b1da0d3756032c407d0038d9b43b8bfa80967ae9dee642ac69 drivers/mmc/core/card.h
 M 644 0f92d89757d402cd23a2816c11559397bfefb01ba837c2891d1ea00f18917f5d drivers/mmc/core/core.c
@@ -895,7 +896,7 @@ M 644 5b2ee133ecedba349f563a031c3ca491f9d8cfcc989f3ba427065a2de10c8b4b drivers/m
 M 644 7eef0ed2c05a756fb37921b6d32ee3d3cf59cf9743258b24e659ad9170de86df drivers/mmc/host/Makefile
 A 644 d2bbd5afc2faa31b8839aa8071d2464aa4361c9ae86824ab0f7f43e2851a5ef6 drivers/mmc/host/bcm2835-mmc.c
 M 644 b02d62061df2a219abe65332e4a26260d55fc689042319ca6b2c0e2c5e906421 drivers/mmc/host/bcm2835.c
-M 644 fd5ec0c52ad99c168864cf40da021d7ec6089334217425af9928059c5dad3dc7 drivers/mmc/host/cqhci-core.c
+M 644 a85d07986d68b7cdae83b9e3b9d98a5d2848a4c66bc26678b291d53ff6ed7085 drivers/mmc/host/cqhci-core.c
 M 644 45a15c9bc1250c9aaeb1f8227f119fe7560d5939abada52eed72cc153b33b532 drivers/mmc/host/sdhci-brcmstb.c
 M 644 b2f31c58a05d737b716e35be61d3258a1cecdd7642f91490bba98abd1bc4c354 drivers/mmc/host/sdhci-iproc.c
 M 644 c17b4fc1f5fec834d35895322b5a0924638f64fa9a48a5fe0f681d43f82fe63b drivers/mmc/host/sdhci-of-dwcmshc.c
@@ -905,8 +906,8 @@ M 644 21a65d0d4f973ebac1bc66d19d204493cb603d8c101f444977527fef82f35356 drivers/m
 M 644 da7f19edef47a9f97316aa891c40dd2f30978522ea24fa321523f27fd0e43507 drivers/mmc/host/sdhci.h
 M 644 62925d67258988da12782b91ea03dc1de6da12ed32ebd4e90b859b5d288631d5 drivers/net/ethernet/broadcom/genet/bcmgenet.c
 M 644 2bfcb7a8d46f421b5de0392d8bbbcc90f99f7a21f6ac8ef682bf8ee49f583591 drivers/net/ethernet/broadcom/genet/bcmmii.c
-M 644 ec4394d8c2daf984517441d079e8ca61af986de007e822f094f5b051b90461e7 drivers/net/ethernet/cadence/macb.h
-M 644 ec5a8df6096d3a4541e7a17821ef81264ce230aa5676afe276af3aed26cbee87 drivers/net/ethernet/cadence/macb_main.c
+M 644 d4ee97983574385c21e2812de41b184ce66ca24033749fa192d6e7acd0d64e30 drivers/net/ethernet/cadence/macb.h
+M 644 bf3f803b0a049deaad33619036be37959ae97da34541a0f40713236a78132a6c drivers/net/ethernet/cadence/macb_main.c
 M 644 4333b4041fcb0a073f0acf498ec52a6f89272fe780e610a28e49c10c6671de48 drivers/net/phy/bcm-phy-ptp.c
 M 644 0ba6975e052046afdc5ba71328cb24bab453cdd1fd87749821776d72749a798f drivers/net/phy/broadcom.c
 M 644 ec2cd7cf2798f57c00ac1e3acd8293fdd0bc4d315225671d8c16a7205d211b51 drivers/net/phy/microchip.c
@@ -934,7 +935,7 @@ M 644 7c5cc997b8188d3ca7892c5b431a132cac63281b54f89c6fbd0ff240cc5cf76b drivers/n
 M 644 1b730c877e39f662f93dc332ac4d7d1360058978283936ea7707a5a8bc68ed90 drivers/net/wireless/realtek/rtw89/Makefile
 M 644 35b55d8a862bdf194ba2bcaaaae52c630c01c6018672fbd48651bbdce9532f61 drivers/net/wireless/realtek/rtw89/core.c
 M 644 a96d8e820ba36494e83490e8b5b301875bca3e620eadb2965b706f8c9f132f77 drivers/net/wireless/realtek/rtw89/core.h
-M 644 3fdb74217e0104f562d4b755c3cb7468006ca51ee126b4cf8e3001326fee19d8 drivers/net/wireless/realtek/rtw89/fw.c
+M 644 79ffbde2f9475f6e5a123616a45e44a84510f0d15789fe5a470213071c2becdb drivers/net/wireless/realtek/rtw89/fw.c
 M 644 203ac5e9a55a465192b8b50ecbdba067504b35009d3a64c3a5dbc0d112a57e15 drivers/net/wireless/realtek/rtw89/fw.h
 M 644 8494724b20e8610fc54f6a86e8d8b4babaedb26e5b84c552420e5b23d94143a1 drivers/net/wireless/realtek/rtw89/mac.c
 M 644 abd78c0e760276db484c684e809a6bb14cbcc3246531102dec5ca347af1dfb53 drivers/net/wireless/realtek/rtw89/mac.h
@@ -953,7 +954,7 @@ M 644 cbb9ab25182f7fae00cd2dd62abb9e9295207001dcd1425a8ab72f367702f85d drivers/n
 M 644 e2331c50db6384f4ee5aeed0687ef06bfe34e4b1cd7e6ff54f3f37760ee8bb9a drivers/net/wireless/realtek/rtw89/txrx.h
 M 644 095510e67edc4d6a68b1edf5c8c4a0d03bdc9744af66b83f6be2a1bf501b4afd drivers/net/wireless/realtek/rtw89/usb.c
 M 644 6a0557414050e54f3f99f76552ad8ce78a63ce0751e4fcf6a0dc2f8ba5e7e321 drivers/net/wireless/realtek/rtw89/usb.h
-M 644 8af5a2850dead9ad7a501b7be6caf7a36ba6cadaf4115f6f9641686672a66215 drivers/nvme/host/pci.c
+M 644 8b69e580fc3c310f5445e7164d28fa838e449907b4c6c1c0f291edf9cd4f5769 drivers/nvme/host/pci.c
 M 644 27c68414186322286580ac14127d275830f632462257056a487681fe11b33429 drivers/nvmem/Kconfig
 M 644 20654dfc72fb86d579af06f002e5e8fd25080ddd00e8dca67aa7725c8bc4559b drivers/nvmem/Makefile
 A 644 4445c5c3826fb41ada9ab531282c18878d4269e4c6563658aacaf2cd698a27e7 drivers/nvmem/raspberrypi-otp.c
@@ -964,7 +965,7 @@ M 644 544e16396326879745c820e11bf85af6d4c7e9a1ea916bb1860fece9bd140d56 drivers/o
 M 644 195b20806718e5ce22e3c104c3f8afb92914f370d19b8726e612275e467ab855 drivers/of/of_reserved_mem.c
 M 644 212ec09ab522c2e7b81638be3db833bb7e3ad62b201a08f9858092f6130ec787 drivers/pci/controller/pcie-brcmstb.c
 M 644 f9f48ea46fa5480b4cdcabb7538c3b96649e2143abdfa777a0afc759394664dd drivers/pci/probe.c
-M 644 aa78d0dcf04347ac5dcae7d5511905916914a3a244e50f0319c1ccdc32aa4a30 drivers/pci/quirks.c
+M 644 c7be079417e22d4378ce27eb0925e451bd69a87489d35042e28235244b447a36 drivers/pci/quirks.c
 M 644 3eb49a6261e84f545e69f6ce1cca2ce5ec6806c4c11d8b1a8133a86017843cb5 drivers/perf/Kconfig
 M 644 e9c28fea3aaa8d98f856021188ebfb75a68fd18e0584da73c411b477922785b1 drivers/perf/Makefile
 A 644 9dd4f3479870587d9e71b633355bc581bda27a33e806c0f7eb2f180f5922b5c5 drivers/perf/raspberrypi_axi_monitor.c
@@ -979,6 +980,7 @@ M 644 ce3af97079be11d96160d0532f8cedbd2a5b182e78098de80c9c1f48d04dc430 drivers/p
 M 644 b35e2c6035a2c115a1c243e3fa7fb4bd2d45be9b9c2b5d3c10521b23e78ccd89 drivers/power/reset/gpio-poweroff.c
 M 644 5979ab9f783554937d7b98ae50ea2a8b86012a8131ba5c0beecc9b88c9006ed8 drivers/power/supply/Kconfig
 M 644 deab3dfb78e0a2105d89c28f51a064af26e15c01dfd5f768b66e6c834fa2faea drivers/power/supply/Makefile
+M 644 ba57bf43001cb3ecbfdbc6c0db395bccb418b72e36666197423a2c4bedaf3c60 drivers/power/supply/max17040_battery.c
 A 644 dadfcea201f887a8057aa8f66278951ebd5351db153dc3527a96c58ed201edd5 drivers/power/supply/rpi_poe_power.c
 M 644 58c6dbdebffa8e2dfca3ea360cb260282284265847f81ddfe4439ca821eee94c drivers/pps/pps.c
 M 644 e478f3f56651b121d13c372c87c62689513cfb6ef57fa2b6c2e70bed855c086e drivers/pwm/Kconfig
@@ -1008,7 +1010,7 @@ M 644 dc49c5d048e0850b3c3c19dd1309d0743746b35b29ac038064f662c6cb4f0020 drivers/s
 M 644 c7efdea8dd98c23fca76ab3ffd678658fa2254100ebbf856f8c17dc504af5378 drivers/spi/spi-dw-mmio.c
 M 644 6d78317b6dbd6df0b1f2e9f6da492a141fbd46f43ec32ff227546da72fb6d13d drivers/spi/spi-dw.h
 M 644 4bc964a2b3d8e9228db57e0e593d268a03b84addc1afca695e9b9c17b21bf4b5 drivers/spi/spi-gpio.c
-A 644 6a090f88a1a54025ec73c1e5dc9625c53a5063c672c3048d5188b83dd1d9c9ca drivers/spi/spi-rp2040-gpio-bridge.c
+A 644 58f0aa98f552f834befe06164eeb1071174df70bdb71f4f9baf13dec82b54cc9 drivers/spi/spi-rp2040-gpio-bridge.c
 M 644 53fb5300296130fa499d41c2bf99512abbd466a73a693a3e26bc88dcbbff714d drivers/spi/spi.c
 M 644 9321abdcb4c05404fea705e4346836f221245afb9750e3d389ff60620c72db34 drivers/spi/spidev.c
 M 644 2e2e28b962b193b6c7409abd00beb727674655a4dd63b9bbda372f3bd48f65bc drivers/staging/fbtft/fb_st7735r.c
@@ -1071,7 +1073,7 @@ M 644 8dfda1fe997148cb793a2d9b42ab46bc9fbe47e99d103e4eae7595af2f45f254 drivers/u
 M 644 bf56c87724f7372e037fb071039e7fa47a417575f9d198d4f88e71d716da6aef drivers/usb/core/generic.c
 M 644 d95875a4d8ba635a8b7290d92aa445135626c31550d723adfef91ba924230c68 drivers/usb/core/hcd.c
 M 644 debb6bf0fe48213ad5cb69c373453ee728d3f066a3972e4c186b66b664e591ef drivers/usb/core/hub.c
-M 644 a675ebbc22195d50c557dc87c58f95e85203a23b3cb544209600e50c296c92d2 drivers/usb/core/message.c
+M 644 40e673b7f86ce1005229dfe180d285a859fbc13b01126c1ea9d3508787178a03 drivers/usb/core/message.c
 M 644 4661e718fbf4d8fb8ba97a62c3b9a50284b95b6f21c862549ad0f444bb0360e7 drivers/usb/core/otg_productlist.h
 M 644 39b60b957fc65516f4a806d8b326b571b1a091823b57129d540fd2724bbb8e10 drivers/usb/dwc2/gadget.c
 M 644 61dcd2427cb7919d599853db569ebd415f3925878c3680994647c100d044aee0 drivers/usb/dwc2/hcd.c
@@ -1144,9 +1146,9 @@ A 644 8c4f1221887c2bb15c935952168b40b64a348636fd50eb6174efee4f1ba1a807 drivers/u
 A 644 e06d15589fd095c521f9770188d14637340a66f15a6f19219b8da8a620301b34 drivers/usb/host/dwc_otg/test/test_sysfs.pl
 M 644 28d6a10f23b43b0c97b4c4ab19e59fc2244cc9706f834e4dbf2244cb7c305e37 drivers/usb/host/xhci-mem.c
 M 644 0abee6ec05b30f133504238bb528657696b5d4f3d925c12cf6184cd7f73f1303 drivers/usb/host/xhci-pci.c
-M 644 13c71d601030e2bc86a70b31f8cea1e4dea8c53a1df198d14a5f9180aa084cf7 drivers/usb/host/xhci-ring.c
-M 644 dd73145fd19d9fcfd93c6e492b4b105028d8b28092e16783e18d7ea16f028882 drivers/usb/host/xhci.c
-M 644 f0d06a330be25d42704b1e68c0e37f278215bac1311d1007f9c699f8ff54ad9e drivers/usb/host/xhci.h
+M 644 41347abffac2e29c8e11c7d4077c99ad2242b7648f7737488df84f00ac455da0 drivers/usb/host/xhci-ring.c
+M 644 9d2a75eae7c4671dffb2db78755efd9e860434ea1706e5967d1b39e45fa512cb drivers/usb/host/xhci.c
+M 644 8a9abc18814d45ac3c1091b6a5f7ba6e4133862a1f8eb39a663c4cc0ea8cf3df drivers/usb/host/xhci.h
 M 644 ec2c996bfc92ce38fecb288f9bd6a853c2adec4035821c9c6db42f176253a9a2 drivers/usb/phy/phy-generic.c
 M 644 e5c3217e884b579987ed2888237e02fa4ba2b875d145ff87a2d0bf276705cca5 drivers/usb/storage/scsiglue.c
 M 644 641099be115c140aa6f4cccb174c341c9826f857e4977786fe7c47d59a784287 drivers/video/backlight/Kconfig
@@ -1159,7 +1161,7 @@ A 644 ecdfa03f27085b49b5abdb6dcb6c13127613bb443d82819b1a0f1ae781c372c7 drivers/v
 M 644 704c557afd4bac39270b1368c2067711275fc1792a2112e1f79282bcb7aadf2d drivers/video/fbdev/core/fb_chrdev.c
 M 644 21f93c67cc44801ec9377d50c2aef14cf7d0eefb07dbe4120040f84070074f7d drivers/video/fbdev/core/fb_defio.c
 M 644 6e3905f08b247fdc073130e41c09f5a5fdfd14baea9d8157a5390495438d8d40 drivers/video/fbdev/core/fb_logo.c
-M 644 31e2639d9287b12ee347d53751ed02e2b7d2915a8c5287a297ae572fc279f8cd drivers/video/fbdev/core/fbcon.c
+M 644 93c96da21e9eb81002e58a9b18ac4ece093b868be78c38e5e9e82cff63b98b4f drivers/video/fbdev/core/fbcon.c
 M 644 94542a8ad0f7325a6c993c44d2d91b80b16ad6c23b1d90acf2802d3ade1ef05e drivers/video/fbdev/core/fbmem.c
 A 644 b5b4c1b76c73bc467acf6bce7288d9e2f6f7cf80fcaa310adc17541d23e04ff1 drivers/video/fbdev/rpisense-fb.c
 M 644 15ac6d1a2f9ff03d467f210fac6902765d7d09979f1fb03c6971bd1a344d040b drivers/video/logo/logo_linux_clut224.ppm
@@ -1223,16 +1225,16 @@ M 644 17df5617c9377797657c38ed5d4d69eee63e0bb01cb07d9185a1e2689a614043 include/u
 M 644 f1e80cb16b9501656963b16639d891aa2e17e98e733871325cf5e466ce4c1746 include/uapi/linux/v4l2-controls.h
 M 644 c35c0f80b9861abf06cb4f3b7b1ca0c5341f7165caa95b8227fa80b3b6fec622 include/uapi/linux/videodev2.h
 A 644 4ae0ef10abe3617c2ab2cef50864be0bd1ce7e7d4c852704a7e87d5d44e32224 include/uapi/misc/rp1_pio_if.h
-M 644 8640ccdcc66a140229685d3751062dc99a514ff3e0f49ecbd25e9930d436a7a6 kernel/cgroup/cgroup.c
+M 644 30b99bba455a0636e8ec960576aacd74c1bfd6c55d1766680c6ce01b00bcecb2 kernel/cgroup/cgroup.c
 M 644 99a629ca1b06944104e18c88743d9608c7466819ae3a61632b7fd6f3b33dac32 kernel/dma/direct.h
-M 644 87a612a7dd1f48d0f53daf9bccaf8ec675dbd6e6089bb00bfe7926c36450f78e kernel/resource.c
+M 644 e7c610d2c4341cb6eedc8957b7f8073af4147141acfd774ed321614c9db3838a kernel/resource.c
 M 644 7e097cfd0a3b29656554acf3d11909f85bed234fb240146edc80ea6cc80ac737 lib/earlycpio.c
 M 644 ed385edf9122196f2e1dd004a2dec4ed8f2446e8f83e28a2993e920f1f53fecf mm/cma.c
 M 644 325d59193752c774be7366646c42fbd4a401ccd9df85242a99250790879a0582 mm/mempolicy.c
 M 644 15fbede15536db2ec3b572017f30b4d74fbce7bc0ea4f712c64d9094bcbaafea mm/numa_emulation.c
-M 644 32aaebd9c7a9f1eaf4f3464454962b709121b5484975d2ea172887bc498566eb mm/page_alloc.c
-M 644 ff14bf4455f1c2102ce10f51a0fd3b6658ae6d4d337ea5084acf4e96f53ec250 mm/vmscan.c
-M 644 3e5f2134e94201f75cdc9395babb2a0f10ceba98b689327edf9370dcfefa7883 net/bluetooth/hci_sync.c
+M 644 31b0fae6d4df9191cd6d84982d718650f97c66aefb1099c4722597c813a8bd3e mm/page_alloc.c
+M 644 20ac83f642deb5cf1cee3574a38e6264e89af82e1a2827568abff7a2a8163658 mm/vmscan.c
+M 644 2e4afd617b2fa1f818cb9c2c260df85d478c5616f27870bd3359f1b71e01ecd1 net/bluetooth/hci_sync.c
 M 644 a5a018493f131d747e3014bfef1ca07fdad3c311293a45ad535dd151e83ad568 net/core/dev_ioctl.c
 A 644 50dde860f55a2b754044cee6004f9fa421eaec9dac405338cab75f511b12542b net/wireless/certs/debian.hex
 M 644 05012e517aeecdfa5c3f547af7960ddafce34c6b6a7805fa731b98a357fd51a8 scripts/Makefile.dtbinst
@@ -1388,7 +1390,7 @@ M 644 5b7b897cc01edeb3063e03a579fb39cd035d620ed49d5d35b24a2f3e759ef962 sound/soc
 M 644 936c93e256cfa8d6280ff68ef9441be173269b2622561ed69aa7084838fd2da9 sound/soc/codecs/max98373-i2c.c
 M 644 e38a926939910b9bdaf01fac5369d481db42916ea3e5a7ea96f3a5b9193c0476 sound/soc/codecs/max98388.c
 M 644 cea484528e4be76349fb79347f2aa861007ff39c48dd1afe57c3ad74b95e239e sound/soc/codecs/max98390.c
-M 644 4c886962bdcc3b062c087125de367ea7857ff9d585c56eb5f828861962831829 sound/soc/codecs/max98396.c
+M 644 a11320e81a777fd0c2b037c08b0f7fa468b4399732ff93a79ffce7723d776b7b sound/soc/codecs/max98396.c
 M 644 5e5b836b674c4f82b982c837320c743e80fe7c04f31edacf5206942c58312c0f sound/soc/codecs/max9850.c
 M 644 9a7831782478634a5801bd9dae6c5e0ea230421999e82dd53b9242407dd2ed0f sound/soc/codecs/max98504.c
 M 644 ebb07b00c44187f70d9fb55ef9e325a05c55c49fc5d91417992c7379dc99143f sound/soc/codecs/max98520.c
@@ -1396,7 +1398,7 @@ M 644 9a9c74978f8f73de227f9bbbd1db5ac0077ad86bfe59d5228fe897263582e90b sound/soc
 M 644 1f42583f78b881cc67d4b6bcab749ce15bdccec4ef339eed02538945eac41cb1 sound/soc/codecs/max9867.c
 M 644 de6e89ec8f15bb6dfaa6e8bf3917f1ee601fb71d1ccced2e01a40e3707486463 sound/soc/codecs/max9877.c
 M 644 850c9caa45a46ce204b64dceec62e8cbeaf7e8d7ceb6cc4938f63486ef8f802a sound/soc/codecs/max98925.c
-M 644 67b30f23f31f7482b0aebdfa7de0fbaa014e4a7ae556efda43febb4da87abb50 sound/soc/codecs/max98926.c
+M 644 753f389a8047eeb19a0c0bac3e4fb93ad8b268a203c80b8d7ee589d29facb0c3 sound/soc/codecs/max98926.c
 M 644 ac08caceda53ef48e5315d6c341999c4ed353e824a41930195cac4a11c5e4115 sound/soc/codecs/max98927.c
 M 644 08c58695d6e0b62dea44429707c5c10132851505f608ee592549e0ee37a7c253 sound/soc/codecs/ml26124.c
 M 644 45c276db7ac1c671681e8fc93a422705a3a71e4d59a366c6b1646dfadb366733 sound/soc/codecs/mt6660.c
@@ -1444,7 +1446,7 @@ M 644 e4c8b06362a5f6c1559ae2e7b840a4fdbffbec290f38c0a77f0b644a4e003186 sound/soc
 M 644 9d833f0aeeb019fa046bb639cc7d287f562140a8f840ae0d8d111497a7c8d13c sound/soc/codecs/rt5682-i2c.c
 M 644 671d58950acc7fcf2f5d071ddc444d28c30c34310cec021a558905b2c46222f0 sound/soc/codecs/rt5682s.c
 M 644 a50a63619cbf34d9ccf38a0c0e914659b53b6d5b4d1c8fdd73ccfb3505a30f26 sound/soc/codecs/sgtl5000.c
-M 644 d90890900b7f76a1f451b1369e2d2e33c3eafdf9bd3787311300e73cac9e739b sound/soc/codecs/sma1303.c
+M 644 d22b9d72a2b41d09c2cc2264324835a8d8926800e7ea55999cec236e77c02df8 sound/soc/codecs/sma1303.c
 M 644 35a0c07c233f7e5c96a5e2c449b792fc7a75caf80664dfce2645513b96f2d54d sound/soc/codecs/sma1307.c
 M 644 e455570a3c7228e01698cb2900852b87ede9c8833963c9de2b73713976819993 sound/soc/codecs/src4xxx-i2c.c
 M 644 6978db8e4481ebb5251aa3fa69590442753c09e802ffa0ec32f0500a38d80e07 sound/soc/codecs/ssm2518.c
@@ -1477,7 +1479,7 @@ M 644 e6f0fc27f20468bdd62b3778b951bde62461e7a9cfce52252dce6ef5e9933175 sound/soc
 M 644 958ec2d1d2b6417073689242ca87ad0129ae36bc20de3c7c271bbba34a8e1518 sound/soc/codecs/ts3a227e.c
 M 644 1793d8555d1acc3a97452e763c82029133893b0b256bf14dca04f593547cb701 sound/soc/codecs/tscs42xx.c
 M 644 18df12ecd915bb526bf8b10ae1cbf7ad703bb34de3e826499a165d5d5d2e2eba sound/soc/codecs/tscs454.c
-M 644 101e85fe26a5cf466d624780f6eae48da109286e7b43b0f9f7ea53841d9993d9 sound/soc/codecs/uda1342.c
+M 644 ca1a870e6700367c6079e6ab5f707db8fc1ed6302e1331597d88ef6d6b8f91a8 sound/soc/codecs/uda1342.c
 M 644 e97ecf57b7888b3672f316116a7b28af5f2a456cd95e8ca04f4d7f25274c35c4 sound/soc/codecs/uda1380.c
 M 644 0d136f9aeaacf6fdb682520428cd344e9d2f2ab8f5e42c4e36c9c5a6791244ae sound/soc/codecs/wm1250-ev1.c
 M 644 a05e7a819706dd70cdee79d8eb92cc72313e23668ac7d61c957bb272d5f1cacf sound/soc/codecs/wm2000.c
@@ -1522,5 +1524,5 @@ A 644 c78e6f2b814ff10493f5db95a5fe8042abeee705c0a28a567e974f6d1a5b1b85 sound/soc
 A 644 e72ab6d23f4913c42715e9a56df495ae703ceee0710c3aacd9364dae5cff8eab sound/soc/raspberrypi/Makefile
 A 644 8a4d3446524c91dbc8045d88393b58d5dfe5d14e4e3022740290c247b3437360 sound/soc/raspberrypi/rp1_aout.c
 M 644 3ab50d45332eaeb47830336b05504e890a01175f9badec6ffd1549e47a492556 sound/soc/soc-core.c
-M 644 72b65110480ab8b43ad03cf6e3b7e3c9bc388a48946693cec990b84708e87c10 sound/usb/card.c
-M 644 aecdb91b36a5e7c2b6ce3136fb5fa43f11ec6798b0750e2b1e1289d753b6c068 sound/usb/quirks.c
+M 644 2973932bee1b4b7474ee0bba8ac106265c7100d1cf37ee7f923f678e190baca3 sound/usb/card.c
+M 644 6d978ac818586373dab4d809559d1e55e72b793308e7ef0a9fa2b9ac05c9e68d sound/usb/quirks.c
