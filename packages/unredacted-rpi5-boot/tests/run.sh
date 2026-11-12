@@ -219,6 +219,17 @@ runs "package configure stages the installed hardened kernel" tool pkg-configure
 assert "the stock baseline is recorded" test -s "$R/var/lib/unredacted-rpi5-boot/stock-at-install.sha256"
 assert "$KR staged" test -d "$FW/$KR"
 assert "stock files untouched" stock_ok
+# `apt install` may configure this package before a kernel unpacked in the
+# same run, whose initrd initramfs-tools has not built yet. That kernel is
+# skipped (its own postinst hook stages it), not a failed configure.
+KRU=6.18.99-hardened-unredacted-pi5
+install_kernel "$KRU"; rm -f "$R/boot/initrd.img-$KRU"
+runs "package configure skips a kernel that is unpacked but not configured" tool pkg-configure
+assert "it says why" grep -q "$KRU: no initrd yet" "$T/out"
+assert "$KRU not staged" test ! -e "$FW/$KRU"
+assert "$KR still staged" test -d "$FW/$KR"
+rm -rf "$R/boot/vmlinuz-$KRU" "$R/boot/config-$KRU" "$R/usr/lib/linux-image-$KRU"
+assert "stock files untouched" stock_ok
 
 # --- fingerprint -------------------------------------------------------------
 runs "fingerprint" tool fingerprint

@@ -1088,14 +1088,33 @@ cmd_pkg_remove() {
 
 # The boot package's postinst: record the stock baseline, stage every
 # installed hardened kernel (one installed before this package has no stage).
+#
+# A kernel unpacked in the same dpkg run but not configured yet has no initrd:
+# initramfs-tools builds it in that kernel's own postinst, and our postinst.d
+# hook stages the kernel right after. Nothing orders the two packages'
+# configure steps (the meta packages depend on both, neither depends on the
+# other), so `apt install linux-image-hardened-unredacted-pi5` may configure
+# this package first. Such a kernel is skipped here, not an error: failing
+# would leave this package half-configured on a first install.
 cmd_pkg_configure() {
+    local kr ready=()
     require_fw
     mkdir -p "$STATE/pending" "$STATE/verified"
     if [[ ! -f $STATE/stock-at-install.sha256 ]]; then
         { echo "# $(date -u +%FT%TZ) when $ME was installed"; fingerprint; } > "$STATE/stock-at-install.sha256"
         cp "$STATE/stock-at-install.sha256" "$STATE/stock.sha256"
     fi
-    cmd_stage --all
+    while IFS= read -r kr; do
+        if [[ -f $BOOTDIR/initrd.img-$kr ]]; then
+            ready+=("$kr")
+        else
+            echo "  $kr: no initrd yet (its package is not configured yet); its kernel hook will stage it"
+        fi
+    done < <(installed_krs)
+    (( ${#ready[@]} )) || { echo "no configured hardened Pi 5 kernel; nothing to stage"; return 0; }
+    for kr in "${ready[@]}"; do
+        cmd_stage "$kr"
+    done
 }
 
 main() {
