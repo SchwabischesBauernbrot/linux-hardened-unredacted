@@ -333,7 +333,8 @@ _VERSION_RE = re.compile(
     (?P<kernel>\d+\.\d+\.\d+)        # upstream kernel: 7.0.9
     -hardened
     (?:
-        0~fwd(?P<base>\d+\.\d+\.\d+)\.  # forward-port: 0~fwd7.2.10.
+        0~fwd(?P<base>\d+\.\d+\.\d+)\.  # forward-port: 0~fwd6.18.60.
+        (?:hardened)?                   # (.hardened since 6.18.62 1.4)
     )?
     (?P<hardened>\d+)                # hardened revision: 1
     (?:\.(?P<rebuild>\d+))?          # optional packaging rebuild: .1
@@ -354,9 +355,14 @@ def parse_version(v: str) -> tuple[int, ...]:
     build sorts distinctly and the oldest lands in `to_archive` when
     retention bites.
 
-    A forward-port (`7.2.13-hardened0~fwd7.2.10.1`: kernel 7.2.13 built
-    with the v7.2.10-hardened1 patch) keys as (major, minor, patch, 0,
-    *base, hardened, rebuild). The 0 in the hardened slot puts it below
+    A forward-port (`6.18.62-hardened0~fwd6.18.60.hardened1.4`: kernel
+    6.18.62 built with the v6.18.60-hardened1 patch, packaging rebuild 4)
+    keys as (major, minor, patch, 0, *base, hardened, rebuild). Releases
+    up to 6.18.62 hardened1.3 wrote it without the second "hardened"
+    (`7.2.13-hardened0~fwd7.2.10.1`); both forms parse to the same key.
+    (dpkg sorts the new form above every old one of the same kernel and
+    base; nothing ships both forms of one build, so the keys never
+    disagree with it in practice.) The 0 in the hardened slot puts it below
     every genuine build of the same kernel (hardened >= 1) and above every
     older kernel, which is exactly how dpkg orders the two strings.
 
@@ -386,6 +392,13 @@ def parse_version(v: str) -> tuple[int, ...]:
         (7, 2, 13, 0, 7, 2, 10, 1, 0)
         >>> parse_version("7.2.13-hardened0~fwd7.2.10.1.2")
         (7, 2, 13, 0, 7, 2, 10, 1, 2)
+        >>> parse_version("6.18.62-hardened0~fwd6.18.60.hardened1.4")
+        (6, 18, 62, 0, 6, 18, 60, 1, 4)
+        >>> sorted(["6.18.62-hardened0~fwd6.18.60.hardened1.4",
+        ...         "6.18.62-hardened0~fwd6.18.60.1.3"], key=parse_version)
+        ['6.18.62-hardened0~fwd6.18.60.1.3', '6.18.62-hardened0~fwd6.18.60.hardened1.4']
+        >>> parse_version("6.18.62-hardened0~fwd6.18.60.hardened")
+        ()
         >>> sorted(["7.2.13-hardened1", "7.2.13-hardened0~fwd7.2.10.1",
         ...         "7.2.12-hardened1"], key=parse_version)
         ['7.2.12-hardened1', '7.2.13-hardened0~fwd7.2.10.1', '7.2.13-hardened1']

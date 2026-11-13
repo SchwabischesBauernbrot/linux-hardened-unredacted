@@ -149,17 +149,27 @@ patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 #
 # A FORWARD-PORT (anthraxx's signed vB-hardenedN patch on a newer kernel.org
 # K tarball, built while anthraxx has not tagged K yet) is versioned
-#   K-hardened0~fwdB.N[.P]      e.g. 7.2.13-hardened0~fwd7.2.10.1
-# which dpkg sorts above every older K (7.2.12-*) and BELOW every genuine
-# K-hardenedM (M >= 1): "hardened0" < "hardened1" settles it before the "~"
-# is even reached. So when anthraxx catches up and we build the real
-# v7.2.13-hardened1, apt replaces the forward-port in place. A newer base
-# (fwd7.2.11) and a higher base revision both sort higher, and the trailing
+#   K-hardened0~fwdB.hardenedN[.P]
+#   e.g. 6.18.62-hardened0~fwd6.18.60.hardened1.4
+# mirroring its tag (pi5-v6.18.62-fwd-v6.18.60-hardened1.4). dpkg sorts it
+# above every older K (6.18.61-*) and BELOW every genuine K-hardenedM
+# (M >= 1): "hardened0" < "hardened1" settles it before the "~" is even
+# reached. So when anthraxx catches up and we build the real
+# v6.18.62-hardened1, apt replaces the forward-port in place. A newer base
+# (fwd6.18.61) and a higher base revision both sort higher, and the trailing
 # .P packaging revision works the same as on a normal build. The
 # kernelrelease and package name are unchanged; only this string differs.
+#
+# The "hardened" between the base and N is there to be read: without it
+# (K-hardened0~fwdB.N[.P], every forward-port up to 6.18.62 hardened1.3)
+# "fwd6.18.60.1.3" looks like a five-part version 6.18.60.1.3. It cannot be a
+# "-" (the revision may not contain one) or a "+" (dpkg sorts "+" below ".",
+# so "fwd6.18.60+..." would be OLDER than an installed "fwd6.18.60.1.3" and
+# apt would never upgrade to it). ".hardened" sorts above ".1" (dpkg puts a
+# letter after a digit there), so the change itself is an upgrade too.
 base_version="${HARDENED_BASE_VERSION:-$KERNEL_VERSION}"
 if [[ $base_version != "$KERNEL_VERSION" ]]; then
-    new_version="${KERNEL_VERSION}-hardened0~fwd${base_version}.${HARDENED_REVISION}"
+    new_version="${KERNEL_VERSION}-hardened0~fwd${base_version}.hardened${HARDENED_REVISION}"
 else
     new_version="${KERNEL_VERSION}-hardened${HARDENED_REVISION}"
 fi
@@ -220,8 +230,9 @@ find . -maxdepth 1 -name 'localversion*' -print | sed 's|^|  |' \
 # derives `revision` from the .deb version (the text after the last "-").
 #
 # For a normal release that is hardened<N>[.<P>], which reads fine. For a
-# forward-port it is hardened0~fwd<B>.<N>[.<P>]. That is confusing, and long
-# enough that the 64-byte cut takes the end of the build time:
+# forward-port it is hardened0~fwd<B>.hardened<N>[.<P>]. That is long enough
+# that the 64-byte cut takes the end of the build time (hardened1.3, before the
+# "hardened" between B and N, already did):
 #   #hardened0~fwd6.18.60.1.3 SMP PREEMPT_DYNAMIC Fri Nov 13 20:01:4
 #
 # So pin rules' `revision` to the tag's own suffix, hardened<N>[.<P>]. A normal
