@@ -156,7 +156,7 @@ A separate small package, because the kernel `.deb` should stay what `bindeb-pkg
   - **`revert`** removes the block, so `config.txt` is byte-identical to what it was.
   - A boot-time unit returns `tryboot.txt` to the fallback after every normal boot. A trial is pending only between `try` and the next boot.
 - **Upgrades.** A new hardened kernel is staged into a second prefix and tried from the running hardened kernel. That needs the tryboot reboot flag, which Raspberry Pi's tree supports.
-- **Guard.** The package refuses to install unless `/proc/device-tree/compatible` says Raspberry Pi 5 (`raspberrypi,5-model-b`, and later CM5/500 once tested). The tool also refuses `config.txt` settings it does not model: `os_prefix`, `overlay_prefix`, `cmdline`, `device_tree`, `tryboot_a_b`, and an `autoboot.txt`.
+- **Guard.** The package refuses to install unless `/proc/device-tree/compatible` says Raspberry Pi 5 Model B (`raspberrypi,5-model-b`) or Compute Module 5 (`raspberrypi,5-compute-module`, the CM5 and CM5 Lite); the Pi 500 once tested. Staging requires the DTBs the firmware loads on each (`bcm2712-rpi-5-b`, `bcm2712-rpi-cm5-cm5io`, `bcm2712-rpi-cm5l-cm5io`) and the `bcm2712d0` overlay, so one staged prefix boots on either board. The tool also refuses `config.txt` settings it does not model: `os_prefix`, `overlay_prefix`, `cmdline`, `device_tree`, `tryboot_a_b`, and an `autoboot.txt`.
 - **Removal.** Removing the package puts the stock boot back exactly: no block, no `tryboot.txt`, no prefixes.
 
 ### Performance

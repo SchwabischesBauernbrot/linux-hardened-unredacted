@@ -1,8 +1,9 @@
 # unredacted-rpi5-boot
 
 Boots the hardened Raspberry Pi 5 kernel (`linux-image-*-hardened-unredacted-pi5`)
-through the Pi firmware, and keeps the stock Raspberry Pi OS kernel as a
-fallback that is always one reboot away. The full guide is
+through the Pi firmware, on a Raspberry Pi 5 Model B or a Compute Module 5, and
+keeps the stock Raspberry Pi OS kernel as a fallback that is always one reboot
+away. The full guide is
 `docs/users/install-rpi5.md` in the source repository:
 https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/docs/users/install-rpi5.md
 
