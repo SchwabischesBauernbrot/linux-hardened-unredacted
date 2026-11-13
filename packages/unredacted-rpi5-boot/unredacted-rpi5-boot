@@ -1207,7 +1207,7 @@ cmd_auto_arm() {
     auto_enabled || return 0
     require_root; require_fw
     if [[ $(tryboot_flag) == 1 ]]; then
-        echo "  auto-upgrade: this is a trial boot; a newer kernel is armed on the next normal boot"
+        echo "  auto-upgrade: this is a trial boot; not arming now (any newer kernel is armed on the next normal boot)"
         return 0
     fi
     cur=$(default_kr)
