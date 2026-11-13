@@ -236,6 +236,7 @@ find . -maxdepth 1 -name 'localversion*' -print | sed 's|^|  |' \
 # asserted again after the build.
 uts_build_version="hardened${HARDENED_REVISION}${PACKAGING_REVISION:+.$PACKAGING_REVISION}"
 deb_rules=scripts/package/debian/rules
+# shellcheck disable=SC2016 # a literal make expression, not a shell one
 if [[ $(grep -c '^revision = ' "$deb_rules") != 1 ]] ||
     ! grep -qF 'KBUILD_BUILD_VERSION=,$(revision)' "$deb_rules"; then
     echo "$deb_rules no longer sets KBUILD_BUILD_VERSION from one 'revision = ' line." >&2
