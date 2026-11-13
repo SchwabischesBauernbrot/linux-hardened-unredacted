@@ -13,6 +13,9 @@ case "$1" in
     remove|purge)
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload || true
+            # prerm stops the timers before their files go; this clears one
+            # left failed anyway (a removal by an older version of this package).
+            systemctl reset-failed unredacted-rpi5-boot-auto.timer unredacted-rpi5-boot-deadman.timer 2>/dev/null || true
         fi
         ;;
 esac
