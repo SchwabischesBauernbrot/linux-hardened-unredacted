@@ -250,6 +250,12 @@ The trial ran on 2026-11-13 on `pi-exit-relay6-tor-ce`. The relay is a Compute M
 6. **`try`, then `revert`, on stock:** `tryboot.txt` was removed, the dead-man was disarmed, and `config.txt` was byte-identical.
 7. **Removal.** Purging the kernel and then this package left `/boot/firmware` byte-identical to before the test: the same 514 files.
 
-   One leftover: `unredacted-rpi5-boot-auto.timer` was listed as failed ("Unit to trigger vanished"). Removal does not stop the auto-upgrade timer before its unit file goes. `systemctl reset-failed unredacted-rpi5-boot-auto.timer` clears it.
+   One leftover: `unredacted-rpi5-boot-auto.timer` was listed as failed ("Unit to trigger vanished"). Removal did not stop the auto-upgrade timer before its unit file went. Fixed in [#92](https://git.unredacted.org/unredacted/linux-hardened-unredacted/pulls/92), which is not in 1.3. With 1.3 or older, `systemctl reset-failed unredacted-rpi5-boot-auto.timer` clears it.
 
-`promote` (booting a promoted kernel) has not run on a CM5 yet.
+**Promoted from apt, the same day.** The relay then installed the published `pi5-v6.18.62-fwd-v6.18.60-hardened1.3` from apt. The repo key and source were added as in [install.md](install.md), and `apt install linux-image-hardened-unredacted-pi5` was run. The 514 stock boot files stayed byte-identical.
+
+- **Trial boot:** back in 67 s; `verify` gave `fails=0`, and the relay's site checks passed. `confirm`, then `promote`, added only the tool's block to `config.txt`, and `tryboot.txt` became the stock fallback.
+- **Plain reboot:** the relay came back in 66 s on the promoted kernel with the tryboot flag clear. `verify` gave `fails=0`, and Tor bootstrapped about 25 s after boot, with no "Network was down".
+- **Auto-upgrade:** its first run, 2 minutes after boot, found nothing newer and changed nothing.
+
+`pi-exit-relay6-tor-ce` has run the hardened kernel as its default boot since 2026-11-13.
