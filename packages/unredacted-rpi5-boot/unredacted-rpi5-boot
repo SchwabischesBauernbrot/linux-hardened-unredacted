@@ -289,8 +289,11 @@ write_fw_file() {  # $1 = destination, content on stdin
 
 # sha256 of every stock file under /boot/firmware, "<sha256>  ./<path>", sorted
 # by path. Not stock: the staged kernel directories (and their .new/.old
-# siblings while staging), our tryboot.txt, our temporary files, and macOS's
-# .Spotlight-V100/.fseventsd. config.txt is hashed without our block, so
+# siblings while staging), our tryboot.txt, our temporary files, macOS's
+# .Spotlight-V100/.fseventsd, and cloud-init-output.log: Raspberry Pi OS's
+# cloud-init (seeded from /boot/firmware by Imager) appends to it on every
+# boot, so it would fail every trial. Its seed files (user-data, meta-data,
+# network-config) stay fingerprinted. config.txt is hashed without our block, so
 # promote/revert leave its fingerprint unchanged by construction and any
 # other edit shows.
 fingerprint() {
@@ -301,7 +304,7 @@ fingerprint() {
             ./tryboot.txt) is_our_tryboot || files+=("$rel") ;;
             *) files+=("$rel") ;;
         esac
-    done < <(cd "$FW" && find . \( -path ./.Spotlight-V100 -o -path ./.fseventsd \
+    done < <(cd "$FW" && find . \( -path ./.Spotlight-V100 -o -path ./.fseventsd -o -path ./cloud-init-output.log \
                 -o -path "./*$KR_SUFFIX" -o -path "./.*$KR_SUFFIX.new" -o -path "./.*$KR_SUFFIX.old" \
                 -o -name "*$TMP_SUFFIX" \) -prune -o -type f -print0)
     {

@@ -118,6 +118,9 @@ for f in kernel_2712.img kernel8.img initramfs_2712 initramfs8 bcm2712-rpi-5-b.d
 done
 echo "stock overlays README" > "$FW/overlays/README"
 echo "macOS junk" > "$FW/.Spotlight-V100/store"
+# Raspberry Pi Imager's cloud-init seed, and the log cloud-init appends to on every boot.
+printf '#cloud-config\nhostname: pi\n' > "$FW/user-data"
+echo "Cloud-init v. 25.2 finished" > "$FW/cloud-init-output.log"
 
 printf 'raspberrypi,5-model-b\0brcm,bcm2712\0' > "$R/proc/device-tree/compatible"
 printf 'Raspberry Pi 5 Model B Rev 1.0\0' > "$R/proc/device-tree/model"
@@ -184,7 +187,7 @@ tool() { "$TOOL" "$@"; }
 # without our block (which promote adds and revert removes); the sections
 # that test those compare it byte for byte on their own.
 stock_sums() {
-    (cd "$FW" && find . -path ./.Spotlight-V100 -prune -o -path "./*-hardened-unredacted-pi5" -prune \
+    (cd "$FW" && find . -path ./.Spotlight-V100 -prune -o -path ./cloud-init-output.log -prune -o -path "./*-hardened-unredacted-pi5" -prune \
         -o -name tryboot.txt -prune -o -name config.txt -prune -o -type f -print0 | sort -z | xargs -0 sha256sum)
     sed '/^# BEGIN unredacted-rpi5-boot/,/^# END unredacted-rpi5-boot/d' "$FW/config.txt" | sha256sum
 }
@@ -240,6 +243,8 @@ runs "fingerprint" tool fingerprint
 assert "fingerprint covers every stock file (and only those)" \
     test "$(wc -l < "$T/out")" -eq "$(wc -l < "$T/stock.orig")"
 assert "fingerprint skips .Spotlight-V100" sh -c "! grep -q Spotlight '$T/out'"
+assert "fingerprint skips cloud-init-output.log" sh -c "! grep -q cloud-init-output.log '$T/out'"
+assert "fingerprint keeps cloud-init's user-data" grep -q "  ./user-data$" "$T/out"
 
 # --- Install a hardened kernel: the hooks stage it ---------------------------
 runs "preinst.d hook snapshots the stock files" hook preinst "$KR" install
@@ -306,6 +311,7 @@ refuses "deadman-check never fires off the trial boot" "" tool deadman-check
 
 # --- The trial boot -----------------------------------------------------------
 boot "$KR" 1
+echo "Cloud-init v. 25.2 finished (trial boot)" >> "$FW/cloud-init-output.log"
 runs "deadman-check fires on the trial boot" tool deadman-check
 runs "boot-cleanup leaves a trial boot alone" tool boot-cleanup
 assert "tryboot.txt still names $KR" grep -qx "os_prefix=$KR/" "$FW/tryboot.txt"
