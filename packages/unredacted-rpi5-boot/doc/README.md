@@ -30,7 +30,7 @@ https://git.unredacted.org/unredacted/linux-hardened-unredacted/src/branch/main/
 | `promote [KR]` | Make KR the default (`os_prefix=` block in `config.txt`); `tryboot.txt` then boots stock |
 | `try stock` | With a hardened default: boot the stock kernel once |
 | `revert` | Make the stock kernel the default again |
-| `auto-upgrade on\|off\|status` | Opt-in: a newer hardened kernel from apt is tried on the next plain reboot, and promoted if `verify` passes on it; otherwise the Pi reboots back |
+| `auto-upgrade on\|off\|status` | On by default: a newer hardened kernel from apt is tried on the next plain reboot, and promoted if `verify` passes on it; otherwise the Pi reboots back. `off`: new kernels are only staged |
 
 A first install, on the stock kernel:
 
@@ -41,9 +41,9 @@ A first install, on the stock kernel:
     unredacted-rpi5-boot promote
 
 Every reboot after a trial boot returns to the default boot, and so does a
-trial that is not confirmed in time. With `auto-upgrade on` (once a hardened
-kernel is the default), `apt upgrade && reboot` does the try/verify/promote
-itself: see "Automatic upgrades" in the guide. Settings: `/etc/default/unredacted-rpi5-boot`.
+trial that is not confirmed in time. Once a hardened kernel is the default,
+`apt upgrade && reboot` does the try/verify/promote of a newer one itself
+(auto-upgrade, on unless `auto-upgrade off`): see "Upgrades" in the guide. Settings: `/etc/default/unredacted-rpi5-boot`.
 Site-specific checks for `verify`: `/etc/unredacted-rpi5-boot/verify.d/`
 (see `examples/`).
 

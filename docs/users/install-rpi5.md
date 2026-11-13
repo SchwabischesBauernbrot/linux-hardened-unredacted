@@ -108,45 +108,23 @@ initramfs initramfs_2712 followkernel
 
 ## Upgrades
 
-A new hardened kernel (say `6.18.63-hardened-unredacted-pi5`) is staged into a second directory next to the running one. The default boot does not move, so try the new kernel from the running hardened one:
+Once a hardened kernel is the default, **upgrades are automatic**: `apt upgrade` followed by a plain `reboot` moves the Pi to a newer hardened kernel, with the same trial and fallback as doing it by hand. A kernel that fails its trial never becomes the default. To do upgrades by hand instead, see [Upgrading by hand](#upgrading-by-hand).
 
-```bash
-sudo unredacted-rpi5-boot try 6.18.63-hardened-unredacted-pi5
-sudo reboot '0 tryboot'
-# on the trial boot:
-sudo unredacted-rpi5-boot verify && sudo unredacted-rpi5-boot promote
-```
+It only upgrades from a hardened default, so the first hardened kernel is always promoted by hand, as above. From then on:
 
-`reboot '0 tryboot'` works from the hardened kernel: it is Raspberry Pi's tree, which passes the tryboot flag to the firmware. If the trial fails, the dead-man (or `panic=10`) lands back on the previous hardened kernel. The old kernel stays staged until apt removes its package. If apt removes the kernel that is the default, the hook moves the default back to the **stock** kernel, never to an untried one.
-
-A rebuild of the **same** kernel version is different: a new linux-hardened revision, or a `.P` packaging revision, keeps the kernelrelease. dpkg replaces its modules in place, so its staged copy is refreshed in place too, and becomes the default boot at once if it is the default. That is how stock kernels upgrade as well. The rebuild's verified record is dropped, so `promote` asks for a new trial before promoting it again.
-
-`update-initramfs` rebuilding a hardened kernel's initramfs also refreshes its staged copy.
-
-### Automatic upgrades (opt-in)
-
-By default a new hardened kernel waits for you to `try` and `promote` it, so `apt upgrade` followed by `reboot` keeps booting the old one. To have that upgrade-and-reboot cycle move to new kernels on its own, with the same trial and fallback as doing it by hand:
-
-```bash
-sudo unredacted-rpi5-boot auto-upgrade on
-```
-
-It only upgrades from a hardened default, so promote the first hardened kernel by hand. From then on:
-
-1. **apt installs a newer hardened kernel.** Its hook stages it, then arms it as a trial: `tryboot.txt` names it, and the dead-man is armed, as `try` does. The default boot does not change.
+1. **apt installs a newer hardened kernel** (say `6.18.63-hardened-unredacted-pi5`). Its hook stages it into a second directory, next to the running one, and arms it as a trial: `tryboot.txt` names it, and the dead-man is armed, as `try` does. The default boot does not change.
 2. **The next reboot is its trial.** A plain `reboot` (or `shutdown -r`, or your automation's) becomes `reboot '0 tryboot'`. During the shutdown, a unit sets the reboot argument that `reboot '0 tryboot'` would have set.
 3. **On the trial boot**, two minutes after boot, `unredacted-rpi5-boot-auto.service` waits for the boot to finish, then waits another 60 seconds. Then it runs `verify`, including your checks in `/etc/unredacted-rpi5-boot/verify.d/`.
    - **`fails=0`:** it runs `confirm` and `promote`. The new kernel is the default from then on.
    - **Anything else:** the kernel is recorded as failed, and the Pi reboots straight back to the old default. That makes a second reboot, a few minutes after the first.
 4. **A trial that never reaches `verify` also lands back on the old default:** a panic (`panic=10`), the dead-man, a hang the watchdog resets, or a power cycle. The next normal boot records that kernel as failed.
 
-A failed kernel is not tried again: nothing changes until a newer kernel arrives, or you run `auto-upgrade on` again (which forgets failed trials). A rebuild of the same kernel version needs no trial: it updates in place, as described above.
+A failed kernel is not tried again: nothing changes until a newer kernel arrives, or you run `sudo unredacted-rpi5-boot auto-upgrade on` (which forgets failed trials). Its package stays installed and staged, so you can still `try` it by hand.
 
-`verify` checks the kernel, the hardening, the platform, that the links and addresses are back, and that no unit has newly failed. **Whatever else the machine must do after an upgrade, put in `verify.d/`.** On a Tor relay, for example: the Tor unit is active, the ORPort is listening, any runtime firewall rules you depend on are loaded. A check that fails sends the Pi back to the old kernel.
+`verify` checks the kernel, the hardening, the platform, that the links and addresses are back, and that no unit has newly failed. **Whatever else the machine must do after an upgrade, put in `verify.d/`.** On a Tor relay, for example: the Tor unit is active, the ORPort is listening, any runtime firewall rules you depend on are loaded. A check that fails sends the Pi back to the old kernel. Likewise, a unit that fails only some of the time fails `verify` when it happens to fail on a trial boot: mask it if the machine does not need it, or list it in `VERIFY_IGNORE_FAILED_UNITS` (see [Settings](#settings)).
 
 ```bash
-sudo unredacted-rpi5-boot status              # "auto-upgrade:" lines: armed, last result, failed kernels
-sudo unredacted-rpi5-boot auto-upgrade off    # cancels an armed trial; new kernels are only staged again
+sudo unredacted-rpi5-boot status    # "auto-upgrade:" lines: on or off, an armed trial, the last result, failed kernels
 ```
 
 Things to know:
@@ -155,7 +133,32 @@ Things to know:
 - **Manual trials:** a `try` by hand always takes over. Auto-upgrade does not arm anything while a trial of yours is pending.
 - **Reboots left alone:** a forced reboot (`reboot -f`), and a reboot that already carries another argument.
 - **Logs:** the outcome is in the journal (`journalctl -u unredacted-rpi5-boot-auto`). A failure is logged at warning level.
-- **The setting:** `/etc/unredacted-rpi5-boot/auto-upgrade` turns it on (configuration management can create the file instead). The package does not ship it, so dpkg never asks about it. Set `AUTO_SETTLE_SECONDS=` in it to change the 60-second wait before `verify`.
+- **The setting:** `/etc/unredacted-rpi5-boot/auto-upgrade`, written by `auto-upgrade off` (`AUTO_UPGRADE=no`) and `auto-upgrade on` (`AUTO_UPGRADE=yes`). Without the file, it is on. The package does not ship it, so dpkg never asks about it, and configuration management can write it instead. Set `AUTO_SETTLE_SECONDS=` in it to change the 60-second wait before `verify`.
+
+A rebuild of the **same** kernel version needs no trial: a new linux-hardened revision, or a `.P` packaging revision, keeps the kernelrelease. dpkg replaces its modules in place, so its staged copy is refreshed in place too, and becomes the default boot at once if it is the default. That is how stock kernels upgrade as well. The rebuild's verified record is dropped, so `promote` asks for a new trial before promoting it again.
+
+`update-initramfs` rebuilding a hardened kernel's initramfs also refreshes its staged copy.
+
+The old kernel stays staged until apt removes its package. If apt removes the kernel that is the default, the hook moves the default back to the **stock** kernel, never to an untried one.
+
+### Upgrading by hand
+
+```bash
+sudo unredacted-rpi5-boot auto-upgrade off
+```
+
+New hardened kernels are then only staged, and the default boot does not move until you try and promote one, from the running hardened kernel:
+
+```bash
+sudo unredacted-rpi5-boot try 6.18.63-hardened-unredacted-pi5
+sudo reboot '0 tryboot'
+# on the trial boot:
+sudo unredacted-rpi5-boot verify && sudo unredacted-rpi5-boot promote
+```
+
+`reboot '0 tryboot'` works from the hardened kernel: it is Raspberry Pi's tree, which passes the tryboot flag to the firmware. If the trial fails, the dead-man (or `panic=10`) lands back on the previous hardened kernel.
+
+**With auto-upgrade off, `apt upgrade && reboot` keeps booting the old hardened kernel**, however many newer ones are installed: security fixes in them do not reach the machine until you promote one. `status` lists the staged kernels.
 
 ## Back to the stock kernel
 

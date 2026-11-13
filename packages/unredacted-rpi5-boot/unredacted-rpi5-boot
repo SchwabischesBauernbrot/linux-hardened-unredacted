@@ -18,8 +18,8 @@
 #               reboot '0 tryboot'.
 #   revert      removes the block; the default is the stock kernel again.
 #
-# Opt-in auto-upgrade (`auto-upgrade on`): when apt installs a hardened kernel
-# newer than the hardened default, it is armed as a trial (`try`), the next
+# Auto-upgrade (on unless `auto-upgrade off`): when apt installs a hardened
+# kernel newer than the hardened default, it is armed as a trial (`try`), the next
 # plain reboot becomes its tryboot, and on that boot `verify` decides: the new
 # kernel is promoted, or the Pi reboots back to the old default and the new
 # kernel is recorded as failed. See "Automatic upgrades" in the user guide.
@@ -64,9 +64,10 @@ EXTRA_OVERLAYS=$ROOT/etc/$ME/overlays
 LOCKFILE=$ROOT/run/$ME.lock
 DEADMAN_TIMER=$ME-deadman.timer
 DEADMAN_DROPIN=$UNITDIR/$DEADMAN_TIMER.d/50-trial.conf
-# Auto-upgrade: on while this file exists. Not shipped by the package (so not a
-# conffile: turning it on never makes dpkg ask about /etc/default/$ME), and
-# sourced for its optional settings.
+# Auto-upgrade: on unless this file says AUTO_UPGRADE=no (`auto-upgrade off`
+# writes that). Not shipped by the package, so not a conffile: changing it never
+# makes dpkg ask about anything on an upgrade. Also sourced for its optional
+# settings.
 AUTO_CONF=$ROOT/etc/$ME/auto-upgrade
 AUTO=$STATE/auto
 # The reboot argument systemd passes to the kernel at the very end of a reboot:
@@ -131,9 +132,10 @@ usage: $ME COMMAND [ARGS]
   fingerprint             print the stock boot files' sha256 (the set every
                           command proves it left unchanged)
   auto-upgrade on|off|status
-                          opt-in: a newer hardened kernel that apt installs is
-                          tried on the next plain reboot, and promoted if
-                          verify passes on it; otherwise the Pi reboots back
+                          on by default: a newer hardened kernel that apt
+                          installs is tried on the next plain reboot, and
+                          promoted if verify passes on it; otherwise the Pi
+                          reboots back
 
 KR is a kernelrelease such as 6.18.60$KR_SUFFIX. Settings are in
 /etc/default/$ME. Guide: /usr/share/doc/$ME/README.md
@@ -1070,7 +1072,7 @@ cmd_verify() {
     (( V_FAILS == 0 ))
 }
 
-# --- Auto-upgrade (opt-in) ------------------------------------------------------
+# --- Auto-upgrade (on by default) ----------------------------------------------
 #
 # The flow, for a Pi whose default boot is already a hardened kernel:
 #
@@ -1090,10 +1092,49 @@ cmd_verify() {
 #      boot records the kernel as failed. A failed kernel is not armed again
 #      until `auto-upgrade on` is run again or a newer kernel arrives.
 #
+# It is on unless the administrator turned it off: a hardened kernel that never
+# moves past its first version is the danger it exists for. It never makes the
+# first hardened kernel the default; that stays `try` and `promote` by hand.
+#
 # The stock kernel stays a `reboot '0 tryboot'` away throughout, except while a
 # trial is armed (tryboot.txt then names the trial kernel, as after any `try`).
 
-auto_enabled() { [[ -f $AUTO_CONF ]]; }
+# On unless $AUTO_CONF says AUTO_UPGRADE=no (or off/false/0). A file without
+# the line counts as on: that is what `auto-upgrade on` wrote before the
+# default changed.
+auto_enabled() {
+    local v=""
+    [[ -r $AUTO_CONF ]] &&
+        v=$(sed -nE "s/^[[:space:]]*AUTO_UPGRADE=[\"']?([A-Za-z0-9]*).*/\1/p" "$AUTO_CONF" | tail -n1)
+    case ${v,,} in no|off|false|0) return 1 ;; esac
+    return 0
+}
+
+# Write $AUTO_CONF with AUTO_UPGRADE=$1 (yes|no), keeping any other setting
+# already in it.
+auto_write_conf() {
+    local keep=""
+    [[ -f $AUTO_CONF ]] && keep=$(grep -E '^[[:space:]]*[A-Z_]+=' "$AUTO_CONF" | grep -vE '^[[:space:]]*AUTO_UPGRADE=' || true)
+    mkdir -p "${AUTO_CONF%/*}"
+    {
+        cat <<EOF
+# Auto-upgrade of the hardened Pi 5 kernel (written by '$ME auto-upgrade').
+# With AUTO_UPGRADE=yes (also the default when this file is absent), a hardened
+# kernel newer than the (hardened) default boot that apt installs is armed as a
+# trial: the next reboot boots it once, and it becomes the default if
+# '$ME verify' passes on it. Otherwise the Pi reboots back to the old
+# default, and the new kernel is not tried again. With AUTO_UPGRADE=no, new
+# kernels are only staged; try and promote them by hand.
+AUTO_UPGRADE=$1
+#
+# Seconds to wait on the trial boot, after systemd reports the boot finished,
+# before running verify (links, addresses and services settling).
+#AUTO_SETTLE_SECONDS=60
+EOF
+        [[ -z $keep ]] || printf '%s\n' "$keep"
+    } > "$AUTO_CONF.tmp"
+    mv -f "$AUTO_CONF.tmp" "$AUTO_CONF"
+}
 
 auto_load() {
     # shellcheck source=/dev/null
@@ -1298,10 +1339,12 @@ auto_fail_reboot() {  # $1 = KR, $2 = why
 
 auto_status_lines() {
     local p f
-    if auto_enabled; then
+    if ! auto_enabled; then
+        printf 'auto-upgrade: off (%s)\n' "${AUTO_CONF#"$ROOT"}"
+    elif [[ -f $AUTO_CONF ]]; then
         printf 'auto-upgrade: on (%s)\n' "${AUTO_CONF#"$ROOT"}"
     else
-        printf 'auto-upgrade: off\n'
+        printf 'auto-upgrade: on (the default; turn it off with: %s auto-upgrade off)\n' "$ME"
     fi
     p=$(auto_pending)
     if [[ -n $p ]]; then
@@ -1323,21 +1366,7 @@ cmd_auto_upgrade() {
     case ${1:-status} in
         on)
             require_root; require_fw
-            mkdir -p "${AUTO_CONF%/*}"
-            if [[ ! -f $AUTO_CONF ]]; then
-                cat > "$AUTO_CONF" <<EOF
-# Written by '$ME auto-upgrade on'. While this file exists, a hardened
-# kernel newer than the (hardened) default boot that apt installs is armed as a
-# trial: the next reboot boots it once, and it becomes the default if
-# '$ME verify' passes on it. Otherwise the Pi reboots back to the
-# old default and the new kernel is not tried again. Turn it off with
-# '$ME auto-upgrade off'.
-#
-# Seconds to wait on the trial boot, after systemd reports the boot finished,
-# before running verify (links, addresses and services settling).
-#AUTO_SETTLE_SECONDS=60
-EOF
-            fi
+            auto_write_conf yes
             f=$(find "$AUTO/failed" -type f -printf '%f ' 2>/dev/null | sed 's/ $//' || true)
             if [[ -n $f ]]; then
                 echo "  forgetting failed trials: $f"
@@ -1351,7 +1380,7 @@ EOF
             ;;
         off)
             require_root
-            rm -f "$AUTO_CONF"
+            auto_write_conf no
             p=$(auto_pending)
             if [[ -n $p ]]; then
                 require_fw

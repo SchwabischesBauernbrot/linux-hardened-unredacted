@@ -1,18 +1,18 @@
-# Opt-in auto-upgrade, started by unredacted-rpi5-boot-auto.timer after boot.
+# Auto-upgrade (on unless 'unredacted-rpi5-boot auto-upgrade off'), started by
+# unredacted-rpi5-boot-auto.timer after boot.
 #
 # On the trial boot of the kernel auto-upgrade armed: wait for the boot to
 # finish, run 'unredacted-rpi5-boot verify', and promote the kernel if it
 # passes; otherwise record it as failed and reboot to the default boot. On a
 # normal boot: record a trial that never reached verify as failed, then arm the
-# newest staged kernel that is newer than the default, if there is one.
+# newest staged kernel that is newer than the default, if there is one. With
+# nothing to do (the usual case) it exits at once.
 #
 # Type=exec: it waits for the boot to finish (systemctl is-system-running
 # --wait), which a start job still running would hold up.
 [Unit]
 Description=Hardened kernel auto-upgrade: verify and promote a trial, or arm one
 Documentation=file:/usr/share/doc/unredacted-rpi5-boot/README.md
-ConditionPathExists=|/etc/unredacted-rpi5-boot/auto-upgrade
-ConditionPathExists=|/var/lib/unredacted-rpi5-boot/auto/pending
 RequiresMountsFor=/boot/firmware /var/lib/unredacted-rpi5-boot
 
 [Service]
