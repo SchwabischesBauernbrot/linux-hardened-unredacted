@@ -77,6 +77,8 @@ case "$*" in
 esac
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/mountpoint"
+# What /boot/firmware is mounted from (`findmnt -no SOURCE`).
+printf '#!/bin/sh\necho /dev/mmcblk0p1\n' > "$T/bin/findmnt"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/ischroot"
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/logger"
 printf '#!/bin/sh\nexit 1\n' > "$T/bin/dpkg-query"
@@ -87,7 +89,8 @@ export PATH="$T/bin:$PATH"
 # --- The fake root ---------------------------------------------------------
 mkdir -p "$FW/overlays" "$FW/.Spotlight-V100" "$R/proc/sys/kernel" "$R/proc/sys/vm" \
     "$R/proc/device-tree/chosen/bootloader" "$R/sys/kernel/security" "$R/sys/kernel/btf" \
-    "$R/sys/module/module/parameters" "$R/sys/class/thermal/thermal_zone0" "$R/dev" "$R/run"
+    "$R/sys/module/module/parameters" "$R/sys/class/thermal/thermal_zone0" "$R/dev" "$R/run" \
+    "$R/sys/block/mmcblk0/device"
 # config.txt as Raspberry Pi OS trixie ships it (abridged), ending in [all].
 cat > "$FW/config.txt" <<'EOF'
 # For more options and information see
@@ -113,7 +116,8 @@ dtoverlay=dwc2,dr_mode=host
 EOF
 printf 'console=serial0,115200 console=tty1 root=PARTUUID=7a6e05ec-02 rootfstype=ext4 fsck.repair=yes rootwait\n' > "$FW/cmdline.txt"
 for f in kernel_2712.img kernel8.img initramfs_2712 initramfs8 bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb \
-         bcm2711-rpi-4-b.dtb start4.elf fixup4.dat overlays/vc4-kms-v3d-pi5.dtbo overlays/overlay_map.dtb; do
+         bcm2712-rpi-cm5-cm5io.dtb bcm2712-rpi-cm5l-cm5io.dtb bcm2711-rpi-4-b.dtb start4.elf fixup4.dat \
+         overlays/vc4-kms-v3d-pi5.dtbo overlays/bcm2712d0.dtbo overlays/dwc2.dtbo overlays/overlay_map.dtb; do
     rand "$FW/$f" 4096
 done
 echo "stock overlays README" > "$FW/overlays/README"
@@ -138,6 +142,8 @@ echo 30 > "$R/proc/sys/vm/mmap_rnd_bits"
 echo 16 > "$R/proc/sys/vm/mmap_rnd_compat_bits"
 echo Y > "$R/sys/module/module/parameters/sig_enforce"
 echo 52300 > "$R/sys/class/thermal/thermal_zone0/temp"
+echo SD > "$R/sys/block/mmcblk0/device/type"
+: > "$R/dev/spidev10.0"
 : > "$R/sys/kernel/btf/vmlinux"
 
 # install_kernel KR: what linux-image-KR's files look like once unpacked.
@@ -159,10 +165,13 @@ CONFIG_DEBUG_INFO_BTF=y
 # CONFIG_DEVMEM is not set
 # CONFIG_BCM_VCIO is not set
 EOF
-    for f in bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb bcm2712-rpi-500.dtb bcm2711-rpi-4-b.dtb; do
+    for f in bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb bcm2712-rpi-500.dtb bcm2712-rpi-cm5-cm5io.dtb \
+             bcm2712-rpi-cm5-cm4io.dtb bcm2712-rpi-cm5l-cm5io.dtb bcm2711-rpi-4-b.dtb; do
         rand "$lib/broadcom/$f" 2048
     done
-    for f in vc4-kms-v3d-pi5.dtbo disable-bt.dtbo overlay_map.dtb; do rand "$lib/overlays/$f" 1024; done
+    for f in vc4-kms-v3d-pi5.dtbo bcm2712d0.dtbo dwc2.dtbo disable-bt.dtbo overlay_map.dtb; do
+        rand "$lib/overlays/$f" 1024
+    done
 }
 install_kernel "$KR"
 
@@ -218,6 +227,11 @@ runs "package preinst accepts a Pi 5" "$pre" install
 printf 'raspberrypi,4-model-b\0brcm,bcm2711\0' > "$T/compat4"
 cp "$R/proc/device-tree/compatible" "$T/compat5"; cp "$T/compat4" "$R/proc/device-tree/compatible"
 refuses "package preinst refuses a Pi 4" "not a Raspberry Pi 5" "$pre" install
+printf 'raspberrypi,500\0brcm,bcm2712\0' > "$R/proc/device-tree/compatible"
+refuses "package preinst refuses a Pi 500 (not tested)" "not a Raspberry Pi 5" "$pre" install
+printf 'raspberrypi,5-compute-module\0brcm,bcm2712\0' > "$R/proc/device-tree/compatible"
+runs "package preinst accepts a Compute Module 5" "$pre" install
+cp "$T/compat4" "$R/proc/device-tree/compatible"
 runs "package preinst: UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK=1 overrides" env UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK=1 "$pre" install
 cp "$T/compat5" "$R/proc/device-tree/compatible"
 
@@ -254,7 +268,9 @@ assert "it reports the stock files unchanged across the install" grep -q "unchan
 P=$FW/$KR
 assert "staged kernel is the package's vmlinuz" same "$P/kernel_2712.img" "$R/boot/vmlinuz-$KR"
 assert "staged initramfs is the package's initrd" same "$P/initramfs_2712" "$R/boot/initrd.img-$KR"
-assert "every bcm2712 DTB staged, and no other" sh -c "ls '$P' | grep -c '\.dtb$' | grep -qx 3 && test ! -e '$P/bcm2711-rpi-4-b.dtb'"
+assert "every bcm2712 DTB staged, and no other" sh -c "ls '$P' | grep -c '\.dtb$' | grep -qx 6 && test ! -e '$P/bcm2711-rpi-4-b.dtb'"
+assert "the CM5 and CM5 Lite DTBs are staged" test -f "$P/bcm2712-rpi-cm5-cm5io.dtb" -a -f "$P/bcm2712-rpi-cm5l-cm5io.dtb"
+assert "the D0 overlay the firmware applies on a CM5 is staged" test -f "$P/overlays/bcm2712d0.dtbo"
 assert "overlays staged from the kernel package" same "$P/overlays/vc4-kms-v3d-pi5.dtbo" "$R/usr/lib/linux-image-$KR/overlays/vc4-kms-v3d-pi5.dtbo"
 assert "overlays/README exists (the firmware uses the prefix's overlays only then)" test -s "$P/overlays/README"
 assert "staged cmdline.txt is the stock one plus panic=10" \
@@ -317,6 +333,9 @@ runs "boot-cleanup leaves a trial boot alone" tool boot-cleanup
 assert "tryboot.txt still names $KR" grep -qx "os_prefix=$KR/" "$FW/tryboot.txt"
 runs "verify on the trial boot" tool verify
 assert "verify: running kernel is the staged one" grep -q "ok    the running kernel is the one staged" "$T/out"
+assert "verify: a Pi 5 Model B is a supported board" grep -q "ok    model: Raspberry Pi 5 Model B Rev 1.0 (raspberrypi,5-model-b)" "$T/out"
+assert "verify: /boot/firmware is on the SD card" grep -q "ok    /boot/firmware mounted from /dev/mmcblk0p1 (SD card)" "$T/out"
+assert "verify: the EEPROM SPI device is there" grep -q "ok    bootloader EEPROM SPI device /dev/spidev10.0 present" "$T/out"
 assert "verify: stock files unchanged since try" grep -q "ok    stock boot files unchanged since" "$T/out"
 assert "verify ignored a unit already failing before the trial" grep -q "ok    no newly failed units" "$T/out"
 assert "verify recorded $KR as verified" test -f "$R/var/lib/unredacted-rpi5-boot/verified/$KR"
@@ -326,6 +345,12 @@ echo 30 > "$R/proc/sys/vm/mmap_rnd_bits"
 echo "bird.service loaded failed failed BIRD" >> "$T/failed"
 refuses "verify fails on a newly failed unit" "FAIL  no newly failed units \(bird.service\)" tool verify
 sed -i '$d' "$T/failed"
+rm "$R/dev/spidev10.0"
+refuses "verify fails when the EEPROM SPI device is gone" "FAIL  bootloader EEPROM SPI device /dev/spidev10.0 missing" tool verify
+: > "$R/dev/spidev10.0"
+printf 'raspberrypi,4-model-b\0brcm,bcm2711\0' > "$R/proc/device-tree/compatible"
+refuses "verify fails on an unsupported board" "FAIL  model: .*not a supported board" tool verify
+cp "$T/compat5" "$R/proc/device-tree/compatible"
 mkdir -p "$R/etc/unredacted-rpi5-boot/verify.d"
 printf '#!/bin/sh\necho "  FAIL  site check"\nexit 1\n' > "$R/etc/unredacted-rpi5-boot/verify.d/50-site"
 chmod 0755 "$R/etc/unredacted-rpi5-boot/verify.d/50-site"
@@ -438,7 +463,49 @@ rm "$FW/$KR/bcm2712-rpi-5-b.dtb"
 refuses "try refuses an incomplete prefix" "do not match their manifest" tool try "$KR"
 runs "stage --all re-stages it" tool stage --all
 assert "complete again" sh -c "cd '$P' && sha256sum --quiet -c unredacted-rpi5-boot.sha256"
+rm "$FW/$KR/bcm2712-rpi-cm5-cm5io.dtb"; sed -i '/  bcm2712-rpi-cm5-cm5io.dtb$/d' "$P/unredacted-rpi5-boot.sha256"
+refuses "try refuses a prefix a CM5 would not boot (no CM5 DTB)" "manifest lacks bcm2712-rpi-cm5-cm5io.dtb" tool try "$KR"
+mv "$R/usr/lib/linux-image-$KR/broadcom/bcm2712-rpi-cm5-cm5io.dtb" "$T/cm5.dtb"
+refuses "stage refuses a kernel package without the CM5 DTB" "bcm2712-rpi-cm5-cm5io.dtb not found" tool stage "$KR"
+mv "$T/cm5.dtb" "$R/usr/lib/linux-image-$KR/broadcom/bcm2712-rpi-cm5-cm5io.dtb"
+mv "$R/usr/lib/linux-image-$KR/overlays/bcm2712d0.dtbo" "$T/d0.dtbo"
+refuses "stage refuses a kernel package without the bcm2712d0 overlay" "bcm2712d0.dtbo not found" tool stage "$KR"
+mv "$T/d0.dtbo" "$R/usr/lib/linux-image-$KR/overlays/bcm2712d0.dtbo"
+runs "stage re-stages it" tool stage "$KR"
+assert "complete again" sh -c "cd '$P' && sha256sum --quiet -c unredacted-rpi5-boot.sha256"
 assert "stock files untouched" stock_ok
+
+# --- A Compute Module 5 --------------------------------------------------------------
+# What pi-exit-relay6-tor-ce reports: a CM5 (on a CM5 IO board) booting from its
+# eMMC, Raspberry Pi OS's config.txt with its [cm5] section. The firmware loads
+# bcm2712-rpi-cm5-cm5io.dtb and the bcm2712d0 overlay from the prefix; the tool
+# does the same as on a Pi 5, and verify knows the board and the eMMC.
+printf 'raspberrypi,5-compute-module\0brcm,bcm2712\0' > "$R/proc/device-tree/compatible"
+printf 'Raspberry Pi Compute Module 5 Rev 1.0\0' > "$R/proc/device-tree/model"
+echo MMC > "$R/sys/block/mmcblk0/device/type"
+boot "$STOCK" 0
+runs "try $KR on a CM5" tool try "$KR"
+assert "tryboot.txt keeps the [cm5] section, then names the prefix under [all]" \
+    sh -c "grep -qx 'dtoverlay=dwc2,dr_mode=host' '$FW/tryboot.txt' && sed -n '/^# BEGIN/,/^# END/p' '$FW/tryboot.txt' | sed -n 2p | grep -qx '\[all\]'"
+boot "$KR" 1
+runs "verify on the CM5's trial boot" tool verify
+assert "verify: the CM5 is a supported board" \
+    grep -q "ok    model: Raspberry Pi Compute Module 5 Rev 1.0 (raspberrypi,5-compute-module)" "$T/out"
+assert "verify: /boot/firmware is on the eMMC" grep -q "ok    /boot/firmware mounted from /dev/mmcblk0p1 (eMMC)" "$T/out"
+assert "verify: the EEPROM SPI device is there" grep -q "ok    bootloader EEPROM SPI device /dev/spidev10.0 present" "$T/out"
+assert "verify: the prefix is complete" grep -q "ok    staged $KR: complete" "$T/out"
+assert "verify recorded $KR as verified on the CM5" test -f "$R/var/lib/unredacted-rpi5-boot/verified/$KR"
+runs "promote on the CM5" tool promote
+assert "config.txt's block names $KR" grep -qx "os_prefix=$KR/" "$FW/config.txt"
+assert "config.txt minus our block is byte-identical" \
+    sh -c "sed '/^# BEGIN unredacted-rpi5-boot/,/^# END unredacted-rpi5-boot/d' '$FW/config.txt' | cmp -s - '$T/config.orig'"
+boot "$KR" 0
+runs "revert on the CM5" tool revert
+assert "config.txt byte-identical to the original" same "$FW/config.txt" "$T/config.orig"
+assert "stock files untouched" stock_ok
+cp "$T/compat5" "$R/proc/device-tree/compatible"
+printf 'Raspberry Pi 5 Model B Rev 1.0\0' > "$R/proc/device-tree/model"
+echo SD > "$R/sys/block/mmcblk0/device/type"
 
 # --- Auto-upgrade (on by default) ---------------------------------------------------
 # apt installs a newer kernel; the hook arms it; a plain reboot becomes its

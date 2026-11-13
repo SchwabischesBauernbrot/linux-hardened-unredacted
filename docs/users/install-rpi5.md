@@ -1,4 +1,4 @@
-# Installing on a Raspberry Pi 5
+# Installing on a Raspberry Pi 5 or Compute Module 5
 
 > No warranty. This software is distributed under the GNU General Public License version 2. There is no warranty. Use at your own risk.
 
@@ -6,9 +6,9 @@ The Raspberry Pi 5 kernel is Raspberry Pi's own `rpi-6.18.y` tree with anthraxx'
 
 ## Prerequisites
 
-- A **Raspberry Pi 5 Model B**. The boot package refuses to install on anything else (the CM5 and the Pi 500 are not tested yet).
+- A **Raspberry Pi 5 Model B** or a **Compute Module 5** (CM5 or CM5 Lite). The boot package refuses to install on anything else (the Pi 500 is not tested yet). Both boot the same way, from the same firmware and the same kernel; on a CM5 the boot partition is usually on the eMMC rather than an SD card. Everything below applies to both, and [On a Compute Module 5](#on-a-compute-module-5) lists what differs.
 - **Raspberry Pi OS trixie, 64-bit**, booting from `/boot/firmware` with the stock `linux-image-rpi-2712` kernel. Keep that kernel installed: it is the fallback.
-- No `autoboot.txt` (partition A/B boot) and nothing in `config.txt` that sets `os_prefix`, `overlay_prefix`, `cmdline`, `device_tree` or `tryboot_a_b`. The tool refuses these rather than guess.
+- No `autoboot.txt` (partition A/B boot) and nothing in `config.txt` that sets `os_prefix`, `overlay_prefix`, `cmdline`, `device_tree` or `tryboot_a_b`. The tool refuses these rather than guess. A CM5 needs none of them: its firmware picks its device tree by itself.
 - A way to **power-cycle** the Pi without being there (a PoE switch port, a smart plug), if it is remote. A kernel that hangs before systemd starts can only be recovered by a power cycle. A power cycle always returns to the default boot.
 - Ideally, the hardware watchdog armed: `RuntimeWatchdogSec=1min` in `/etc/systemd/system.conf`. Then a kernel that hangs after systemd starts resets itself too.
 
@@ -16,7 +16,7 @@ The Raspberry Pi 5 kernel is Raspberry Pi's own `rpi-6.18.y` tree with anthraxx'
 
 The Pi 5 boots from firmware that reads `/boot/firmware/config.txt`. GRUB and UEFI are not involved, so the kernel package alone does not make the Pi boot it. A second package, `unredacted-rpi5-boot`, does:
 
-- When a hardened kernel is installed, its hooks **stage** it into a directory of its own, named after its kernelrelease: `/boot/firmware/6.18.62-hardened-unredacted-pi5/`. The directory holds `kernel_2712.img`, `initramfs_2712`, the `bcm2712` device trees, the kernel's own overlays and a `cmdline.txt`. The `cmdline.txt` is the stock one plus `panic=10`. Staging boots nothing.
+- When a hardened kernel is installed, its hooks **stage** it into a directory of its own, named after its kernelrelease: `/boot/firmware/6.18.62-hardened-unredacted-pi5/`. The directory holds `kernel_2712.img`, `initramfs_2712`, the `bcm2712` device trees (the Pi 5's and the CM5's), the kernel's own overlays and a `cmdline.txt`. The `cmdline.txt` is the stock one plus `panic=10`. Staging boots nothing.
 - The firmware boots a staged kernel only when a config file names its directory in `os_prefix=`. If that directory lacks the kernel or the device tree, the firmware ignores the prefix and boots the stock files.
 - `tryboot.txt` is read **instead of** `config.txt` for one boot only: the boot after `reboot '0 tryboot'`. That boot consumes the flag, so every reboot after it boots `config.txt` again.
 - The stock boot files are never written. Every command that changes `/boot/firmware` fingerprints them before and after, and fails if anything changed. Those files are `kernel_2712.img`, `initramfs_2712`, the DTBs, `overlays/`, `cmdline.txt`, the firmware, and `config.txt` outside the tool's own block. `unredacted-rpi5-boot fingerprint` prints that set.
@@ -80,7 +80,7 @@ sudo unredacted-rpi5-boot confirm
 
 - **The boot.** The running kernel is the staged one, and the bootloader set the tryboot flag.
 - **The hardening.** Each value is checked against the kernel's own `/boot/config-*`: lockdown mode, active LSMs, mmap ASLR bits, module-signature enforcement, no `/dev/mem`, `/dev/vcio` or `/dev/vc-mem`, kernel BTF present, 16K pages.
-- **The platform.** The temperature sensor reads, the hardware watchdog is active, and `rpi-eeprom-update` can read the bootloader version.
+- **The platform.** The board is a supported one (from `/proc/device-tree/compatible`), the temperature sensor reads, the hardware watchdog is active, `rpi-eeprom-update` can read the bootloader version, the bootloader EEPROM's SPI device `/dev/spidev10.0` is there if it was there when `try` ran, and `/boot/firmware` is mounted (the line names the device and whether it is an SD card, eMMC, NVMe or USB).
 - **The network and services.** Every link that was up when `try` ran is up, with the same IPv4 addresses, and there is a default route. No unit has failed that was not already failing when `try` ran.
 - **The boot setup.** Every staged kernel matches what was staged, and the stock boot files are unchanged since `try`.
 - **Your own checks.** Each executable in `/etc/unredacted-rpi5-boot/verify.d/` runs (see `/usr/share/doc/unredacted-rpi5-boot/examples/`). Put the checks only your machine knows about there: the address it must keep, the service it exists for.
@@ -164,7 +164,17 @@ sudo unredacted-rpi5-boot verify && sudo unredacted-rpi5-boot promote
 
 - **Once:** `sudo reboot '0 tryboot'` while a hardened kernel is the default. With a trial pending, `sudo unredacted-rpi5-boot try stock` first.
 - **For good:** `sudo unredacted-rpi5-boot revert`, then reboot. `config.txt` is byte-for-byte what it was before `promote`. The staged kernels stay in place for a later `try`.
-- **Without the Pi running:** mount the SD card's boot partition on another machine. In `config.txt`, delete the lines from `# BEGIN unredacted-rpi5-boot` to `# END unredacted-rpi5-boot`. The Pi then boots stock. `/var/lib/unredacted-rpi5-boot/config.txt.previous` on the root filesystem holds the version before the last change.
+- **Without the Pi running:** mount the SD card's boot partition on another machine (on a CM5, the eMMC's: see [On a Compute Module 5](#on-a-compute-module-5)). In `config.txt`, delete the lines from `# BEGIN unredacted-rpi5-boot` to `# END unredacted-rpi5-boot`. The Pi then boots stock. `/var/lib/unredacted-rpi5-boot/config.txt.previous` on the root filesystem holds the version before the last change.
+
+## On a Compute Module 5
+
+Nothing to do differently: install, `try`, `verify`, `promote` and the auto-upgrade work as above. What differs underneath:
+
+- **What it reports.** `/proc/device-tree/compatible` says `raspberrypi,5-compute-module` (the CM5 Lite says the same), and the model is `Raspberry Pi Compute Module 5 Rev 1.0`.
+- **The device tree.** The firmware loads `bcm2712-rpi-cm5-cm5io.dtb` (`bcm2712-rpi-cm5l-cm5io.dtb` on a CM5 Lite) instead of `bcm2712-rpi-5-b.dtb`, and applies the `bcm2712d0` overlay (the CM5's BCM2712 is the D0 stepping). The kernel builds both DTBs and the overlay, and staging refuses a kernel package that lacks any of them, so a staged directory boots on either board. The `[cm5]` section of Raspberry Pi OS's `config.txt` (`dtoverlay=dwc2,dr_mode=host`) applies to the hardened kernel too: the tool's block comes after it, under `[all]`.
+- **The boot medium.** `/boot/firmware` is on the eMMC (`/dev/mmcblk0p1`, as an SD card would be; `verify` says which). The **"without the Pi running"** recovery above then means exposing the eMMC to another machine: fit the carrier's boot jumper (nRPIBOOT), connect its USB port and run `rpiboot` (Raspberry Pi's `usbboot`) in mass-storage mode. A power cycle still always returns to the default boot, which is the usual way back.
+- **The bootloader EEPROM** is the same SPI EEPROM as the Pi 5's, behind `/dev/spidev10.0`; `rpi-eeprom-update` treats the two boards alike.
+- **The watchdog and the temperature sensor** are the Pi 5's: the BCM2835 watchdog and `thermal_zone0` (`cpu-thermal`).
 
 ## Settings
 
@@ -191,6 +201,8 @@ Removing `unredacted-rpi5-boot` puts the stock boot back exactly: `config.txt` w
 The package's own tests ([`packages/unredacted-rpi5-boot/tests/run.sh`](../../packages/unredacted-rpi5-boot/tests/run.sh), run by `validate.yml`) drive the tool and its kernel hooks against a fake Raspberry Pi OS root. They cover install, `try`, a trial boot, `verify`, `confirm`, `promote`, an upgrade tried from the hardened kernel, `try stock`, `revert`, kernel removal and package removal. They also check every refusal. After each step they check that no stock boot file changed, and that `config.txt` comes back byte-identical. They cannot cover the firmware itself.
 
 The firmware part was tested on a Pi 5 relay: see [the trial record](#trial-on-a-pi-5-relay) below.
+
+The Compute Module 5 is covered by the tests (a CM5 on eMMC: install, `try`, the trial boot's `verify`, `promote`, `revert`) and by a read-only survey of `pi-exit-relay6-tor-ce` (CM5 Rev 1.0, eMMC, Raspberry Pi OS trixie, stock `6.18.60+rpt-rpi-2712`) on 2026-11-13: what it reports, the DTB and overlays its firmware loads, its `config.txt`, the eMMC, the EEPROM's SPI device, the watchdog and the temperature sensor. **A trial boot on CM5 hardware has not run yet.**
 
 A dpkg-level test in an arm64 trixie container covered the real `.deb`s and maintainer scripts, with `/boot/firmware` a tmpfs mount. It ran install, staging, `update-initramfs -u`, `try`, `promote`, `revert`, removal of the promoted kernel, and removal and purge of this package. `/boot/firmware` ended byte-identical.
 

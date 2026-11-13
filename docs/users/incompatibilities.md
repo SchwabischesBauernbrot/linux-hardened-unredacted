@@ -177,9 +177,9 @@ These come with `unredacted-rpi5-boot`, the package that boots the pi5 kernel fr
 - **Cause:** `os_prefix`, `overlay_prefix`, `cmdline`, `device_tree` and `tryboot_a_b` (in `config.txt` or a file it `include`s) change what a prefix boots or how tryboot works, in ways the tool does not model. So does an `autoboot.txt`.
 - **Workaround:** remove the setting, or boot the hardened kernel by hand.
 
-**Only the Raspberry Pi 5 Model B.**
+**Only the Raspberry Pi 5 Model B and the Compute Module 5.**
 - **Symptom:** `unredacted-rpi5-boot` refuses to install.
-- **Cause:** `/proc/device-tree/compatible` does not list `raspberrypi,5-model-b`. The CM5 and the Pi 500 are not tested yet.
+- **Cause:** `/proc/device-tree/compatible` lists neither `raspberrypi,5-model-b` nor `raspberrypi,5-compute-module` (the CM5 and CM5 Lite). The Pi 500 is not tested yet.
 - **Image builders:** working in a chroot on another machine, set `UNREDACTED_RPI5_BOOT_SKIP_MODEL_CHECK=1`.
 
 **Status:** Working as designed.

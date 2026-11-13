@@ -1,7 +1,8 @@
 #!/bin/bash
 # unredacted-rpi5-boot: boot the hardened Raspberry Pi 5 kernel from the Pi
 # firmware, with the stock Raspberry Pi OS kernel kept as a fallback that is
-# always one reboot away.
+# always one reboot away. For the Pi 5 Model B and the Compute Module 5, which
+# boot the same way (BOARDS_RE).
 #
 # The Pi 5 boots from firmware in /boot/firmware, not GRUB or UEFI. Each
 # hardened kernel is STAGED into its own directory there, named after its
@@ -75,12 +76,25 @@ AUTO=$STATE/auto
 # plain reboot to make it the armed trial's tryboot.
 REBOOT_PARAM=$ROOT/run/systemd/reboot-param
 
+# The boards this tool boots, as /proc/device-tree/compatible names them: the
+# Raspberry Pi 5 Model B and the Compute Module 5 (the CM5 Lite says the same).
+# debian/preinst refuses to install on anything else.
+BOARDS_RE='^raspberrypi,(5-model-b|5-compute-module)$'
+
 # The Pi 5's firmware loads these names (os_prefix is prepended to each).
 KERNEL_NAME=kernel_2712.img
 INITRD_NAME=initramfs_2712
-# The DTB the firmware loads for a Pi 5 Model B (C1 stepping; D0 boards load
-# bcm2712d0-rpi-5-b.dtb). Every bcm2712*.dtb is staged; this one must exist.
-PI5_DTB=bcm2712-rpi-5-b.dtb
+# The DTBs the firmware loads on the supported boards: the Pi 5 Model B, the
+# CM5 and the CM5 Lite (the -cm5io ones: the firmware's default for a CM5,
+# whatever the carrier board). On D0-stepping silicon (every CM5 so far) it
+# also applies the bcm2712d0 overlay. Every bcm2712*.dtb and every overlay is
+# staged; these must exist, so a prefix boots on any of the boards, and a
+# board never boots a prefix that lacks its own DTB.
+BOOT_DTBS=(bcm2712-rpi-5-b.dtb bcm2712-rpi-cm5-cm5io.dtb bcm2712-rpi-cm5l-cm5io.dtb)
+BOOT_OVERLAYS=(overlay_map.dtb bcm2712d0.dtbo)
+# The SPI device rpi-eeprom-update flashes the BCM2712 bootloader EEPROM
+# through (flashrom), on the Pi 5 and the CM5 alike.
+EEPROM_SPI=/dev/spidev10.0
 
 BEGIN_MARK="# BEGIN $ME"
 END_MARK="# END $ME"
@@ -158,7 +172,28 @@ tryboot_flag() {
     echo "${v:-0}"
 }
 
-is_pi5() { [[ -r $DT/compatible ]] && tr '\0' '\n' < "$DT/compatible" | grep -qx 'raspberrypi,5-model-b'; }
+# The supported board this is (its compatible entry), or nothing.
+board() { [[ -r $DT/compatible ]] && tr '\0' '\n' < "$DT/compatible" | grep -m1 -xE "$BOARDS_RE"; }
+
+# What /boot/firmware is mounted from, and what kind of medium that is: a
+# Pi 5 boots from an SD card (or USB/NVMe), a CM5 from its eMMC (a CM5 Lite
+# from an SD card on its carrier). Both cards are mmcblk0; the card says which.
+fw_media() {
+    local src disk t
+    src=$(findmnt -no SOURCE "$FW" 2>/dev/null | head -n1 || true)
+    [[ -n $src ]] || { echo "an unknown device"; return 0; }
+    disk=${src#/dev/}
+    case $disk in
+        mmcblk*)
+            disk=${disk%%p[0-9]*}
+            t=$(cat "$ROOT/sys/block/$disk/device/type" 2>/dev/null || true)
+            case $t in MMC) t=eMMC ;; SD) t="SD card" ;; *) t="MMC ${t:-of unknown type}" ;; esac ;;
+        nvme*) t=NVMe ;;
+        sd*) t=USB ;;
+        *) t="not MMC, NVMe or USB" ;;
+    esac
+    echo "$src ($t)"
+}
 
 require_root() { [[ -n $ROOT || $(id -u) == 0 ]] || die "run as root"; }
 
@@ -398,8 +433,8 @@ do_stage() {
     local dtbs=() ovls=() need avail f
     [[ -f $src ]] || die "$src not found (is linux-image-$kr installed?)"
     [[ -f $initrd ]] || die "$initrd not found; update-initramfs -c -k $kr (is initramfs-tools installed?)"
-    [[ -f $lib/broadcom/$PI5_DTB ]] || die "$lib/broadcom/$PI5_DTB not found"
-    [[ -f $lib/overlays/overlay_map.dtb ]] || die "$lib/overlays/overlay_map.dtb not found"
+    for f in "${BOOT_DTBS[@]}"; do [[ -f $lib/broadcom/$f ]] || die "$lib/broadcom/$f not found"; done
+    for f in "${BOOT_OVERLAYS[@]}"; do [[ -f $lib/overlays/$f ]] || die "$lib/overlays/$f not found"; done
     for f in "$lib"/broadcom/bcm2712*.dtb; do dtbs+=("$f"); done
     for f in "$lib"/overlays/*.dtbo "$lib"/overlays/overlay_map.dtb; do [[ -f $f ]] && ovls+=("$f"); done
     for f in "$EXTRA_OVERLAYS"/*.dtbo; do [[ -f $f ]] && ovls+=("$f"); done
@@ -442,7 +477,7 @@ check_staged() {  # $1 = KR; prints the problem and returns 1 if any
     local d=$FW/$1
     [[ -d $d ]] || { echo "not staged"; return 1; }
     [[ -f $d/$MANIFEST && -f $d/cmdline.txt && -f $d/overlays/README ]] || { echo "incomplete"; return 1; }
-    for f in "$KERNEL_NAME" "$INITRD_NAME" "$PI5_DTB" overlays/overlay_map.dtb; do
+    for f in "$KERNEL_NAME" "$INITRD_NAME" "${BOOT_DTBS[@]}" "${BOOT_OVERLAYS[@]/#/overlays/}"; do
         grep -q "  $f\$" "$d/$MANIFEST" || { echo "manifest lacks $f"; return 1; }
     done
     (cd "$d" && sha256sum --quiet -c "$MANIFEST" >/dev/null 2>&1) || { echo "staged files do not match their manifest"; return 1; }
@@ -533,6 +568,7 @@ record_trial() {  # $1 = KR or stock
         echo "failed_units=$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}' | tr '\n' ' ')"
         echo "links_up=$(ip -br link 2>/dev/null | awk '$2 == "UP" {print $1}' | tr '\n' ' ')"
         echo "ipv4=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2 "=" $4}' | tr '\n' ' ')"
+        echo "eeprom_spi=$([[ -e $ROOT$EEPROM_SPI ]] && echo 1 || echo 0)"
     } > "$STATE/trial"
     fingerprint > "$STATE/trial.stock.sha256"
 }
@@ -922,7 +958,8 @@ cmd_verify() {
 
     v_hdr boot
     model=$(tr -d '\0' < "$DT/model" 2>/dev/null || true)
-    v_chk "$([[ $model == "Raspberry Pi 5"* ]] && echo 1 || echo 0)" "model: ${model:-unknown}"
+    got=$(board || true)
+    v_chk "$([[ -n $got ]] && echo 1 || echo 0)" "model: ${model:-unknown} (${got:-not a supported board})"
     if is_ours "$kr"; then
         v_ok "running $kr, tryboot flag $tb"
         f=$FW/$kr/$KERNEL_NAME
@@ -1016,6 +1053,18 @@ cmd_verify() {
                 v_bad "rpi-eeprom-update cannot read the bootloader version: $(head -n3 <<<"$got" | tr '\n' ' ')"
             fi
         fi
+        # Without it rpi-eeprom-update falls back to an update on the next
+        # reboot (recovery.bin); a kernel that loses it is still a regression.
+        if [[ -e $ROOT$EEPROM_SPI ]]; then
+            v_ok "bootloader EEPROM SPI device $EEPROM_SPI present (rpi-eeprom-update flashes through it)"
+        elif [[ $(trial_get eeprom_spi) == 1 ]]; then
+            v_bad "bootloader EEPROM SPI device $EEPROM_SPI missing (present on the boot '$ME try' ran on)"
+        else
+            v_info "bootloader EEPROM SPI device $EEPROM_SPI absent"
+        fi
+        # The firmware partition: on an SD card (Pi 5, CM5 Lite), the eMMC
+        # (CM5), NVMe or USB. promote writes config.txt there.
+        v_chk "$(yes_if mountpoint -q "$FW")" "${FW#"$ROOT"} mounted from $(fw_media)"
         if [[ -f $STATE/trial ]]; then
             v_hdr "network (against the boot '$ME try' ran on)"
             read -r -a ifs <<<"$(trial_get links_up)"
