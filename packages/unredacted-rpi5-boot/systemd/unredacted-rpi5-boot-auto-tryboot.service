@@ -1,4 +1,4 @@
-# Opt-in auto-upgrade: make a plain reboot the tryboot of the kernel that
+# Auto-upgrade: make a plain reboot the tryboot of the kernel that
 # auto-upgrade armed, so the reboot that follows an apt upgrade is its one-shot
 # trial. Wanted by reboot.target; does nothing unless a trial is armed.
 #

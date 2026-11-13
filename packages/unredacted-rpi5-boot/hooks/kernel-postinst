@@ -8,8 +8,8 @@
 # anything changed. Staging alone changes no boot: see 'unredacted-rpi5-boot
 # try'. Other kernels: nothing.
 #
-# With auto-upgrade on (unredacted-rpi5-boot auto-upgrade on) and a hardened
-# kernel as the default boot, a staged kernel newer than it is then armed as a
+# Unless auto-upgrade is off (unredacted-rpi5-boot auto-upgrade off), with a
+# hardened kernel as the default boot, a staged kernel newer than it is then armed as a
 # trial for the next reboot. Arming never fails the install.
 set -e
 version="$1"

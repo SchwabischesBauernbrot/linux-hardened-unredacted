@@ -1,8 +1,7 @@
-# Opt-in auto-upgrade ('unredacted-rpi5-boot auto-upgrade on'): two minutes
+# Auto-upgrade (on unless 'unredacted-rpi5-boot auto-upgrade off'): two minutes
 # after every boot, start unredacted-rpi5-boot-auto.service. On the trial boot
 # of a kernel auto-upgrade armed, that verifies and promotes it, or reboots
-# back; on a normal boot it arms a newer staged kernel, if there is one. The
-# service does nothing unless auto-upgrade is on or a trial is armed.
+# back; on a normal boot it arms a newer staged kernel, if there is one.
 [Unit]
 Description=Hardened kernel auto-upgrade, after boot
 Documentation=file:/usr/share/doc/unredacted-rpi5-boot/README.md

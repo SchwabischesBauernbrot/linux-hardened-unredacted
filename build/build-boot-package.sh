@@ -80,9 +80,8 @@ inst 0755 doc/examples/verify.d/50-example         "usr/share/doc/$pkg/examples/
 # enable it, and no maintainer script has to know about it.
 mkdir -p "$root/usr/lib/systemd/system/multi-user.target.wants"
 ln -s "../$pkg-cleanup.service" "$root/usr/lib/systemd/system/multi-user.target.wants/$pkg-cleanup.service"
-# The auto-upgrade units, the same way: both do nothing until
-# 'unredacted-rpi5-boot auto-upgrade on' (their conditions say so), so they
-# can be wanted unconditionally.
+# The auto-upgrade units, the same way: auto-upgrade is on by default, and
+# both exit at once when there is nothing to arm or verify.
 mkdir -p "$root/usr/lib/systemd/system/timers.target.wants" "$root/usr/lib/systemd/system/reboot.target.wants"
 ln -s "../$pkg-auto.timer" "$root/usr/lib/systemd/system/timers.target.wants/$pkg-auto.timer"
 ln -s "../$pkg-auto-tryboot.service" "$root/usr/lib/systemd/system/reboot.target.wants/$pkg-auto-tryboot.service"

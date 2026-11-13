@@ -170,6 +170,10 @@ install -D -m 0755 "$src/hooks/kernel-postinst" "$R/etc/kernel/postinst.d/z70-un
 install -D -m 0755 "$src/hooks/kernel-postrm" "$R/etc/kernel/postrm.d/z70-unredacted-rpi5-boot"
 install -D -m 0755 "$src/hooks/initramfs-post-update" "$R/etc/initramfs/post-update.d/z70-unredacted-rpi5-boot"
 install -D -m 0644 "$src/default" "$R/etc/default/unredacted-rpi5-boot"
+# Auto-upgrade is on by default; the life-cycle sections below test the tool by
+# hand, so it starts off. Its own section turns it back on.
+mkdir -p "$R/etc/unredacted-rpi5-boot"
+echo "AUTO_UPGRADE=no" > "$R/etc/unredacted-rpi5-boot/auto-upgrade"
 
 hook() {  # hook preinst|postinst|postrm KR "DEB_MAINT_PARAMS"
     DEB_MAINT_PARAMS=$3 "$R/etc/kernel/$1.d/z70-unredacted-rpi5-boot" "$2" "/boot/vmlinuz-$2"
@@ -320,7 +324,7 @@ mkdir -p "$R/etc/unredacted-rpi5-boot/verify.d"
 printf '#!/bin/sh\necho "  FAIL  site check"\nexit 1\n' > "$R/etc/unredacted-rpi5-boot/verify.d/50-site"
 chmod 0755 "$R/etc/unredacted-rpi5-boot/verify.d/50-site"
 refuses "verify runs the site checks" "50-site exited non-zero" tool verify
-rm -rf "$R/etc/unredacted-rpi5-boot"
+rm -rf "$R/etc/unredacted-rpi5-boot/verify.d"
 runs "confirm on the trial boot" tool confirm
 assert "dead-man disabled" sh -c "grep -q 'disable --quiet --now unredacted-rpi5-boot-deadman.timer' '$T/systemctl.log' && test ! -e '$R/etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d'"
 refuses "deadman-check no longer fires" "" tool deadman-check
@@ -430,7 +434,7 @@ runs "stage --all re-stages it" tool stage --all
 assert "complete again" sh -c "cd '$P' && sha256sum --quiet -c unredacted-rpi5-boot.sha256"
 assert "stock files untouched" stock_ok
 
-# --- Auto-upgrade (opt-in) -----------------------------------------------------------
+# --- Auto-upgrade (on by default) ---------------------------------------------------
 # apt installs a newer kernel; the hook arms it; a plain reboot becomes its
 # tryboot; on the trial boot verify decides. A kernel that fails is not armed
 # again. The firmware and systemd's reboot argument are what the stubs stand in
@@ -446,16 +450,25 @@ pending() { grep -qx "kr=$1" "$A/pending"; }
 tb_names() { grep -qx "os_prefix=$1/" "$FW/tryboot.txt"; }
 tb_stock() { grep -q 'tryboot.txt for stock' "$FW/tryboot.txt" && ! grep -q '^os_prefix' "$FW/tryboot.txt"; }
 boot "$KR" 0
-runs "auto-upgrade is off by default" tool auto-upgrade status
-assert "status says off" grep -qx "auto-upgrade: off" "$T/out"
+rm -f "$AC"
+runs "auto-upgrade is on by default" tool auto-upgrade status
+assert "status says on, by default" grep -q "^auto-upgrade: on (the default" "$T/out"
+runs "auto-upgrade off" tool auto-upgrade off
+assert "its file says AUTO_UPGRADE=no" grep -qx "AUTO_UPGRADE=no" "$AC"
+runs "status after off" tool auto-upgrade status
+assert "status says off" grep -q "^auto-upgrade: off" "$T/out"
 install_kernel "$KA"; hook preinst "$KA" install > /dev/null
 runs "with auto-upgrade off, the hook only stages a newer kernel" hook postinst "$KA" "configure "
 assert "no trial armed" sh -c "test ! -e '$FW/tryboot.txt' && test ! -e '$A/pending'"
+echo "AUTO_SETTLE_SECONDS=0" >> "$AC"
 runs "auto-upgrade on (the stock kernel is the default)" tool auto-upgrade on
 assert "it says a hardened kernel must be promoted by hand first" grep -q "promote a hardened kernel by hand first" "$T/out"
-assert "its file is written, outside dpkg's conffiles" test -f "$AC"
+assert "its file says AUTO_UPGRADE=yes" grep -qx "AUTO_UPGRADE=yes" "$AC"
+assert "and keeps the other settings in it" grep -qx "AUTO_SETTLE_SECONDS=0" "$AC"
 assert "nothing armed from a stock default" test ! -e "$A/pending"
-echo "AUTO_SETTLE_SECONDS=0" >> "$AC"
+# The file `auto-upgrade on` wrote before the default changed has no
+# AUTO_UPGRADE= line: still on.
+echo "AUTO_SETTLE_SECONDS=0" > "$AC"
 runs "promote --force $KR (a hardened default)" tool promote "$KR" --force
 runs "auto-run on a normal boot arms the newer staged kernel" tool auto-run
 assert "$KA armed" pending "$KA"
@@ -547,7 +560,7 @@ runs "auto-run arms $KC again" tool auto-run
 assert "$KC armed" pending "$KC"
 runs "auto-upgrade off" tool auto-upgrade off
 assert "it cancels the armed trial" grep -q "cancelled the armed trial of $KC" "$T/out"
-assert "its file is removed" test ! -e "$AC"
+assert "its file says AUTO_UPGRADE=no" grep -qx "AUTO_UPGRADE=no" "$AC"
 assert "tryboot.txt is the stock fallback" tb_stock
 assert "the dead-man is disarmed" test ! -e "$DROPIN"
 runs "auto-tryboot with nothing armed" tool auto-tryboot
