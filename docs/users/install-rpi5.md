@@ -202,7 +202,7 @@ The package's own tests ([`packages/unredacted-rpi5-boot/tests/run.sh`](../../pa
 
 The firmware part was tested on a Pi 5 relay: see [the trial record](#trial-on-a-pi-5-relay) below.
 
-The Compute Module 5 is covered by the tests (a CM5 on eMMC: install, `try`, the trial boot's `verify`, `promote`, `revert`) and by a read-only survey of `pi-exit-relay6-tor-ce` (CM5 Rev 1.0, eMMC, Raspberry Pi OS trixie, stock `6.18.60+rpt-rpi-2712`) on 2026-11-13: what it reports, the DTB and overlays its firmware loads, its `config.txt`, the eMMC, the EEPROM's SPI device, the watchdog and the temperature sensor. **A trial boot on CM5 hardware has not run yet.**
+The Compute Module 5 is covered by the tests (a CM5 on eMMC: install, `try`, the trial boot's `verify`, `promote`, `revert`) and by a read-only survey of `pi-exit-relay6-tor-ce` (CM5 Rev 1.0, eMMC, Raspberry Pi OS trixie, stock `6.18.60+rpt-rpi-2712`) on 2026-11-13: what it reports, the DTB and overlays its firmware loads, its `config.txt`, the eMMC, the EEPROM's SPI device, the watchdog and the temperature sensor. The same relay then ran a trial boot: see [the CM5 trial record](#trial-on-a-cm5-relay) below.
 
 A dpkg-level test in an arm64 trixie container covered the real `.deb`s and maintainer scripts, with `/boot/firmware` a tmpfs mount. It ran install, staging, `update-initramfs -u`, `try`, `promote`, `revert`, removal of the promoted kernel, and removal and purge of this package. `/boot/firmware` ended byte-identical.
 
@@ -225,3 +225,31 @@ The trial ran on 2026-11-04 on `pi-exit-relay1-tor-ce`, a Pi 5 Model B Rev 1.0 r
 7. **Removal.** Purging the kernel (its `postrm.d` hook unstaged it) and then this package left `/boot/firmware` byte-identical to before the test: the same 435 files, nothing added.
 
 `config.txt` did not change at any point. `promote` itself (writing `config.txt`, then booting it) ran in the tests above, but not on hardware. Booting a promoted kernel on the relays is the last rollout phase.
+
+
+### Trial on a CM5 relay
+
+The trial ran on 2026-11-13 on `pi-exit-relay6-tor-ce`. The relay is a Compute Module 5 Rev 1.0 on a CM5 IO board, booting from its eMMC, with Raspberry Pi OS trixie, the stock `6.18.60+rpt-rpi-2712` kernel and the 2026-05-26 bootloader. The kernel was the published `6.18.62-hardened-unredacted-pi5` (`6.18.62-hardened0~fwd6.18.60.1.2`), checked against the repo's signed index. The boot package was built from the CM5 change ([#89](https://git.unredacted.org/unredacted/linux-hardened-unredacted/pulls/89)).
+
+1. **Install.** The boot package went in first, then the kernel package alone. The kernel was staged with all 8 `bcm2712` DTBs and 388 overlay files, and the 439 stock boot files stayed byte-identical. `try` kept Raspberry Pi OS's `[cm5]` section in `tryboot.txt`, with the tool's block after it under `[all]`.
+2. **The trial boot.** After `reboot '0 tryboot'`, the relay was back on SSH 74 s later, running the hardened kernel with the tryboot flag set. The firmware's `chosen/os_prefix` and `overlay_prefix` named the staged directory. Tor reported its ORPort reachable at about 40 s of uptime and finished bootstrapping at about 45 s.
+3. **`verify`: `fails=0`.**
+   - Board: `Raspberry Pi Compute Module 5 Rev 1.0 (raspberrypi,5-compute-module)`.
+   - Hardening: every check passed, as on the Pi 5.
+   - Platform:
+     - temperature 65 °C;
+     - the BCM2835 watchdog active;
+     - `rpi-eeprom-update` read the bootloader version;
+     - `/dev/spidev10.0` present;
+     - `/boot/firmware` mounted from `/dev/mmcblk0p1` (eMMC).
+   - The eMMC ran in HS400 enhanced-strobe mode with the command queue on, with no MMC errors. `dwc2` (from `[cm5]`) came up in host mode.
+   - Network and services: the same MAC, IPv4 and IPv6 addresses, Tailscale, every relay service, no newly failed units, and about 2,650 established connections.
+   - A run at 41 s of uptime failed only the site check for Tor's "Bootstrapped 100%", which Tor logged a few seconds later.
+4. **`promote --dry-run`** printed the `config.txt` block, which comes after the `[cm5]` section, and the stock-fallback `tryboot.txt`. It wrote nothing.
+5. **The dead-man.** The trial was left unconfirmed, and the dead-man rebooted it 15 minutes after boot. The relay came back on the stock kernel, where the cleanup unit disarmed the trial and removed `tryboot.txt`.
+6. **`try`, then `revert`, on stock:** `tryboot.txt` was removed, the dead-man was disarmed, and `config.txt` was byte-identical.
+7. **Removal.** Purging the kernel and then this package left `/boot/firmware` byte-identical to before the test: the same 514 files.
+
+   One leftover: `unredacted-rpi5-boot-auto.timer` was listed as failed ("Unit to trigger vanished"). Removal does not stop the auto-upgrade timer before its unit file goes. `systemctl reset-failed unredacted-rpi5-boot-auto.timer` clears it.
+
+`promote` (booting a promoted kernel) has not run on a CM5 yet.
