@@ -645,6 +645,8 @@ status_unchanged "auto-upgrade"
 boot "$STOCK" 0
 runs "promote --force $KR" tool promote "$KR" --force
 runs "package removal (prerm remove)" tool pkg-remove
+assert "it stops the timers before dpkg removes their unit files" \
+    grep -qx "stop unredacted-rpi5-boot-auto.timer unredacted-rpi5-boot-deadman.timer" "$T/systemctl.log"
 assert "config.txt byte-identical to the original" same "$FW/config.txt" "$T/config.orig"
 assert "no tryboot.txt" test ! -e "$FW/tryboot.txt"
 assert "it compares against the install-time baseline" grep -q "identical to when unredacted-rpi5-boot was installed" "$T/out"

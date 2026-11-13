@@ -1504,6 +1504,11 @@ cmd_pkg_remove() {
     local kr base now
     require_fw; lock
     check_block_intact "$FW/config.txt"
+    # Stop the timers while their unit files still exist. dpkg removes the
+    # files next, and a timer still active then (an elapsed OnBootSec= timer
+    # stays active) is left failed: "unit to trigger vanished". Stopping the
+    # auto-upgrade timer first also keeps auto-run from starting mid-removal.
+    systemctl stop "$ME-auto.timer" "$DEADMAN_TIMER" 2>/dev/null || true
     guarded revert_files "$(default_kr)" "$(strip_block "$FW/config.txt"; echo x)"
     disarm
     auto_clear
