@@ -28,9 +28,10 @@
 #   FLAVOR                build flavor, configs/flavors/<FLAVOR>.toml (e.g.
 #                         amd64): arch, kernel arch, LOCALVERSION, package
 #                         names, pre-build symbol checks and line set
-#   PACKAGING_REVISION    optional trailing .N from the tag; also becomes
-#                         KBUILD_BUILD_VERSION (uname -v), so `uname -v` is
-#                         derivable from the tag alone
+#   PACKAGING_REVISION    optional trailing .N from the tag. With
+#                         HARDENED_REVISION it makes `uname -v`'s
+#                         "#hardened<N>[.<P>]", the tag's own suffix, so
+#                         `uname -v` is derivable from the tag alone
 #   SOURCE_DATE_EPOCH     reproducible-build timestamp
 #
 # Optional:
@@ -133,8 +134,9 @@ patched_dir="$WORKDIR/linux-${KERNEL_VERSION}"
 # vmlinux. So two runs of one tag produced different bytes under the same .deb
 # version -- invisible to apt, and unreproducible by anyone, since the value was
 # recorded nowhere (repro-check.sh hard-coded REVISION=1). KBUILD_BUILD_VERSION
-# now derives from the tag instead, and the CI run number is recorded in the
-# manifest as `ci_run_number` where a verifier can actually read it.
+# now derives from the tag instead (see "uname -v" below), and the CI run number
+# is recorded in the manifest as `ci_run_number` where a verifier can actually
+# read it.
 #
 # PACKAGING_REVISION re-ships the same upstream + hardened revision with
 # packaging-only changes. It comes from the optional trailing .N on the
@@ -207,6 +209,45 @@ rm -f localversion-* localversion
 echo "post-defuse localversion-* files in patched tree:"
 find . -maxdepth 1 -name 'localversion*' -print | sed 's|^|  |' \
     || echo "  (none — clean)"
+
+# uname -v.
+#
+# kbuild compiles UTS_VERSION, "#<build version> SMP PREEMPT_DYNAMIC <build
+# time>" cut at 64 bytes (init/Makefile), into vmlinux. It is what `uname -v`
+# and the end of /proc/version show. The build version we hand make is not the
+# one that lands there: bindeb-pkg's scripts/package/debian/rules runs the real
+# build with KBUILD_BUILD_VERSION=$(revision), its own command-line value, and
+# derives `revision` from the .deb version (the text after the last "-").
+#
+# For a normal release that is hardened<N>[.<P>], which reads fine. For a
+# forward-port it is hardened0~fwd<B>.<N>[.<P>]. That is confusing, and long
+# enough that the 64-byte cut takes the end of the build time:
+#   #hardened0~fwd6.18.60.1.3 SMP PREEMPT_DYNAMIC Fri Nov 13 20:01:4
+#
+# So pin rules' `revision` to the tag's own suffix, hardened<N>[.<P>]. A normal
+# release gets exactly what it got before, so its kernel is unchanged. A
+# forward-port gets a readable, uncut line, and its base stays in the .deb
+# version and the manifest. This changes only the kernel build: the .deb version
+# (KDEB_PKGVERSION) still comes from debian/changelog, and linux-headers leaves
+# scripts/package out.
+#
+# Hard failures if kbuild stops doing this through one `revision = ` line: we
+# would rather fix the build than ship a uname -v nobody checked. The value is
+# asserted again after the build.
+uts_build_version="hardened${HARDENED_REVISION}${PACKAGING_REVISION:+.$PACKAGING_REVISION}"
+deb_rules=scripts/package/debian/rules
+if [[ $(grep -c '^revision = ' "$deb_rules") != 1 ]] ||
+    ! grep -qF 'KBUILD_BUILD_VERSION=,$(revision)' "$deb_rules"; then
+    echo "$deb_rules no longer sets KBUILD_BUILD_VERSION from one 'revision = ' line." >&2
+    echo "Update build-debs.sh's uname -v pin for this kernel's bindeb-pkg." >&2
+    exit 1
+fi
+sed -i "s/^revision = .*/revision = $uts_build_version/" "$deb_rules"
+grep -qx "revision = $uts_build_version" "$deb_rules" || {
+    echo "failed to pin revision in $deb_rules" >&2
+    exit 1
+}
+echo "uname -v build version: #$uts_build_version"
 
 # Pre-flight: sanity-check the merged .config that configure-kernel.sh
 # produced against the descriptor's `required_y`. For a flavor whose image
@@ -336,7 +377,7 @@ PATH="$date_shim_dir:$PATH" make \
     KDEB_PKGVERSION="$new_version" \
     LOCALVERSION="$local_version" \
     EXTRAVERSION="" \
-    KBUILD_BUILD_VERSION="${PACKAGING_REVISION:-1}" \
+    KBUILD_BUILD_VERSION="$uts_build_version" \
     bindeb-pkg
 rm -rf "$date_shim_dir"
 
@@ -352,6 +393,16 @@ if [[ $changelog_ts != "$SOURCE_DATE_EPOCH" ]]; then
     exit 1
 fi
 echo "  debian/changelog dated SOURCE_DATE_EPOCH ($SOURCE_DATE_EPOCH)"
+
+# uname -v is the pinned build version and the whole build time: not cut at 64
+# bytes, and not a value bindeb-pkg chose (see "uname -v" above).
+uts_version=$(sed -n 's/^#define UTS_VERSION "\(.*\)"$/\1/p' include/generated/utsversion.h 2>/dev/null || true)
+if [[ $uts_version != "#$uts_build_version "*" $KBUILD_BUILD_TIMESTAMP" ]]; then
+    echo "UTS_VERSION (uname -v) is '${uts_version:-<missing>}'," >&2
+    echo "expected '#$uts_build_version ... $KBUILD_BUILD_TIMESTAMP'." >&2
+    exit 1
+fi
+echo "  uname -v: $uts_version"
 
 # bindeb-pkg writes its .debs to $WORKDIR (one level above $patched_dir).
 # Confirm at least one image .deb landed; if not, the build silently
