@@ -18,6 +18,12 @@
 #               reboot '0 tryboot'.
 #   revert      removes the block; the default is the stock kernel again.
 #
+# Opt-in auto-upgrade (`auto-upgrade on`): when apt installs a hardened kernel
+# newer than the hardened default, it is armed as a trial (`try`), the next
+# plain reboot becomes its tryboot, and on that boot `verify` decides: the new
+# kernel is promoted, or the Pi reboots back to the old default and the new
+# kernel is recorded as failed. See "Automatic upgrades" in the user guide.
+#
 # The stock boot files are never written. Every command that changes
 # /boot/firmware fingerprints the stock files (everything outside the staged
 # directories and our tryboot.txt, with config.txt read minus our block)
@@ -58,6 +64,15 @@ EXTRA_OVERLAYS=$ROOT/etc/$ME/overlays
 LOCKFILE=$ROOT/run/$ME.lock
 DEADMAN_TIMER=$ME-deadman.timer
 DEADMAN_DROPIN=$UNITDIR/$DEADMAN_TIMER.d/50-trial.conf
+# Auto-upgrade: on while this file exists. Not shipped by the package (so not a
+# conffile: turning it on never makes dpkg ask about /etc/default/$ME), and
+# sourced for its optional settings.
+AUTO_CONF=$ROOT/etc/$ME/auto-upgrade
+AUTO=$STATE/auto
+# The reboot argument systemd passes to the kernel at the very end of a reboot:
+# what `reboot '0 tryboot'` writes, and what the auto-upgrade writes during a
+# plain reboot to make it the armed trial's tryboot.
+REBOOT_PARAM=$ROOT/run/systemd/reboot-param
 
 # The Pi 5's firmware loads these names (os_prefix is prepended to each).
 KERNEL_NAME=kernel_2712.img
@@ -78,6 +93,12 @@ VERIFY_IGNORE_FAILED_UNITS=""
 # shellcheck source=/dev/null
 [[ -r $ROOT/etc/default/$ME ]] && . "$ROOT/etc/default/$ME"
 [[ $DEADMAN_MINUTES =~ ^[1-9][0-9]*$ ]] || DEADMAN_MINUTES=15
+# Auto-upgrade setting (in $AUTO_CONF): seconds to wait on the trial boot,
+# after systemd reports the boot finished, before running verify.
+AUTO_SETTLE_SECONDS=60
+# Set while auto-upgrade itself calls `try`, which otherwise cancels an armed
+# auto-upgrade trial (an administrator trying a kernel by hand takes over).
+AUTO_ARMING=""
 
 TMPD=""
 cleanup() { [[ -n $TMPD ]] && rm -rf "$TMPD"; return 0; }
@@ -109,6 +130,10 @@ usage: $ME COMMAND [ARGS]
   unstage KR              remove a staged kernel; the hooks do this on removal
   fingerprint             print the stock boot files' sha256 (the set every
                           command proves it left unchanged)
+  auto-upgrade on|off|status
+                          opt-in: a newer hardened kernel that apt installs is
+                          tried on the next plain reboot, and promoted if
+                          verify passes on it; otherwise the Pi reboots back
 
 KR is a kernelrelease such as 6.18.60$KR_SUFFIX. Settings are in
 /etc/default/$ME. Guide: /usr/share/doc/$ME/README.md
@@ -445,6 +470,7 @@ do_unstage() {
         changed=1
     fi
     [[ $(trial_get kr) != "$kr" ]] || disarm
+    [[ $(auto_pending) != "$kr" ]] || auto_clear
     rm -rf "${FW:?}/$kr" "$FW/.$kr.new" "$FW/.$kr.old"
     rm -f "$STATE/verified/$kr"
     # tryboot.txt follows the new default: the stock fallback for another
@@ -677,6 +703,13 @@ cmd_try() {
         [[ $target == stock ]] || echo "would arm the dead-man: reboot after ${DEADMAN_MINUTES} min of $target unless confirmed"
         return 0
     fi
+    # A trial by hand takes over from an armed auto-upgrade trial, and is the
+    # administrator's own retry of a kernel auto-upgrade gave up on.
+    if [[ -z $AUTO_ARMING ]]; then
+        [[ -z $(auto_pending) ]] || echo "  cancelled the auto-upgrade trial of $(auto_pending)"
+        auto_clear
+        rm -f "$AUTO/failed/$target"
+    fi
     # The dead-man is armed BEFORE tryboot.txt names the kernel: there is
     # never a moment when a tryboot would boot it unguarded.
     record_trial "$target"
@@ -687,6 +720,10 @@ cmd_try() {
     fi
     guarded write_tryboot "$target" "a one-shot trial, $(date -u +%FT%TZ)"
     log "trial of $target staged"
+    if [[ -n $AUTO_ARMING ]]; then
+        echo "  auto-upgrade: the next reboot boots $target once, as a trial; it becomes the default boot if '$ME verify' passes on it"
+        return 0
+    fi
     echo
     echo "The default boot is unchanged ($([[ -n $cur ]] && echo "$cur" || echo stock)). Every reboot after the trial boot returns to it."
     if (( reboot )); then
@@ -754,6 +791,8 @@ cmd_promote() {
     guarded refresh_cmdline "$kr"
     guarded promote_files "$kr" "$new"
     disarm
+    # tryboot.txt now boots stock: whatever auto-upgrade had armed is gone.
+    auto_clear
     log "promoted $kr"
     echo
     echo "$kr is the default boot from the next reboot on."
@@ -787,6 +826,7 @@ cmd_revert() {
     fi
     guarded revert_files "$cur" "$new"
     disarm
+    auto_clear
     log "reverted to the stock kernel"
     echo
     echo "The stock kernel is the default boot from the next reboot on."
@@ -843,6 +883,7 @@ cmd_status() {
     if systemctl is-active --quiet "$DEADMAN_TIMER" 2>/dev/null; then
         printf 'dead-man:    ACTIVE: %s\n' "$(systemctl list-timers --no-legend "$DEADMAN_TIMER" 2>/dev/null | awk '{print $1, $2, $3, $4, "(" $5, $6 ")"}')"
     fi
+    auto_status_lines
     base=$STATE/stock.sha256
     tmpdir; now=$(mktemp -p "$TMPD")
     fingerprint > "$now"; n=$(wc -l < "$now")
@@ -1029,6 +1070,309 @@ cmd_verify() {
     (( V_FAILS == 0 ))
 }
 
+# --- Auto-upgrade (opt-in) ------------------------------------------------------
+#
+# The flow, for a Pi whose default boot is already a hardened kernel:
+#
+#   1. apt installs a newer hardened kernel; its hook stages it, then
+#      `auto-arm` runs `try` on it (the dead-man is armed as for any trial) and
+#      records it in $AUTO/pending.
+#   2. A plain reboot: unredacted-rpi5-boot-auto-tryboot.service, wanted by
+#      reboot.target, runs `auto-tryboot` during the shutdown. It writes
+#      "0 tryboot" to /run/systemd/reboot-param (as `reboot '0 tryboot'` does)
+#      and records the attempt in $AUTO/attempted.
+#   3. The trial boot: unredacted-rpi5-boot-auto.timer starts `auto-run` two
+#      minutes after boot. It waits for the boot to finish, then runs `verify`.
+#      fails=0: confirm and promote. Otherwise the kernel is recorded in
+#      $AUTO/failed/ and the Pi reboots to the old default.
+#   4. A trial that never reached step 3 (panic=10, the dead-man, a hang, a
+#      power cycle) leaves $AUTO/attempted behind: `auto-run` on the next normal
+#      boot records the kernel as failed. A failed kernel is not armed again
+#      until `auto-upgrade on` is run again or a newer kernel arrives.
+#
+# The stock kernel stays a `reboot '0 tryboot'` away throughout, except while a
+# trial is armed (tryboot.txt then names the trial kernel, as after any `try`).
+
+auto_enabled() { [[ -f $AUTO_CONF ]]; }
+
+auto_load() {
+    # shellcheck source=/dev/null
+    [[ -r $AUTO_CONF ]] && . "$AUTO_CONF"
+    [[ $AUTO_SETTLE_SECONDS =~ ^[0-9]+$ ]] || AUTO_SETTLE_SECONDS=60
+}
+
+kv_get() { [[ -f $1 ]] || return 0; sed -n "s/^$2=//p" "$1" | head -n1; }
+auto_pending() { kv_get "$AUTO/pending" kr; }
+auto_attempted() { kv_get "$AUTO/attempted" kr; }
+auto_clear() { rm -f "$AUTO/pending" "$AUTO/attempted"; }
+
+auto_result() {  # $1 = promoted|failed, $2 = KR, $3 = detail
+    mkdir -p "$AUTO"
+    printf 'result=%s\nkr=%s\nat=%s\ndetail=%s\n' "$1" "$2" "$(date -u +%FT%TZ)" "$3" > "$AUTO/last"
+}
+
+auto_fail() {  # $1 = KR, $2 = why
+    mkdir -p "$AUTO/failed"
+    printf 'at=%s\nreason=%s\n' "$(date -u +%FT%TZ)" "$2" > "$AUTO/failed/$1"
+    auto_result failed "$1" "$2"
+    auto_clear
+    echo "$ME: auto-upgrade: $1 FAILED its trial: $2" >&2
+    echo "$ME: the default boot stays $(default_kr 2>/dev/null || echo unchanged); $1 is not tried again until a newer kernel arrives or '$ME auto-upgrade on' is run again" >&2
+    logger -p user.warning -t "$ME" -- "auto-upgrade: $1 failed its trial: $2" 2>/dev/null || true
+}
+
+# $1 is a newer kernelrelease than $2.
+newer() { [[ $1 != "$2" && $(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1) == "$1" ]]; }
+
+# The kernel auto-upgrade would arm: the newest complete staged kernel newer
+# than the hardened default that has not failed a trial. Nothing when the
+# stock kernel is the default: the first hardened kernel is promoted by hand.
+auto_candidate() {
+    local cur kr best=""
+    cur=$(default_kr)
+    [[ -n $cur ]] || return 0
+    for kr in $(staged_krs); do
+        newer "$kr" "$cur" || continue
+        [[ ! -f $AUTO/failed/$kr ]] || continue
+        check_staged "$kr" >/dev/null || continue
+        best=$kr
+    done
+    echo "$best"
+}
+
+# Run "$@" in a subshell with errexit in force (a die() there ends only the
+# subshell), and never fail: the status is left in SUB_RC. The lock is let go
+# first, or the subshell's own `lock` would wait on its parent.
+SUB_RC=0
+sub() {
+    exec 9>&-
+    set +e
+    ( set -e; "$@" )
+    SUB_RC=$?
+    set -e
+}
+
+# Wait for systemd to finish starting this boot, for at most $1 seconds.
+# Succeeds once it has (running, or degraded: a failed unit is verify's call).
+wait_booted() {
+    local state
+    state=$(timeout "$1" systemctl is-system-running --wait 2>/dev/null || true)
+    BOOT_STATE=${state:-unknown}
+    [[ $state == running || $state == degraded ]]
+}
+
+cmd_auto_arm() {
+    local kr cur p tgt
+    auto_enabled || return 0
+    require_root; require_fw
+    if [[ $(tryboot_flag) == 1 ]]; then
+        echo "  auto-upgrade: this is a trial boot; a newer kernel is armed on the next normal boot"
+        return 0
+    fi
+    cur=$(default_kr)
+    if [[ -z $cur ]]; then
+        echo "  auto-upgrade: the stock kernel is the default boot; it upgrades only from a hardened default (promote one by hand first)"
+        return 0
+    fi
+    kr=$(auto_candidate)
+    [[ -n $kr ]] || return 0
+    p=$(auto_pending); tgt=$(tryboot_target)
+    if [[ $p == "$kr" && $tgt == "$kr" && $(trial_get armed) == 1 ]]; then
+        echo "  auto-upgrade: the trial of $kr is already armed"
+        return 0
+    fi
+    if [[ -n $tgt && $tgt != stock && $tgt != "$p" ]]; then
+        echo "  auto-upgrade: a trial of $tgt is armed by hand; not arming $kr"
+        return 0
+    fi
+    AUTO_ARMING=1
+    cmd_try "$kr"
+    AUTO_ARMING=""
+    mkdir -p "$AUTO"
+    printf 'kr=%s\narmed=%s\nfrom=%s\n' "$kr" "$(date -u +%FT%TZ)" "$cur" > "$AUTO/pending"
+    rm -f "$AUTO/attempted"
+    log "auto-upgrade: armed a trial of $kr (default $cur)"
+}
+
+# From the kernel hook and the package's configure: arming must never fail
+# the dpkg run that installed the kernel.
+auto_arm_quietly() {
+    auto_enabled || return 0
+    sub cmd_auto_arm
+    (( SUB_RC == 0 )) || warn "auto-upgrade could not arm a trial (above); the default boot is unchanged"
+    return 0
+}
+
+# reboot.target: make this plain reboot the armed trial's tryboot.
+cmd_auto_tryboot() {
+    local p cur
+    p=$(auto_pending)
+    [[ -n $p && $(auto_attempted) != "$p" ]] || return 0
+    [[ $(tryboot_flag) == 0 && $(running_kr) != "$p" ]] || return 0
+    # /boot/firmware may already be unmounted this late in the shutdown; when
+    # it is not, check that tryboot.txt still names the trial.
+    if [[ -f $FW/config.txt && $(tryboot_target) != "$p" ]]; then
+        log "auto-upgrade: tryboot.txt no longer names $p; not making this reboot a trial"
+        return 0
+    fi
+    cur=$(cat "$REBOOT_PARAM" 2>/dev/null || true)
+    case $cur in
+        "") mkdir -p "${REBOOT_PARAM%/*}"; printf '0 tryboot' > "$REBOOT_PARAM" ;;
+        "0 tryboot") ;;
+        *) log "auto-upgrade: this reboot carries the argument '$cur'; not making it a trial of $p"; return 0 ;;
+    esac
+    printf 'kr=%s\nat=%s\n' "$p" "$(date -u +%FT%TZ)" > "$AUTO/attempted"
+    sync -f "$AUTO/attempted" 2>/dev/null || sync
+    echo "auto-upgrade: this reboot is the trial boot of $p (reboot '0 tryboot')"
+    log "auto-upgrade: rebooting into the trial of $p"
+}
+
+# The timer, two minutes after every boot.
+cmd_auto_run() {
+    local p kr tb
+    auto_load
+    tmpdir
+    p=$(auto_pending); kr=$(running_kr); tb=$(tryboot_flag)
+    if [[ -n $p && $kr == "$p" && $tb == 1 ]]; then
+        auto_trial "$p"
+        return 0
+    fi
+    if [[ -n $p && $(auto_attempted) == "$p" ]]; then
+        local why="its trial boot did not reach verify (a panic, a hang or a power cycle)"
+        [[ $(trial_get kr) != "$p" || $(trial_get armed) != fired ]] ||
+            why="the dead-man rebooted its trial boot (verify did not finish within ${DEADMAN_MINUTES} min)"
+        auto_fail "$p" "$why; this boot runs $kr"
+    fi
+    [[ $tb != 1 ]] || return 0   # a trial by hand: not ours to touch
+    if ! auto_enabled; then
+        auto_clear
+        return 0
+    fi
+    [[ -n $(auto_candidate) ]] || return 0
+    # try records the links, addresses and failed units verify compares the
+    # trial against: take them from a settled system.
+    if ! wait_booted 600; then
+        warn "auto-upgrade: this boot has not finished starting (state: $BOOT_STATE); not arming a trial"
+        return 0
+    fi
+    auto_arm_quietly
+}
+
+auto_trial() {  # $1 = the trial kernel, running on its tryboot
+    local p=$1 budget rc vlog=$AUTO/verify.log fails
+    budget=$(( DEADMAN_MINUTES * 60 - 300 ))
+    (( budget >= 60 )) || budget=60
+    echo "auto-upgrade: trial boot of $p; waiting up to ${budget}s for the boot to finish"
+    if ! wait_booted "$budget"; then
+        auto_fail_reboot "$p" "the trial boot had not finished starting after ${budget}s (state: $BOOT_STATE)"
+        return 0
+    fi
+    sleep "$AUTO_SETTLE_SECONDS"
+    sub cmd_verify > "$vlog" 2>&1
+    rc=$SUB_RC
+    cat "$vlog"
+    if (( rc != 0 )); then
+        fails=$(sed -n 's/^  FAIL  //p' "$vlog" | head -n3 | paste -sd ';' -)
+        auto_fail_reboot "$p" "verify failed: ${fails:-exit $rc}"
+        return 0
+    fi
+    sub cmd_confirm
+    (( SUB_RC == 0 )) && sub cmd_promote
+    if (( SUB_RC != 0 )); then
+        auto_fail_reboot "$p" "verify passed, but promote failed (exit $SUB_RC)"
+        return 0
+    fi
+    auto_result promoted "$p" "verify passed (fails=0)"
+    auto_clear
+    echo "auto-upgrade: $p is the default boot now"
+    log "auto-upgrade: promoted $p"
+}
+
+auto_fail_reboot() {  # $1 = KR, $2 = why
+    auto_fail "$1" "$2"
+    disarm
+    echo "auto-upgrade: rebooting to the default boot"
+    log "auto-upgrade: rebooting to the default boot after the failed trial of $1"
+    systemctl reboot
+}
+
+auto_status_lines() {
+    local p f
+    if auto_enabled; then
+        printf 'auto-upgrade: on (%s)\n' "${AUTO_CONF#"$ROOT"}"
+    else
+        printf 'auto-upgrade: off\n'
+    fi
+    p=$(auto_pending)
+    if [[ -n $p ]]; then
+        printf '  armed:     %s, since %s%s\n' "$p" "$(kv_get "$AUTO/pending" armed)" \
+            "$([[ $(auto_attempted) == "$p" ]] && echo ", trial boot started $(kv_get "$AUTO/attempted" at)")"
+    fi
+    if [[ -f $AUTO/last ]]; then
+        printf '  last:      %s %s at %s: %s\n' "$(kv_get "$AUTO/last" result)" "$(kv_get "$AUTO/last" kr)" \
+            "$(kv_get "$AUTO/last" at)" "$(kv_get "$AUTO/last" detail)"
+    fi
+    for f in "$AUTO"/failed/*; do
+        [[ -f $f ]] || continue
+        printf '  failed:    %s at %s (not tried again)\n' "${f##*/}" "$(kv_get "$f" at)"
+    done
+}
+
+cmd_auto_upgrade() {
+    local p f
+    case ${1:-status} in
+        on)
+            require_root; require_fw
+            mkdir -p "${AUTO_CONF%/*}"
+            if [[ ! -f $AUTO_CONF ]]; then
+                cat > "$AUTO_CONF" <<EOF
+# Written by '$ME auto-upgrade on'. While this file exists, a hardened
+# kernel newer than the (hardened) default boot that apt installs is armed as a
+# trial: the next reboot boots it once, and it becomes the default if
+# '$ME verify' passes on it. Otherwise the Pi reboots back to the
+# old default and the new kernel is not tried again. Turn it off with
+# '$ME auto-upgrade off'.
+#
+# Seconds to wait on the trial boot, after systemd reports the boot finished,
+# before running verify (links, addresses and services settling).
+#AUTO_SETTLE_SECONDS=60
+EOF
+            fi
+            f=$(find "$AUTO/failed" -type f -printf '%f ' 2>/dev/null | sed 's/ $//' || true)
+            if [[ -n $f ]]; then
+                echo "  forgetting failed trials: $f"
+                rm -rf "$AUTO/failed"
+            fi
+            log "auto-upgrade turned on"
+            echo "auto-upgrade is on. A newer hardened kernel from apt is tried on the next reboot,"
+            echo "and becomes the default boot if '$ME verify' passes on it."
+            [[ -n $(default_kr) ]] || echo "The stock kernel is the default boot now: promote a hardened kernel by hand first."
+            auto_arm_quietly
+            ;;
+        off)
+            require_root
+            rm -f "$AUTO_CONF"
+            p=$(auto_pending)
+            if [[ -n $p ]]; then
+                require_fw
+                if [[ $(tryboot_flag) != 1 && $(tryboot_target) == "$p" ]]; then
+                    lock
+                    disarm
+                    guarded reset_tryboot
+                fi
+                auto_clear
+                echo "  cancelled the armed trial of $p"
+            fi
+            log "auto-upgrade turned off"
+            echo "auto-upgrade is off. New hardened kernels are staged; '$ME try' and 'promote' them by hand."
+            ;;
+        status)
+            auto_status_lines
+            ;;
+        *) die "usage: $ME auto-upgrade on|off|status" ;;
+    esac
+}
+
 # --- Called by systemd units and maintainer scripts ----------------------------
 
 # The dead-man timer's service: fire only on the trial boot it was armed for.
@@ -1050,6 +1394,14 @@ cmd_boot_cleanup() {
     [[ $(tryboot_flag) != 1 ]] || { echo "trial boot of $(running_kr); nothing to clean up"; return 0; }
     lock
     check_block_intact "$FW/config.txt"
+    # An armed auto-upgrade trial whose reboot was not its tryboot (a power cut,
+    # a forced reboot): the reset below makes it stale. The auto-upgrade unit
+    # arms it again once this boot has settled. One whose tryboot did happen is
+    # left for that unit to record as failed.
+    if [[ -n $(auto_pending) && $(auto_attempted) != "$(auto_pending)" ]]; then
+        echo "a normal boot before the auto-upgrade trial of $(auto_pending): it is armed again later in this boot"
+        rm -f "$AUTO/pending"
+    fi
     if [[ -f $DEADMAN_DROPIN || $(trial_get armed) == 1 ]]; then
         echo "a normal boot: the trial of $(trial_get kr) is over"
         disarm
@@ -1073,6 +1425,7 @@ cmd_pkg_remove() {
     check_block_intact "$FW/config.txt"
     guarded revert_files "$(default_kr)" "$(strip_block "$FW/config.txt"; echo x)"
     disarm
+    auto_clear
     for kr in $(staged_krs); do guarded do_unstage "$kr"; done
     base=$STATE/stock-at-install.sha256
     if [[ -f $base ]]; then
@@ -1115,6 +1468,9 @@ cmd_pkg_configure() {
     for kr in "${ready[@]}"; do
         cmd_stage "$kr"
     done
+    # A kernel configured before this package (same dpkg run) was staged by
+    # the previous version's hook, which may not arm auto-upgrade trials.
+    auto_arm_quietly
 }
 
 main() {
@@ -1130,7 +1486,11 @@ main() {
         revert)         cmd_revert "$@" ;;
         verify)         cmd_verify "$@" ;;
         fingerprint)    require_fw; fingerprint ;;
+        auto-upgrade)   cmd_auto_upgrade "$@" ;;
         # Internal: kernel hooks, systemd units, maintainer scripts.
+        auto-arm)       auto_arm_quietly ;;
+        auto-tryboot)   cmd_auto_tryboot ;;
+        auto-run)       cmd_auto_run ;;
         snapshot)       cmd_snapshot "$@" ;;
         refresh-initrd) cmd_refresh_initrd "$@" ;;
         deadman-check)  cmd_deadman_check ;;

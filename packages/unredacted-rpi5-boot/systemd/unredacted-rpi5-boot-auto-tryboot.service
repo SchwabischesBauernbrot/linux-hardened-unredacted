@@ -1,0 +1,19 @@
+# Opt-in auto-upgrade: make a plain reboot the tryboot of the kernel that
+# auto-upgrade armed, so the reboot that follows an apt upgrade is its one-shot
+# trial. Wanted by reboot.target; does nothing unless a trial is armed.
+#
+# It writes "0 tryboot" to /run/systemd/reboot-param, the argument systemd
+# passes to the kernel at the very end of the reboot: what reboot '0 tryboot'
+# writes itself. A reboot that already carries another argument is left alone,
+# and so is poweroff, halt or a forced reboot (systemctl reboot --force skips
+# units).
+[Unit]
+Description=Hardened kernel auto-upgrade: make this reboot the trial of the new kernel
+Documentation=file:/usr/share/doc/unredacted-rpi5-boot/README.md
+DefaultDependencies=no
+Before=systemd-reboot.service umount.target
+ConditionPathExists=/var/lib/unredacted-rpi5-boot/auto/pending
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/unredacted-rpi5-boot auto-tryboot

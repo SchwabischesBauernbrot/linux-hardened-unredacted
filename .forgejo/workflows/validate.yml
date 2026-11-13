@@ -20,7 +20,7 @@ jobs:
     # writes to a machine's boot partition. Its tests drive the real tool and
     # kernel hooks against a fake Raspberry Pi OS root (tests/run.sh): install
     # hooks, try, a trial boot, verify, confirm, promote, an upgrade, revert,
-    # removal, and the refusals, checking that no stock boot file ever changes.
+    # the opt-in auto-upgrade, removal, and the refusals, checking that no stock boot file ever changes.
     # Then the .deb is built twice, as build-debs.sh builds it, and must come
     # out identical: a rebuild (tools/repro-check.sh) has to match its
     # key-independent digest exactly.
@@ -60,7 +60,10 @@ jobs:
                    ./etc/kernel/postrm.d/z70-unredacted-rpi5-boot \
                    ./etc/initramfs/post-update.d/z70-unredacted-rpi5-boot \
                    ./usr/lib/systemd/system/unredacted-rpi5-boot-deadman.timer \
-                   ./usr/lib/systemd/system/multi-user.target.wants/unredacted-rpi5-boot-cleanup.service; do
+                   ./usr/lib/systemd/system/multi-user.target.wants/unredacted-rpi5-boot-cleanup.service \
+                   ./usr/lib/systemd/system/timers.target.wants/unredacted-rpi5-boot-auto.timer \
+                   ./usr/lib/systemd/system/unredacted-rpi5-boot-auto.service \
+                   ./usr/lib/systemd/system/reboot.target.wants/unredacted-rpi5-boot-auto-tryboot.service; do
             grep -qx -- "$f" /tmp/boot.paths || { echo "::error::$f missing from $deb" >&2; exit 1; }
           done
           dpkg-deb --ctrl-tarfile "/tmp/boot1/$deb" | tar -xO ./conffiles | tee /tmp/boot.conffiles

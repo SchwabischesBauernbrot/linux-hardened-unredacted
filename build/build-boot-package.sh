@@ -70,6 +70,9 @@ inst 0644 default                                  "etc/default/$pkg"
 inst 0644 "systemd/$pkg-deadman.timer"             "usr/lib/systemd/system/$pkg-deadman.timer"
 inst 0644 "systemd/$pkg-deadman.service"           "usr/lib/systemd/system/$pkg-deadman.service"
 inst 0644 "systemd/$pkg-cleanup.service"           "usr/lib/systemd/system/$pkg-cleanup.service"
+inst 0644 "systemd/$pkg-auto.timer"                "usr/lib/systemd/system/$pkg-auto.timer"
+inst 0644 "systemd/$pkg-auto.service"              "usr/lib/systemd/system/$pkg-auto.service"
+inst 0644 "systemd/$pkg-auto-tryboot.service"      "usr/lib/systemd/system/$pkg-auto-tryboot.service"
 inst 0644 doc/README.md                            "usr/share/doc/$pkg/README.md"
 inst 0644 doc/copyright                            "usr/share/doc/$pkg/copyright"
 inst 0755 doc/examples/verify.d/50-example         "usr/share/doc/$pkg/examples/verify.d/50-example"
@@ -77,6 +80,12 @@ inst 0755 doc/examples/verify.d/50-example         "usr/share/doc/$pkg/examples/
 # enable it, and no maintainer script has to know about it.
 mkdir -p "$root/usr/lib/systemd/system/multi-user.target.wants"
 ln -s "../$pkg-cleanup.service" "$root/usr/lib/systemd/system/multi-user.target.wants/$pkg-cleanup.service"
+# The auto-upgrade units, the same way: both do nothing until
+# 'unredacted-rpi5-boot auto-upgrade on' (their conditions say so), so they
+# can be wanted unconditionally.
+mkdir -p "$root/usr/lib/systemd/system/timers.target.wants" "$root/usr/lib/systemd/system/reboot.target.wants"
+ln -s "../$pkg-auto.timer" "$root/usr/lib/systemd/system/timers.target.wants/$pkg-auto.timer"
+ln -s "../$pkg-auto-tryboot.service" "$root/usr/lib/systemd/system/reboot.target.wants/$pkg-auto-tryboot.service"
 
 mkdir -p "$root/DEBIAN"
 for s in preinst postinst prerm postrm; do

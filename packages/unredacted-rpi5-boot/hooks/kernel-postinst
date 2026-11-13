@@ -7,6 +7,10 @@
 # stock boot files are fingerprinted before and after, and the hook fails if
 # anything changed. Staging alone changes no boot: see 'unredacted-rpi5-boot
 # try'. Other kernels: nothing.
+#
+# With auto-upgrade on (unredacted-rpi5-boot auto-upgrade on) and a hardened
+# kernel as the default boot, a staged kernel newer than it is then armed as a
+# trial for the next reboot. Arming never fails the install.
 set -e
 version="$1"
 case "$version" in *-hardened-unredacted-pi5) ;; *) exit 0 ;; esac
@@ -16,4 +20,5 @@ if [ -n "${DEB_MAINT_PARAMS:-}" ]; then
     eval set -- "$DEB_MAINT_PARAMS"
     case "$1" in configure) ;; *) exit 0 ;; esac
 fi
-exec "$tool" stage "$version" </dev/null >&2
+"$tool" stage "$version" </dev/null >&2
+exec "$tool" auto-arm </dev/null >&2
