@@ -430,6 +430,131 @@ runs "stage --all re-stages it" tool stage --all
 assert "complete again" sh -c "cd '$P' && sha256sum --quiet -c unredacted-rpi5-boot.sha256"
 assert "stock files untouched" stock_ok
 
+# --- Auto-upgrade (opt-in) -----------------------------------------------------------
+# apt installs a newer kernel; the hook arms it; a plain reboot becomes its
+# tryboot; on the trial boot verify decides. A kernel that fails is not armed
+# again. The firmware and systemd's reboot argument are what the stubs stand in
+# for: /run/systemd/reboot-param is the file `reboot '0 tryboot'` writes.
+A=$R/var/lib/unredacted-rpi5-boot/auto
+AC=$R/etc/unredacted-rpi5-boot/auto-upgrade
+PARAM=$R/run/systemd/reboot-param
+KA=6.18.62-hardened-unredacted-pi5
+KB=6.18.63-hardened-unredacted-pi5
+KC=6.18.64-hardened-unredacted-pi5
+DROPIN=$R/etc/systemd/system/unredacted-rpi5-boot-deadman.timer.d/50-trial.conf
+pending() { grep -qx "kr=$1" "$A/pending"; }
+tb_names() { grep -qx "os_prefix=$1/" "$FW/tryboot.txt"; }
+tb_stock() { grep -q 'tryboot.txt for stock' "$FW/tryboot.txt" && ! grep -q '^os_prefix' "$FW/tryboot.txt"; }
+boot "$KR" 0
+runs "auto-upgrade is off by default" tool auto-upgrade status
+assert "status says off" grep -qx "auto-upgrade: off" "$T/out"
+install_kernel "$KA"; hook preinst "$KA" install > /dev/null
+runs "with auto-upgrade off, the hook only stages a newer kernel" hook postinst "$KA" "configure "
+assert "no trial armed" sh -c "test ! -e '$FW/tryboot.txt' && test ! -e '$A/pending'"
+runs "auto-upgrade on (the stock kernel is the default)" tool auto-upgrade on
+assert "it says a hardened kernel must be promoted by hand first" grep -q "promote a hardened kernel by hand first" "$T/out"
+assert "its file is written, outside dpkg's conffiles" test -f "$AC"
+assert "nothing armed from a stock default" test ! -e "$A/pending"
+echo "AUTO_SETTLE_SECONDS=0" >> "$AC"
+runs "promote --force $KR (a hardened default)" tool promote "$KR" --force
+runs "auto-run on a normal boot arms the newer staged kernel" tool auto-run
+assert "$KA armed" pending "$KA"
+assert "tryboot.txt names $KA" tb_names "$KA"
+assert "the dead-man is armed for $KA" grep -qx "ConditionKernelVersion=$KA" "$DROPIN"
+assert "config.txt still boots $KR" grep -qx "os_prefix=$KR/" "$FW/config.txt"
+runs "status shows the armed trial" tool status
+assert "it names $KA" grep -q "armed: *$KA, since" "$T/out"
+runs "auto-run again" tool auto-run
+assert "leaves the armed trial alone" grep -q "already armed" "$T/out"
+runs "auto-tryboot during the plain reboot" tool auto-tryboot
+assert "it sets the reboot argument to '0 tryboot'" test "$(cat "$PARAM")" = "0 tryboot"
+assert "and records the attempt" grep -qx "kr=$KA" "$A/attempted"
+rm -f "$PARAM"
+runs "auto-tryboot does not repeat an attempt" tool auto-tryboot
+assert "no reboot argument" test ! -e "$PARAM"
+# The trial boot: verify passes, $KA becomes the default.
+boot "$KA" 1
+runs "auto-run on $KA's trial boot" tool auto-run
+assert "it ran verify" grep -q "^fails=0" "$T/out"
+assert "config.txt boots $KA" grep -qx "os_prefix=$KA/" "$FW/config.txt"
+assert "config.txt minus our block is byte-identical" \
+    sh -c "sed '/^# BEGIN unredacted-rpi5-boot/,/^# END unredacted-rpi5-boot/d' '$FW/config.txt' | cmp -s - '$T/config.orig'"
+assert "tryboot.txt is the stock fallback" tb_stock
+assert "the dead-man is disarmed" test ! -e "$DROPIN"
+assert "nothing armed any more" sh -c "test ! -e '$A/pending' && test ! -e '$A/attempted'"
+assert "the result is recorded" grep -qx "result=promoted" "$A/last"
+assert "stock files untouched" stock_ok
+boot "$KA" 0
+runs "boot-cleanup on $KA's first normal boot" tool boot-cleanup
+# A newer kernel that fails verify on its trial boot.
+install_kernel "$KB"; hook preinst "$KB" install > /dev/null
+runs "the hook arms $KB as it stages it" hook postinst "$KB" "configure "
+assert "it says so" grep -q "auto-upgrade: the next reboot boots $KB once" "$T/out"
+assert "$KB armed" pending "$KB"
+tool auto-tryboot > /dev/null; rm -f "$PARAM"
+boot "$KB" 1
+echo 18 > "$R/proc/sys/vm/mmap_rnd_bits"
+: > "$T/reboots"
+runs "auto-run on a trial boot that fails verify" tool auto-run
+assert "it says why" grep -q "FAILED its trial: verify failed: vm.mmap_rnd_bits=18" "$T/out"
+assert "it reboots, with no tryboot flag" sh -c "grep -qx 'reboot reboot' '$T/reboots'"
+assert "config.txt still boots $KA" grep -qx "os_prefix=$KA/" "$FW/config.txt"
+assert "$KB recorded as failed" test -f "$A/failed/$KB"
+assert "nothing armed" test ! -e "$A/pending"
+echo 30 > "$R/proc/sys/vm/mmap_rnd_bits"
+boot "$KA" 0
+runs "boot-cleanup after the failed trial" tool boot-cleanup
+assert "tryboot.txt is the stock fallback again" tb_stock
+runs "auto-run does not arm a failed kernel again" tool auto-run
+assert "nothing armed" test ! -e "$A/pending"
+runs "status lists the failed kernel" tool status
+assert "it names $KB" grep -q "failed: *$KB" "$T/out"
+# A trial that never reaches verify (panic=10, a hang, the dead-man): the next
+# normal boot records it as failed.
+install_kernel "$KC"; hook preinst "$KC" install > /dev/null
+runs "the hook arms $KC (the newest kernel that has not failed)" hook postinst "$KC" "configure "
+assert "$KC armed" pending "$KC"
+tool auto-tryboot > /dev/null; rm -f "$PARAM"
+boot "$KA" 0
+runs "boot-cleanup after a trial that did not come up" tool boot-cleanup
+assert "it leaves the attempted trial to auto-run" pending "$KC"
+runs "auto-run records it as failed" tool auto-run
+assert "it says why" grep -q "FAILED its trial: its trial boot did not reach verify" "$T/out"
+assert "$KC recorded as failed" test -f "$A/failed/$KC"
+assert "config.txt still boots $KA" grep -qx "os_prefix=$KA/" "$FW/config.txt"
+# A power cut before the reboot: the trial is armed again on the next boot.
+runs "auto-upgrade on again forgets the failed trials" tool auto-upgrade on
+assert "and arms the newest kernel again" pending "$KC"
+boot "$KA" 0
+runs "boot-cleanup on a normal boot before the trial" tool boot-cleanup
+assert "it says the trial is armed again later" grep -q "armed again later" "$T/out"
+assert "tryboot.txt is the stock fallback meanwhile" tb_stock
+runs "auto-run arms it again" tool auto-run
+assert "$KC armed again" sh -c "grep -qx 'kr=$KC' '$A/pending' && grep -qx 'os_prefix=$KC/' '$FW/tryboot.txt'"
+printf '0' > "$PARAM"
+runs "auto-tryboot leaves a reboot that carries another argument alone" tool auto-tryboot
+assert "the argument is unchanged, and no attempt recorded" sh -c "test \"\$(cat '$PARAM')\" = 0 && test ! -e '$A/attempted'"
+rm -f "$PARAM"
+# A trial by hand takes over; off cancels an armed trial.
+runs "try $KB by hand" tool try "$KB"
+assert "it cancels the auto-upgrade trial" grep -q "cancelled the auto-upgrade trial of $KC" "$T/out"
+assert "and forgets that $KB failed" test ! -e "$A/failed/$KB"
+runs "auto-run does not touch a trial armed by hand" tool auto-run
+assert "it says so" grep -q "armed by hand" "$T/out"
+assert "tryboot.txt still names $KB" tb_names "$KB"
+runs "boot-cleanup ends the trial by hand" tool boot-cleanup
+runs "auto-run arms $KC again" tool auto-run
+assert "$KC armed" pending "$KC"
+runs "auto-upgrade off" tool auto-upgrade off
+assert "it cancels the armed trial" grep -q "cancelled the armed trial of $KC" "$T/out"
+assert "its file is removed" test ! -e "$AC"
+assert "tryboot.txt is the stock fallback" tb_stock
+assert "the dead-man is disarmed" test ! -e "$DROPIN"
+runs "auto-tryboot with nothing armed" tool auto-tryboot
+assert "no reboot argument" test ! -e "$PARAM"
+assert "stock files untouched" stock_ok
+status_unchanged "auto-upgrade"
+
 # --- Package removal puts the stock boot back exactly -------------------------------
 boot "$STOCK" 0
 runs "promote --force $KR" tool promote "$KR" --force

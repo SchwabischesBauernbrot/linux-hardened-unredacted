@@ -123,6 +123,40 @@ A rebuild of the **same** kernel version is different: a new linux-hardened revi
 
 `update-initramfs` rebuilding a hardened kernel's initramfs also refreshes its staged copy.
 
+### Automatic upgrades (opt-in)
+
+By default a new hardened kernel waits for you to `try` and `promote` it, so `apt upgrade` followed by `reboot` keeps booting the old one. To have that upgrade-and-reboot cycle move to new kernels on its own, with the same trial and fallback as doing it by hand:
+
+```bash
+sudo unredacted-rpi5-boot auto-upgrade on
+```
+
+It only upgrades from a hardened default, so promote the first hardened kernel by hand. From then on:
+
+1. **apt installs a newer hardened kernel.** Its hook stages it, then arms it as a trial: `tryboot.txt` names it, and the dead-man is armed, as `try` does. The default boot does not change.
+2. **The next reboot is its trial.** A plain `reboot` (or `shutdown -r`, or your automation's) becomes `reboot '0 tryboot'`. During the shutdown, a unit sets the reboot argument that `reboot '0 tryboot'` would have set.
+3. **On the trial boot**, two minutes after boot, `unredacted-rpi5-boot-auto.service` waits for the boot to finish, then waits another 60 seconds. Then it runs `verify`, including your checks in `/etc/unredacted-rpi5-boot/verify.d/`.
+   - **`fails=0`:** it runs `confirm` and `promote`. The new kernel is the default from then on.
+   - **Anything else:** the kernel is recorded as failed, and the Pi reboots straight back to the old default. That makes a second reboot, a few minutes after the first.
+4. **A trial that never reaches `verify` also lands back on the old default:** a panic (`panic=10`), the dead-man, a hang the watchdog resets, or a power cycle. The next normal boot records that kernel as failed.
+
+A failed kernel is not tried again: nothing changes until a newer kernel arrives, or you run `auto-upgrade on` again (which forgets failed trials). A rebuild of the same kernel version needs no trial: it updates in place, as described above.
+
+`verify` checks the kernel, the hardening, the platform, that the links and addresses are back, and that no unit has newly failed. **Whatever else the machine must do after an upgrade, put in `verify.d/`.** On a Tor relay, for example: the Tor unit is active, the ORPort is listening, any runtime firewall rules you depend on are loaded. A check that fails sends the Pi back to the old kernel.
+
+```bash
+sudo unredacted-rpi5-boot status              # "auto-upgrade:" lines: armed, last result, failed kernels
+sudo unredacted-rpi5-boot auto-upgrade off    # cancels an armed trial; new kernels are only staged again
+```
+
+Things to know:
+
+- **Armed trials:** while a trial is armed, `tryboot.txt` names it, so the stock kernel is not a `reboot '0 tryboot'` away until the trial is over. `try stock` arms a stock boot instead, and cancels the auto-upgrade trial.
+- **Manual trials:** a `try` by hand always takes over. Auto-upgrade does not arm anything while a trial of yours is pending.
+- **Reboots left alone:** a forced reboot (`reboot -f`), and a reboot that already carries another argument.
+- **Logs:** the outcome is in the journal (`journalctl -u unredacted-rpi5-boot-auto`). A failure is logged at warning level.
+- **The setting:** `/etc/unredacted-rpi5-boot/auto-upgrade` turns it on (configuration management can create the file instead). The package does not ship it, so dpkg never asks about it. Set `AUTO_SETTLE_SECONDS=` in it to change the 60-second wait before `verify`.
+
 ## Back to the stock kernel
 
 - **Once:** `sudo reboot '0 tryboot'` while a hardened kernel is the default. With a trial pending, `sudo unredacted-rpi5-boot try stock` first.
