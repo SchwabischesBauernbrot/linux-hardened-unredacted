@@ -34,7 +34,7 @@
 
 ## Evidence
 
-- **Trial, 2026-11-02, `pi-exit-relay1-tor-ce`.**
+- **Trial, 2026-11-02, on a Pi 5 relay.**
   - **What booted:** kernel.org 7.2.13 + `v7.2.10-hardened1`, seeded from the relay's Raspberry Pi 6.18.50 config plus a test intent overlay, via a one-shot tryboot.
   - **What worked:**
     - booted in ~60 s;
@@ -51,10 +51,10 @@
   - **Result:** 0 failed hunks in our existing forward-port mode (`-F0`, Makefile EXTRAVERSION hunk dropped), and no hunk needed fuzz.
   - **Overlap:** 77 of the 83 files the patch modifies are byte-identical to kernel.org v6.18.60. The remaining offsets come from long-lived Raspberry Pi changes in `arch/arm64/Kconfig`, `drivers/char/Kconfig`, `include/linux/usb.h` and `mm/page_alloc.c`.
   - **Cadence:** Raspberry Pi merges every 6.18.y stable release, about weekly.
-- **Boot-package trial, 2026-11-04, `pi-exit-relay1-tor-ce`** (Phase 3). Raspberry Pi's 6.18.60 + `v6.18.56-hardened1` (a forward-port test build), booted through `unredacted-rpi5-boot`.
+- **Boot-package trial, 2026-11-04, on a Pi 5 relay** (Phase 3). Raspberry Pi's 6.18.60 + `v6.18.56-hardened1` (a forward-port test build), booted through `unredacted-rpi5-boot`.
   - **The commands:** `try`, a tryboot boot, `verify`, and `promote --dry-run`. Then the dead-man's reboot back to stock, `try` + `revert`, and removal of both packages.
   - **Result:** `verify` had `fails=0`. The 2026-11-02 gaps are closed: BTF, `rpi-eeprom-update`, temperature. `config.txt` never changed, and after removal all 435 stock boot files were byte-identical. Details: [install-rpi5.md](../users/install-rpi5.md#trial-on-a-pi-5-relay).
-- **Soak, 2026-11-05, `pi-exit-relay1-tor-ce`** (Phase 4). The draft `pi5-v6.18.60-hardened1` against stock, in one day of interleaved 4-hour windows. Details: [pi5-soak-2026-11.md](pi5-soak-2026-11.md).
+- **Soak, 2026-11-05, on a Pi 5 relay** (Phase 4). The draft `pi5-v6.18.60-hardened1` against stock, in one day of interleaved 4-hour windows. Details: [pi5-soak-2026-11.md](pi5-soak-2026-11.md).
   - **Stability:** no incidents. 5 reboots, `verify` fails=0 on all four trial boots, no `macb` TX timeouts.
   - **Cost:** Tor CPU per relayed byte +11%; the kernel's network path +32% per frame. The relay used 0.18 of its four cores on hardened vs 0.15 on stock.
   - **EEPROM:** `rpi-eeprom-update -f` from the hardened kernel flashed and verified, and the next boot ran the image it wrote.
@@ -204,7 +204,7 @@ A single arm64 package would force one page size and one source tree on both tar
 | 1 | PR: flavor descriptors, intent split, flavor-aware drift guard with value symbols, per-flavor signing | amd64 rebuild is byte-identical to the current release; `validate.yml` green |
 | 2 | PR: pi5 flavor (rpi-git source + delta record, apt-deb seed + keyring, 6.18 line, cross-build, QEMU smoke in CI, cve-watch for the pi5 line) | CI builds a test-signed pi5 kernel that passes the smoke test; the inherited-gap audit is done |
 | 3 | PR: `unredacted-rpi5-boot`, plus docs (`docs/users/install-rpi5.md` and incompatibilities: no `vcgencmd`, overlays come from our package) | `try` / `verify` / `revert` work on the relay; stock boot files untouched |
-| 4 | Soak on `pi-exit-relay1-tor-ce`: 24–48 h hardened vs 24–48 h stock (ran as one day of interleaved 4-hour windows, 2026-11-05: [report](pi5-soak-2026-11.md)) | Tor CPU per relayed byte, CPU0 softirq load and `macb` TX timeouts measured; one real EEPROM update applied from the hardened kernel; `init_on_free`, `DEBUG_LIST` and `preempt=lazy` decided |
+| 4 | Soak on a Pi 5 relay: 24–48 h hardened vs 24–48 h stock (ran as one day of interleaved 4-hour windows, 2026-11-05: [report](pi5-soak-2026-11.md)) | Tor CPU per relayed byte, CPU0 softirq load and `macb` TX timeouts measured; one real EEPROM update applied from the hardened kernel; `init_on_free`, `DEBUG_LIST` and `preempt=lazy` decided |
 | 5 | `promote` on this relay, then the other Pi relays; publish the pi5 packages | a week without unplanned reboots or TX stalls |
 | 6 | (later) generic arm64 flavor | — |
 

@@ -476,7 +476,7 @@ assert "complete again" sh -c "cd '$P' && sha256sum --quiet -c unredacted-rpi5-b
 assert "stock files untouched" stock_ok
 
 # --- A Compute Module 5 --------------------------------------------------------------
-# What pi-exit-relay6-tor-ce reports: a CM5 (on a CM5 IO board) booting from its
+# What a CM5 relay reported in testing: a CM5 (on a CM5 IO board) booting from its
 # eMMC, Raspberry Pi OS's config.txt with its [cm5] section. The firmware loads
 # bcm2712-rpi-cm5-cm5io.dtb and the bcm2712d0 overlay from the prefix; the tool
 # does the same as on a Pi 5, and verify knows the board and the eMMC.
