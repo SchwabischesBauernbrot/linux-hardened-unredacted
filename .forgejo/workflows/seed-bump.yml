@@ -32,6 +32,12 @@ on:
 #     tools/advance-line.sh, the same helper an operator uses, and the PR
 #     stands the new line up: new configs/seeds/<X.Y>.toml, symlink repoint,
 #     configs/lines.toml stable block. Still a PR, still human-merged.
+#   - When the stable line is BRIDGED (tools/advance-line.sh <X.Y> --bridge:
+#     stood up on the previous series' config before anthraxx packaged
+#     <X.Y>), a newer config from that previous series is a bridge refresh,
+#     proposed as an ordinary bump that keeps the marker; his first <X.Y>
+#     config is a same-line bump that ends the bridge (bump-seed.sh drops the
+#     marker, and the PR body says so).
 
 jobs:
   propose:
@@ -80,7 +86,18 @@ jobs:
           new_sha=$(sha_of)
           new_tag=$(sed -nE 's/^tag[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file")
           new_series=$(sed -nE 's/^([0-9]+\.[0-9]+)\..*/\1/p' <<<"$new_tag")
-          if [[ -n $new_series && $new_series != "$stable" ]]; then
+          # A BRIDGED stable line (tools/advance-line.sh <X.Y> --bridge) pins
+          # the previous series' config until anthraxx packages its own. While
+          # his tip is still on that previous series, a newer config there is a
+          # bridge REFRESH: keep the in-place bump (the file keeps its
+          # cross-series marker, which validate.yml accepts) and propose it as
+          # an ordinary bump, rather than "advancing" backwards. Once his tip
+          # reaches the stable series, the plain bump below ends the bridge:
+          # bump-seed.sh drops the marker.
+          bridged_from=$(python3 tools/lines.py bridge-from "$stable")
+          if [[ -n $bridged_from && $new_series == "$bridged_from" ]]; then
+            echo "stable line $stable is bridged on the $bridged_from seed; anthraxx tag $new_tag refreshes the bridge"
+          elif [[ -n $new_series && $new_series != "$stable" ]]; then
             # anthraxx has moved to a new series. Undo the in-place bump (it
             # would be a cross-series pin in the OLD line's file) and stand
             # the new line up with the shared helper, which re-runs
@@ -177,7 +194,13 @@ jobs:
               "$NEW_SERIES" "$OLD_SERIES" "$OLD_SERIES" "$NEW_SERIES" \
               "$NEW_SERIES" "$NEW_SERIES" "$OLD_SERIES" "$NEW_SERIES" "$(cat /tmp/bump.log)")
           else
-            body=$(printf 'Automated seed-bump proposal from `tools/bump-seed.sh` — the anthraxx commit signature was verified against `keys/anthraxx.gpg`.\n\n**Review before merging:** confirm the new seed targets the kernel version we build (the seed may legitimately lag) and that the hardening delta below is acceptable. Merging only updates the pinned config seed; the next kernel tag picks it up, and `build-kernel.yml`'"'"'s fidelity assertion + hardening-drift guard run on that build.\n\n```\n%s\n```\n' "$(cat /tmp/bump.log)")
+            bridge_note=""
+            if grep -qE '^[[:space:]]*BRIDGE ENDS' /tmp/bump.log; then
+              bridge_note='**This ends a bridge:** the stable line was stood up on the previous series'"'"' config (`tools/advance-line.sh --bridge`), and this bump moves it to anthraxx'"'"'s own config for the series and drops the `# cross-series-seed:` marker. The next build of the line drift-checks against the bridged release(s), so any un-pinned default anthraxx sets differently from what `olddefconfig` chose shows up there for review.\n\n'
+            elif grep -qE '^# cross-series-seed:' "$SEED_FILE"; then
+              bridge_note='**Bridge refresh:** the stable line is still bridged on the previous series'"'"' config (anthraxx has not packaged the stable series yet); this moves the bridge to his newest config of that series.\n\n'
+            fi
+            body=$(printf 'Automated seed-bump proposal from `tools/bump-seed.sh` — the anthraxx commit signature was verified against `keys/anthraxx.gpg`.\n\n'"$bridge_note"'**Review before merging:** confirm the new seed targets the kernel version we build (the seed may legitimately lag) and that the hardening delta below is acceptable. Merging only updates the pinned config seed; the next kernel tag picks it up, and `build-kernel.yml`'"'"'s fidelity assertion + hardening-drift guard run on that build.\n\n```\n%s\n```\n' "$(cat /tmp/bump.log)")
           fi
           code=$(curl -sS -o /tmp/pr.json -w '%{http_code}' -X POST \
               -H "Authorization: token $FORGEJO_TOKEN" \

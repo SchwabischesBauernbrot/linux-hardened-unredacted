@@ -431,6 +431,23 @@ jobs:
                   echo "    the wrong line. If that is intended (the line was stood up before" >&2
                   echo "    anthraxx packaged a config for it), add a line to $f reading:" >&2
                   echo "      # cross-series-seed: <why, and when it can be bumped>" >&2
+                  echo "    or stand the line up with: tools/advance-line.sh $series --bridge" >&2
+                  fails=$((fails+1))
+              fi
+              # The reverse: a marker left on a same-series pin. tools/lines.py
+              # would no longer treat the line as bridged, but the file would
+              # still claim to be one, and the next cross-series slip in it
+              # would pass the check above unseen. tools/bump-seed.sh drops the
+              # marker when it ends a bridge; this catches a hand edit that
+              # did not.
+              if [[ $tag == "$series".* ]] && grep -qE '^# cross-series-seed:' "$f"; then
+                  echo "  $f: pins same-series tag '$tag' but still carries a" >&2
+                  echo "    '# cross-series-seed:' marker. The bridge has ended: delete the" >&2
+                  echo "    marker block (tools/bump-seed.sh does this when it ends one)." >&2
+                  fails=$((fails+1))
+              fi
+              # A bridge only ever borrows an OLDER line's config.
+              if ! python3 tools/lines.py bridge-from "$series" >/dev/null; then
                   fails=$((fails+1))
               fi
           done

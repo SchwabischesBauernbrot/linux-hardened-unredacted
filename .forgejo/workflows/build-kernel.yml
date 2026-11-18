@@ -529,11 +529,19 @@ jobs:
         # interval) that changed. Runs here, in the workflow, NOT inside
         # build-debs.sh — so repro-check.sh's rebuild (which calls
         # build-debs.sh directly) isn't coupled to a policy gate it shouldn't
-        # enforce. First build of a flavor's line: no baseline.
+        # enforce. First build of a flavor's line: no same-line baseline. If
+        # the line is BRIDGED (tools/advance-line.sh <X.Y> --bridge: seeded
+        # from the previous line's config), its first build compares against
+        # that line's newest release instead, in check-hardening-drift.sh's
+        # bridge mode; otherwise the guard skips with a warning.
         env:
           WORKDIR: ${{ runner.temp }}/work
           SERIES: ${{ steps.ver.outputs.series }}
           FLAVOR: ${{ steps.flavor.outputs.name }}
+          # Bridge mode tells a symbol the new series REMOVED from one it
+          # turned off by scanning this tree's Kconfig files
+          # (build/configure-kernel.sh's src_dir).
+          KERNEL_VERSION: ${{ steps.ver.outputs.kernel }}
           # Escape hatch for a REVIEWED, intentional hardening-symbol drop
           # (e.g. upstream removed the symbol). check-hardening-drift.sh has
           # honoured this variable since it was written, and BOTH
@@ -567,9 +575,21 @@ jobs:
           # A failing lookup fails the step: `set -e` sees a failing command
           # substitution in an assignment.
           baseline=$(python3 tools/flavors.py drift-baseline "$FLAVOR" "$SERIES" releases)
+          line_set=$(python3 tools/flavors.py get "$FLAVOR" lines)
+          bridged_from=$(python3 tools/lines.py bridge-from "$SERIES" "$line_set")
+          bridge_baseline=""
+          if [[ -z $baseline && -n $bridged_from ]]; then
+            bridge_baseline=$(python3 tools/flavors.py drift-baseline "$FLAVOR" "$bridged_from" releases)
+          fi
           if [[ -n $baseline ]]; then
             echo "hardening-drift baseline (flavor $FLAVOR, line $SERIES): $baseline"
             ./tools/check-hardening-drift.sh "$FLAVOR" "$baseline" "$new"
+          elif [[ -n $bridge_baseline ]]; then
+            echo "line $SERIES is bridged on the $bridged_from seed and has no release of its own yet"
+            echo "hardening-drift baseline (flavor $FLAVOR, BRIDGE from line $bridged_from): $bridge_baseline"
+            DRIFT_BRIDGE_FROM=$bridged_from \
+            KCONFIG_SRCTREE="$WORKDIR/linux-${KERNEL_VERSION}" \
+              ./tools/check-hardening-drift.sh "$FLAVOR" "$bridge_baseline" "$new"
           else
             # ::warning:: not a bare echo: a SKIPPED guard is a materially
             # different outcome from a passed one, and a plain echo scrolls

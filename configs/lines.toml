@@ -36,6 +36,12 @@
 # together with the first tag of the new series: after it lands, an old-line
 # tag still builds but no longer emits the umbrella metas.
 #
+# Before anthraxx has packaged the new series, `tools/advance-line.sh 7.3
+# --bridge` makes the same edits but keeps the current stable pin in the new
+# seed file, marked `# cross-series-seed:` (a BRIDGED line; see
+# docs/operators/config-architecture.md#bridging-a-new-series). seed-bump.yml
+# ends the bridge when his config for the series ships.
+#
 # Old minors are retained per line until you retire a line by setting its
 # keep_in_main = 0 (explicit sunset); delete the block once nothing remains.
 #
