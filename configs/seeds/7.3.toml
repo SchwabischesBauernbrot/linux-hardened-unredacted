@@ -1,0 +1,49 @@
+# Upstream kernel config seed pin — line 7.3.
+#
+# GENERATED HEADER: tools/advance-line.sh wrote this file from
+# tools/seed-header.tmpl when the 7.3 line was stood up. tools/bump-seed.sh
+# rewrites only the pin VALUES below and never this prose, so keep anything
+# that goes stale on a bump (the pinned tag, dates) out of this comment.
+#
+# We seed our build's .config from anthraxx's (Levente Polyak's) own Arch
+# Linux packaging repo for linux-hardened, signed-commit-verified against his
+# key (E240B57E…) + sha256 of config.x86_64 at the pinned commit.
+#
+# The pin is a SAME-LINE 7.3 config. It routinely lags the kernel we build
+# by a patch level — anthraxx changes config.x86_64 in only ~1 in 4–5 tags, so
+# his newest published config is usually a few releases behind the tag being
+# built. That is expected and handled, not gated: the seed is only a baseline.
+# `make olddefconfig` reconciles it to the tree being built, the fidelity
+# assertion enforces every configs/intent.*.config pin, and
+# tools/check-hardening-drift.sh diffs the result against the most recent
+# published 7.3 final.config in releases/ — so a symbol we INHERIT from the
+# seed (rather than pin in intent) cannot silently regress across a seed bump.
+#
+# The FIRST 7.3 build has no same-line drift baseline yet: build-kernel.yml
+# logs a "hardening-drift guard SKIPPED" warning for it rather than comparing
+# against the previous line's final.config. Once that release publishes, its
+# final.config becomes the baseline for every later 7.3 build.
+#
+# BRIDGED lines. When anthraxx has not packaged a 7.3 config.x86_64 yet,
+# `tools/advance-line.sh 7.3 --bridge` stands the line up on the previous
+# line's pin instead and adds a `# cross-series-seed:` marker block just above
+# the values. While that block is there: validate.yml accepts the cross-series
+# pin, the manifest records `cross_series_from`, and the first build drift-
+# checks against the previous line's newest release (listing every hardening
+# symbol 7.3 added) instead of skipping. seed-bump.yml moves the pin to his
+# first 7.3 config when it ships, and tools/bump-seed.sh then drops the
+# block. Never write the marker by hand on a same-series pin; validate.yml
+# rejects that.
+#
+# Pinning model, bump procedure, line advance: docs/operators/config-architecture.md.
+
+# cross-series-seed: bridge -- anthraxx has not packaged a 7.3 config.x86_64
+# yet, so this pins the 7.2 line's (tools/advance-line.sh 7.3 --bridge).
+# seed-bump.yml replaces it with his first 7.3 config and drops these lines.
+
+url         = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
+commit      = "feb517ba59735e128c484b2d2d5c500b737d1938"
+tag         = "7.2.10.hardened1-1"
+config_path = "config.x86_64"
+sha256      = "6b90537fc69367ecdafd06234a8e73dcb21490297a8a05cf562baf35e8374399"
+signer_fpr  = "E240B57E2C4630BA768E2F26FC1B547C8D8172C8"
