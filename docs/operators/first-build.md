@@ -81,7 +81,7 @@ In the same Forgejo repo settings, add:
 | `RELEASE_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened-unredacted` |
 | `MANIFEST_COMMIT_TOKEN` | Token with `write:repository` (push to main) on `unredacted/linux-hardened-unredacted` |
 | `ISSUE_TOKEN` | Token with `write:issue` + `read:repository` on `unredacted/linux-hardened-unredacted` |
-| `SEED_BUMP_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened-unredacted` (push a branch + open the automated seed-bump PR; `seed-bump.yml`) |
+| `SEED_BUMP_TOKEN` | Token with `write:repository` on `unredacted/linux-hardened-unredacted` (push a branch + open the automated seed-bump and source-bump PRs; `seed-bump.yml`, `source-bump.yml`) |
 
 Forgejo reserves secret names starting with `FORGEJO_`, `GITEA_`, and `GITHUB_`, so the secrets above use neutral prefixes. The workflow YAML maps each one to whatever env var name the script expects internally.
 

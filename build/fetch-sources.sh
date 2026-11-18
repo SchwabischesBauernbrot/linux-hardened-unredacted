@@ -60,38 +60,16 @@ esac
 kernel_org_keyring="${KERNEL_ORG_KEYRING:-$repo_root/keys/kernel-org.gpg}"
 anthraxx_keyring="${ANTHRAXX_KEYRING:-$repo_root/keys/anthraxx.gpg}"
 
-# Pinned signer fingerprints. The keyring already constrains who can sign,
-# but we additionally assert the *specific* expected key in the gpg status
-# output so a polluted keyring can't slip a different signer past us — the
-# same identities the anthraxx PKGBUILD pins in validpgpkeys.
-KERNEL_ORG_FPRS=(
-    ABAF11C65A2970B130ABE3C479BE3E4300411886  # Linus Torvalds
-    647F28654894E3BD457199BE38DBBDC86092693E  # Greg Kroah-Hartman
-)
-ANTHRAXX_FPR=E240B57E2C4630BA768E2F26FC1B547C8D8172C8  # Levente Polyak
-
-# True if the gpg --status-fd log in $1 shows the signature came from one of
-# the pinned primary fingerprints in $2.. — matched either as the full
-# fingerprint on a VALIDSIG/KEY_CONSIDERED line, or as the trailing 16-hex
-# long key id on the GOODSIG/EXPKEYSIG line (covers signing subkeys and the
-# expired-key EXPKEYSIG case).
-signer_is_pinned() {
-    local log=$1; shift
-    local fpr
-    for fpr in "$@"; do
-        grep -qE "^\[GNUPG:\] (VALIDSIG|KEY_CONSIDERED) ${fpr} " "$log" && return 0
-        grep -qE "^\[GNUPG:\] (GOODSIG|EXPKEYSIG) ${fpr: -16} " "$log" && return 0
-    done
-    return 1
-}
+# Fetch-and-verify functions and the pinned signer fingerprints, shared with
+# tools/bump-source.sh.
+# shellcheck source=build/lib-sources.sh
+. "$repo_root/build/lib-sources.sh"
 
 [[ -d $WORKDIR ]] || { echo "WORKDIR $WORKDIR does not exist" >&2; exit 1; }
 
-major="${KERNEL_VERSION%%.*}"
 tarball="linux-${KERNEL_VERSION}.tar.xz"
 signature="linux-${KERNEL_VERSION}.tar.sign"
-tarball_url="https://cdn.kernel.org/pub/linux/kernel/v${major}.x/${tarball}"
-signature_url="https://cdn.kernel.org/pub/linux/kernel/v${major}.x/${signature}"
+tarball_url=$(kernelorg_tarball_url "$KERNEL_VERSION")
 
 # Forward-port mode reuses anthraxx's signed patch for an OLDER point release
 # of the same series. Every input is still signature-verified exactly as below;
@@ -113,89 +91,15 @@ fi
 
 hardened_patch="linux-hardened-v${base_version}-hardened${HARDENED_REVISION}.patch"
 hardened_sig="${hardened_patch}.sig"
-hardened_base="https://github.com/anthraxx/linux-hardened/releases/download/v${base_version}-hardened${HARDENED_REVISION}"
+hardened_url=$(hardened_patch_url "$base_version" "$HARDENED_REVISION")
 
 cd "$WORKDIR"
 
 # --- Kernel tarball -------------------------------------------------------
-echo "fetching $tarball"
-wget --no-verbose -O "$tarball" "$tarball_url"
-wget --no-verbose -O "$signature" "$signature_url"
-
-if [[ ! -s $kernel_org_keyring ]]; then
-    echo "kernel.org keyring missing or empty: $kernel_org_keyring" >&2
-    echo "see keys/README.md for how to populate it" >&2
-    exit 1
-fi
-
-# kernel.org signs the *uncompressed* tarball. Verify the xz-decompressed
-# stream against the .sign file rather than the .tar.xz itself.
-echo "verifying $tarball signature against kernel.org keyring"
-if ! xz -dc "$tarball" | gpg --no-default-keyring --keyring "$kernel_org_keyring" \
-                             --status-fd 1 --verify "$signature" - \
-                             > "$tarball.verify.log" 2>&1; then
-    cat "$tarball.verify.log" >&2
-    echo "kernel.org signature did not verify" >&2
-    exit 2
-fi
-if ! grep -q '^\[GNUPG:\] GOODSIG' "$tarball.verify.log"; then
-    cat "$tarball.verify.log" >&2
-    echo "kernel.org signature verify ran but no GOODSIG status" >&2
-    exit 2
-fi
-if ! signer_is_pinned "$tarball.verify.log" "${KERNEL_ORG_FPRS[@]}"; then
-    cat "$tarball.verify.log" >&2
-    echo "kernel.org signature is valid but not from a pinned release key" >&2
-    exit 2
-fi
+kernelorg_fetch_verify "$KERNEL_VERSION" "$kernel_org_keyring"
 
 # --- linux-hardened patch -------------------------------------------------
-echo "fetching $hardened_patch"
-wget --no-verbose -O "$hardened_patch" "${hardened_base}/${hardened_patch}"
-wget --no-verbose -O "$hardened_sig" "${hardened_base}/${hardened_sig}"
-
-if [[ ! -s $anthraxx_keyring ]]; then
-    cat >&2 <<EOF
-linux-hardened maintainer keyring is missing: $anthraxx_keyring
-
-Populate it per the instructions in keys/README.md:
-
-    gpg --no-default-keyring --keyring $anthraxx_keyring --recv-keys \\
-        E240B57E2C4630BA768E2F26FC1B547C8D8172C8
-
-Then verify the fingerprint against the canonical sources listed in
-keys/README.md before re-running this script.
-EOF
-    exit 3
-fi
-
-# GnuPG reports a valid signature from a key that has since expired
-# with status EXPKEYSIG, not GOODSIG. linux-hardened's maintainer key
-# is in this state. Both statuses indicate the
-# signature itself is cryptographically valid; we accept both and record
-# which one applied so the build manifest captures the key state.
-echo "verifying $hardened_patch signature against anthraxx keyring"
-if ! gpg --no-default-keyring --keyring "$anthraxx_keyring" \
-        --status-fd 1 --verify "$hardened_sig" "$hardened_patch" \
-        > "$hardened_patch.verify.log" 2>&1; then
-    cat "$hardened_patch.verify.log" >&2
-    echo "linux-hardened patch signature did not verify" >&2
-    exit 4
-fi
-if grep -q '^\[GNUPG:\] GOODSIG' "$hardened_patch.verify.log"; then
-    echo "  signature: GOODSIG (key valid)"
-elif grep -q '^\[GNUPG:\] EXPKEYSIG' "$hardened_patch.verify.log"; then
-    echo "  signature: EXPKEYSIG (key expired, signature valid pre-expiry)"
-else
-    cat "$hardened_patch.verify.log" >&2
-    echo "linux-hardened verify ran but neither GOODSIG nor EXPKEYSIG present" >&2
-    exit 4
-fi
-if ! signer_is_pinned "$hardened_patch.verify.log" "$ANTHRAXX_FPR"; then
-    cat "$hardened_patch.verify.log" >&2
-    echo "linux-hardened patch signature is valid but not from the pinned key $ANTHRAXX_FPR" >&2
-    exit 4
-fi
+hardened_fetch_verify "$base_version" "$HARDENED_REVISION" "$anthraxx_keyring"
 
 # --- Downstream tree (source = rpi-git) ------------------------------------
 # The tree comes from Raspberry Pi's git, pinned by commit hash: they publish
@@ -227,34 +131,18 @@ if [[ $source_type == rpi-git ]]; then
 
     clone="$WORKDIR/source.git"
     rm -rf "$clone"
-    git init --quiet --bare "$clone"
-    # Fetch exactly the pinned commit. GitHub serves any reachable commit by
-    # hash; there is no fallback to a branch tip, which could be anything.
-    git -C "$clone" fetch --quiet --depth 1 --no-tags "$src_url" "$src_commit"
-    got=$(git -C "$clone" rev-parse --verify "FETCH_HEAD^{commit}")
-    if [[ $got != "$src_commit" ]]; then
-        echo "fetched $got, not the pinned commit $src_commit" >&2
-        exit 5
-    fi
+    # Exactly the pinned commit (no fallback to a branch tip, which could be
+    # anything), whose Makefile must declare $KERNEL_VERSION with an empty
+    # EXTRAVERSION (an -rc or a downstream suffix would mean the pin is not
+    # the release it claims to be).
+    pinned_tree_fetch "$src_url" "$src_commit" "$KERNEL_VERSION" "$clone"
     tree_id=$(git -C "$clone" rev-parse --verify "$src_commit^{tree}")
-
-    # The tree's own Makefile must declare the version, with no EXTRAVERSION
-    # (an -rc or a downstream suffix would mean the pin is not the release it
-    # claims to be).
-    mk=$(git -C "$clone" show "$src_commit:Makefile")
-    mk_get() { grep -m1 -E "^$1[[:space:]]*=" <<<"$mk" | sed -E 's/^[^=]*=[[:space:]]*//'; }
-    mk_version="$(mk_get VERSION).$(mk_get PATCHLEVEL).$(mk_get SUBLEVEL)"
-    if [[ $mk_version != "$KERNEL_VERSION" || -n $(mk_get EXTRAVERSION) ]]; then
-        echo "$src_commit's Makefile declares ${mk_version}$(mk_get EXTRAVERSION), not $KERNEL_VERSION" >&2
-        exit 5
-    fi
 
     # A tar of the tree laid out like the kernel.org tarball, which
     # apply-patches.sh extracts instead of it. Uncompressed: it never leaves
     # $WORKDIR, and its hash goes into input-hashes.txt below.
     src_tar="source-${KERNEL_VERSION}.tar"
-    git -C "$clone" archive --format=tar --prefix="linux-${KERNEL_VERSION}/" \
-        "$src_commit" > "$src_tar"
+    pinned_tree_archive "$clone" "$src_commit" "$KERNEL_VERSION" "$src_tar"
     rm -rf "$clone"
 
     # The downstream delta against the signed kernel.org tarball. Comparing it
@@ -262,18 +150,14 @@ if [[ $source_type == rpi-git ]]; then
     # of what the downstream tree changes relative to kernel.org.
     echo "computing the downstream delta against $tarball"
     committed_delta="${pin%.toml}.delta"
-    python3 "$repo_root/tools/source-delta.py" "$tarball" "$src_tar" \
-        --base-label "$tarball sha256 $(sha256sum "$tarball" | awk '{print $1}')" \
-        --tree-label "$src_url $src_commit" > source-delta.txt
+    source_delta "$tarball" "$src_tar" "$src_url" "$src_commit" > source-delta.txt
     sed -n '5p' source-delta.txt
     if [[ ! -f $committed_delta ]] || ! cmp -s "$committed_delta" source-delta.txt; then
         echo "the downstream delta of $src_commit against $tarball differs from" >&2
         echo "${committed_delta#"$repo_root/"} (first 200 lines of the difference):" >&2
         diff -u "${committed_delta}" source-delta.txt 2>&1 | head -n 200 >&2 || true
         echo "" >&2
-        echo "Regenerate it in the PR that moves the pin, and review the change:" >&2
-        echo "  python3 tools/source-delta.py linux-${KERNEL_VERSION}.tar.xz <git archive of the commit> \\" >&2
-        echo "      --base-label '<as above>' --tree-label '$src_url $src_commit'" >&2
+        echo "Regenerate it in the PR that moves the pin (tools/bump-source.sh does), and review the change." >&2
         echo "The computed delta is $WORKDIR/source-delta.txt." >&2
         exit 5
     fi
@@ -314,7 +198,7 @@ if [[ $source_type == rpi-git ]]; then
     cat > inputs.json <<EOF
 {
   "kernel_tarball": { "url": "$tarball_url", "sha256": "$tarball_sha" },
-  "hardened_patch": { "url": "${hardened_base}/${hardened_patch}", "sha256": "$patch_sha" },
+  "hardened_patch": { "url": "$hardened_url", "sha256": "$patch_sha" },
   "source_tree": {
     "type": "$source_type", "url": "$src_url", "branch": "$src_branch",
     "commit": "$src_commit", "tree": "$tree_id", "version": "$src_version",
@@ -326,7 +210,7 @@ else
     cat > inputs.json <<EOF
 {
   "kernel_tarball": { "url": "$tarball_url", "sha256": "$tarball_sha" },
-  "hardened_patch": { "url": "${hardened_base}/${hardened_patch}", "sha256": "$patch_sha" }
+  "hardened_patch": { "url": "$hardened_url", "sha256": "$patch_sha" }
 }
 EOF
 fi

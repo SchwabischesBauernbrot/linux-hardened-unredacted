@@ -19,7 +19,10 @@
 #
 # Bumping the pin is a reviewed PR that changes `commit` (and `version`, when
 # Raspberry Pi has merged a new 6.18.y stable release) and regenerates
-# 6.18.delta with tools/source-delta.py. The delta's diff in that PR shows
+# 6.18.delta. source-bump.yml opens it when Raspberry Pi's branch declares a
+# newer version, with tools/bump-source.sh (run it by hand the same way:
+# `tools/bump-source.sh pi5`); the PR description sorts the delta's changes,
+# dry-runs the hardened patch and gives the tag. The delta's diff in that PR shows
 # every kernel.org file Raspberry Pi touches, adds or drops, so a new one is
 # visible in review. The hash authenticates the tree; the delta makes its
 # divergence from the signed upstream reviewable. It cannot make Raspberry
