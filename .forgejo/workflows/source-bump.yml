@@ -1,0 +1,198 @@
+name: source-bump
+on:
+  schedule:
+    - cron: '20 */3 * * *'   # every 3 hours, off cve-watch's hour mark
+  workflow_dispatch:
+
+# Proposes a source pin bump (configs/sources/<set>/<X.Y>.toml + .delta, for
+# the flavors built from Raspberry Pi's tree, source = "rpi-git") as a PULL
+# REQUEST, the way seed-bump.yml does for amd64 seeds. Deliberately scoped:
+#   - It opens a PR; it never merges it and never pushes a tag. The .delta
+#     diff in the PR is the human review gate, and the tag is cut by hand
+#     from an up-to-date main after the merge (build-kernel.yml refuses a
+#     stale tag).
+#   - tools/bump-source.sh does the bump with build/fetch-sources.sh's own
+#     checks (exact commit, Makefile version, kernel.org GOODSIG from a pinned
+#     key, the same delta labels), so a bump that fails any of them FAILS the
+#     job rather than opening a PR. The PR body is its review summary: the
+#     delta's changes sorted by whose they are, Raspberry Pi-side changes in
+#     security-sensitive paths with diffs, a dry run of the hardened patch the
+#     tag will use, and the tag command.
+#   - It proposes when Raspberry Pi's branch declares a NEWER version than the
+#     pin (tools/rpi-line-watch.sh, the check cve-watch's watch-rpi job files
+#     its issue from). Commits within the pinned version are not chased: an
+#     open PR for a version is kept on its commit.
+#   - When anthraxx tags after the PR was opened, the tag advice in the body
+#     goes stale (the forward-port tag it names would be refused). Each run
+#     compares the body's marker line with the current advice and, when it
+#     moved, re-runs the helper on the PR's commit and rewrites the body
+#     (with a comment), so the dry run is of the patch that will be used.
+#   - A PR for an older version is closed as superseded when Raspberry Pi
+#     moves on, and closed when the pin catches up some other way. A branch
+#     that exists without an open PR (an operator closed it) is left alone.
+
+jobs:
+  propose:
+    runs-on: linux-hardened
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # All history and tags: tools/hardened-tag.sh reads the tags to
+          # suggest a .P packaging rebuild when the plain tag exists.
+          fetch-depth: 0
+          # The seed-bump token pushes the branch via the credential
+          # actions/checkout configures (no token in a remote URL, which
+          # could leak to a log). SEED_BUMP_TOKEN is a Forgejo PAT scoped
+          # write:repository; see docs/operators/runner-setup.md.
+          token: ${{ secrets.SEED_BUMP_TOKEN }}
+
+      # node:22-bookworm ships git + curl; tools/bump-source.sh also needs
+      # gnupg (signatures), wget (as fetch-sources.sh fetches), xz-utils,
+      # GNU patch (the dry run), python3 and jq.
+      - name: install deps
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+              git gnupg wget xz-utils patch jq curl ca-certificates python3
+
+      - name: propose or refresh source bumps
+        env:
+          FORGEJO_TOKEN: ${{ secrets.SEED_BUMP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${FORGEJO_TOKEN:-}" ]]; then
+            echo "::error::SEED_BUMP_TOKEN is not configured; cannot push a branch or open a PR."
+            echo "::error::Add a Forgejo PAT scoped write:repository as SEED_BUMP_TOKEN."
+            exit 1
+          fi
+          api="https://git.unredacted.org/api/v1/repos/${GITHUB_REPOSITORY}"
+          # Keep the body of a >= 400 reply (as cve-watch.yml does).
+          api_call() {
+            local method=$1 url=$2 data=${3:-}
+            local out=/tmp/forgejo-resp.json code
+            if [[ -n $data ]]; then
+              code=$(curl -sS -o "$out" -w '%{http_code}' -X "$method" \
+                -H "Authorization: token $FORGEJO_TOKEN" \
+                -H "Content-Type: application/json" -d "$data" "$url")
+            else
+              code=$(curl -sS -o "$out" -w '%{http_code}' -X "$method" \
+                -H "Authorization: token $FORGEJO_TOKEN" "$url")
+            fi
+            if [[ $code -ge 400 ]]; then
+              echo "::error::Forgejo API $method $url returned HTTP $code" >&2
+              cat "$out" >&2 || true
+              return 1
+            fi
+            cat "$out"
+          }
+          comment() {
+            api_call POST "$api/issues/$1/comments" "$(jq -n --arg b "$2" '{body:$b}')" > /dev/null
+          }
+          close_pr() {
+            comment "$1" "$2"
+            api_call PATCH "$api/pulls/$1" '{"state":"closed"}' > /dev/null
+            echo "closed #$1"
+          }
+          marker_get() { sed -nE "1s/.* $1=([^ ]*).*/\1/p" <<<"$2"; }
+          body_of() {
+            printf '%s\n\n---\nOpened by `source-bump.yml`, which rewrites this description when the tag advice changes (anthraxx tagged) and closes the PR when Raspberry Pi moves to a newer version or the pin catches up. It never merges or tags.\n' "$(cat "$1")"
+          }
+
+          git config user.name "forgejo-runner"
+          git config user.email "noreply@unredacted.org"
+          curl -fsSL "https://api.github.com/repos/anthraxx/linux-hardened/tags?per_page=100" \
+              | jq -r '.[].name' > /tmp/upstream-tags.txt || : > /tmp/upstream-tags.txt
+          open_prs=$(api_call GET "$api/pulls?state=open&limit=50")
+          start=$(git rev-parse HEAD)
+
+          for flavor in $(python3 tools/flavors.py list); do
+            [[ $(python3 tools/flavors.py get "$flavor" source) == rpi-git ]] || continue
+            watch=$(./tools/rpi-line-watch.sh "$flavor" --upstream-tags /tmp/upstream-tags.txt)
+            echo "$watch"
+            get() { sed -n "s/^$1=//p" <<<"$watch"; }
+            if [[ $(get state) == unknown ]]; then
+              echo "::warning::could not check the $flavor line this run"
+              continue
+            fi
+            series=$(get series)
+            tip=$(get rpi_tip); rpi_version=$(get rpi_version); pin_version=$(get pin_version)
+            advice_tag=$(get advice_tag)
+            line_set=$(python3 tools/flavors.py get "$flavor" lines)
+            pin_rel=$(python3 tools/lines.py source-path "$series" "$line_set")
+            branch_of=$(python3 tools/pins.py get "$pin_rel" branch)
+            title_prefix="sources: pin $flavor $branch_of at "
+            # This pin's open automated PRs: number, head branch, title, body.
+            mine=$(jq -c --arg p "$title_prefix" \
+                '[.[] | select((.head.ref | startswith("automated/source-bump-")) and (.title | startswith($p)))
+                      | {n: .number, ref: .head.ref, title: .title, body: (.body // "")}]' <<<"$open_prs")
+
+            newer=false
+            if [[ $rpi_version != "$pin_version" \
+                  && $(printf '%s\n%s\n' "$rpi_version" "$pin_version" | sort -V | tail -n1) == "$rpi_version" ]]; then
+              newer=true
+            fi
+
+            keep=""
+            while read -r pr; do
+              [[ -n $pr ]] || continue
+              n=$(jq -r .n <<<"$pr"); title=$(jq -r .title <<<"$pr"); body=$(jq -r .body <<<"$pr")
+              pr_version=$(sed -E "s/^.* at ([0-9.]+) \(.*/\1/" <<<"$title")
+              if [[ $newer != true ]]; then
+                close_pr "$n" "The source pin is at $pin_version now, which Raspberry Pi's \`$branch_of\` has not moved past; closing."
+              elif [[ $pr_version != "$rpi_version" ]]; then
+                close_pr "$n" "Superseded: Raspberry Pi's \`$branch_of\` is at $rpi_version now; a new PR proposes it."
+              elif [[ -n $keep ]]; then
+                close_pr "$n" "Duplicate of #$keep for $rpi_version; closing."
+              else
+                keep=$n
+                keep_commit=$(marker_get commit "$body")
+                keep_tag=$(marker_get tag "$body")
+                keep_ref=$(jq -r .ref <<<"$pr")
+              fi
+            done < <(jq -c '.[]' <<<"$mine")
+            [[ $newer == true ]] || continue
+
+            if [[ -n $keep ]]; then
+              if [[ $keep_tag == "$advice_tag" ]]; then
+                echo "#$keep is current ($rpi_version, tag $advice_tag)"
+                continue
+              fi
+              # The advice moved (anthraxx tagged): redo the dry run and the
+              # summary on the PR's own commit. The pin files the helper
+              # rewrites on this main checkout are thrown away; the PR branch
+              # already has them, and the commit (hence its delta) is the same.
+              if [[ ! $keep_commit =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::warning::#$keep ($keep_ref) has no readable marker line; leaving it alone"
+                continue
+              fi
+              ./tools/bump-source.sh "$flavor" --commit "$keep_commit" \
+                  --upstream-tags /tmp/upstream-tags.txt --summary /tmp/summary.md
+              git checkout -- configs/sources
+              api_call PATCH "$api/pulls/$keep" "$(jq -n --arg b "$(body_of /tmp/summary.md)" '{body:$b}')" > /dev/null
+              comment "$keep" "The tag advice changed (${keep_tag:-none} -> \`$advice_tag\`): anthraxx's tags moved. Description, dry run and tag command refreshed."
+              echo "refreshed #$keep"
+              continue
+            fi
+
+            branch="automated/source-bump-${tip:0:12}"
+            if [[ -n $(git ls-remote origin "refs/heads/$branch") ]]; then
+              echo "::notice::$branch exists without an open PR (closed by an operator?); not re-proposing. Delete the branch to re-propose."
+              continue
+            fi
+            ./tools/bump-source.sh "$flavor" --commit "$tip" \
+                --upstream-tags /tmp/upstream-tags.txt --summary /tmp/summary.md | tee /tmp/bump.log
+            version=$(sed -n 's/^version=//p' /tmp/bump.log)
+            delta_rel=$(sed -n 's/^delta=//p' /tmp/bump.log)
+            title="${title_prefix}${version} (${tip:0:12})"
+            git switch -c "$branch"
+            git add "$pin_rel" "$delta_rel"
+            git commit -m "$title" -m "Proposed by source-bump.yml (tools/bump-source.sh); the review summary is in the PR."
+            # Authorized by the checkout-configured credential (token above).
+            git push origin "$branch"
+            pr=$(api_call POST "$api/pulls" \
+                "$(jq -n --arg t "$title" --arg b "$(body_of /tmp/summary.md)" --arg h "$branch" \
+                    '{title: $t, body: $b, head: $h, base: "main"}')")
+            echo "opened source-bump PR: $(jq -r '.html_url // .url // empty' <<<"$pr")"
+            git switch --detach "$start"
+          done

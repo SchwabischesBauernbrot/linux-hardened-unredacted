@@ -68,7 +68,20 @@ Raspberry Pi publishes no signed tags or tarballs, so a `rpi-git` line pins a co
 4. computes the **downstream delta** (`tools/source-delta.py`: every path where the two trees differ, A/M/D with the downstream file's mode and sha256) and refuses to continue unless it is byte-identical to the committed `configs/sources/<set>/<X.Y>.delta`;
 5. archives the tree for `apply-patches.sh`, which extracts it instead of the tarball and applies anthraxx's patch as for amd64 (forward-port mode when the tag says so).
 
-The manifest records the tree (`inputs.source_tree`: url, branch, commit, tree id, version, the delta file and its sha256, and the A/M/D counts). **Bumping the source pin** is a reviewed PR that changes `commit` (and `version`, when Raspberry Pi has merged a new stable release) and regenerates the `.delta` (a failing build prints how, and leaves the computed one in `$WORKDIR/source-delta.txt`). The delta's diff in that PR is the review: it shows every kernel.org file Raspberry Pi starts or stops touching. `cve-watch.yml`'s `watch-rpi` job files an issue when Raspberry Pi's branch has a newer version than the pin, or Raspberry Pi moves its default branch to another series (`tools/rpi-line-watch.sh`).
+The manifest records the tree (`inputs.source_tree`: url, branch, commit, tree id, version, the delta file and its sha256, and the A/M/D counts). **Bumping the source pin** is a reviewed PR that changes `commit` (and `version`, when Raspberry Pi has merged a new stable release) and regenerates the `.delta`. The delta's diff in that PR is the review: it shows every kernel.org file Raspberry Pi starts or stops touching.
+
+`source-bump.yml` opens that PR, every three hours when Raspberry Pi's branch declares a newer version than the pin, from branch `automated/source-bump-<commit12>`. It runs `tools/bump-source.sh <flavor>`, which you can also run by hand (`--commit <sha>` to pick a commit; the pin's own commit re-derives the committed `.delta` and fails if it does not match). The helper runs `build/fetch-sources.sh`'s checks through the same functions (`build/lib-sources.sh`): it fetches exactly the commit, requires its Makefile to declare the version with an empty EXTRAVERSION, requires a `GOODSIG` from a pinned key on the kernel.org tarball, and runs `tools/source-delta.py` with the build's labels. It also writes the PR description (`tools/source-bump-review.py`), a reading aid for the delta diff:
+
+- paths added to or dropped from the delta;
+- for each changed hash, whether Raspberry Pi's own change to the file changed, or only kernel.org's file moved under the same change (it compares `diff(kernel.org old, Raspberry Pi old)` with `diff(kernel.org new, Raspberry Pi new)`);
+- every Raspberry Pi-side change in a security-sensitive path (`security/`, `mm/`, `kernel/`, `arch/*/kernel/`, `crypto/`, `drivers/iommu/`, the LSM and credential headers in `include/linux/`, `net/core`, `net/ipv4`, `net/ipv6`), with its diff;
+- delta paths kernel.org changed whose Raspberry Pi file did not: a stable change the tree may not carry;
+- a dry run of the hardened patch the tag will use, after verifying its signature. That is anthraxx's genuine patch at default fuzz once he has tagged the version, otherwise a forward-port of his newest older tag at `-F0` with the Makefile EXTRAVERSION hunk dropped, as `build/apply-patches.sh` does;
+- the tag command (`tools/hardened-tag.sh` picks the tag, with a `.P` when that build exists already).
+
+The workflow never merges or tags. When anthraxx tags the version after the PR opened, it re-runs the helper on the PR's commit and rewrites the description, so the tag advice and dry run follow (`build-kernel.yml` refuses a forward-port of a version he has tagged). It closes the PR when Raspberry Pi moves to a newer version (and opens one for that) or the pin catches up another way. It leaves a branch alone that has no open PR, so closing the PR rejects that commit; delete the branch to re-propose it. Merge, then tag from an up-to-date `main` ([pull before you tag](#routine-kernel-version-bump-no-seed-bump)).
+
+`cve-watch.yml`'s `watch-rpi` job files an issue when Raspberry Pi's branch has a newer version than the pin, or Raspberry Pi moves its default branch to another series (`tools/rpi-line-watch.sh`). Its tag advice is for Raspberry Pi's version, and it rewrites itself when anthraxx tags.
 
 ### Distro seeds (`apt-deb`)
 
@@ -271,6 +284,9 @@ Editing `CONFIG_LSM` to activate LoadPin also trips the drift guard's value comp
 | `tools/bump-seed.sh` | Operator helper to update the pin; drops a bridge's marker when it ends one. |
 | `tools/advance-line.sh` | Stands up a new stable line; `--bridge` does so on the previous line's seed. |
 | `tools/newest-signed-ref.sh` | Resolves an anthraxx ref to the newest commit signed by the pinned key (skips other maintainers' rebuilds). |
+| `tools/bump-source.sh` | Moves an `rpi-git` source pin to Raspberry Pi's tip, regenerates its `.delta`, writes the PR's review summary (`tools/source-bump-review.py`); `source-bump.yml` runs it. |
+| `build/lib-sources.sh` | Fetch-and-verify functions `fetch-sources.sh`, `apply-patches.sh` and `bump-source.sh` share. |
+| `tools/hardened-tag.sh` | The tag that builds a kernel version: genuine, or a forward-port of anthraxx's newest older tag. |
 | `tools/reconcile-vs-anthraxx.sh` | Operator-run drift report vs anthraxx HEAD. |
 | `tools/build-manifest.py` | Records the seed pin in `releases/<tag>/manifest.json` as `upstream_seed`. |
 | `tools/repro-check.sh` | Reads the historical pin from the manifest for independent rebuild. |

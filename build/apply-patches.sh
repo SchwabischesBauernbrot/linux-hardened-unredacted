@@ -28,6 +28,8 @@ umask 022
 : "${FLAVOR:?FLAVOR required (a configs/flavors/<FLAVOR>.toml)}"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=build/lib-sources.sh
+. "$repo_root/build/lib-sources.sh"
 source_type=$(python3 "$repo_root/tools/flavors.py" get "$FLAVOR" source)
 
 base_version="${HARDENED_BASE_VERSION:-$KERNEL_VERSION}"
@@ -79,27 +81,19 @@ if [[ $base_version != "$KERNEL_VERSION" ]]; then
     #
     # The signed patch bytes on disk are untouched (input-hashes.txt above
     # still verifies them); the filtered copy is a derived file.
+    #
+    # tools/bump-source.sh dry-runs the same filter and fuzz before a source
+    # bump is merged; both use fwd_filter_patch from build/lib-sources.sh.
     patch_file="../${hardened_patch%.patch}.fwd-${KERNEL_VERSION}.patch"
-    grep -q '^diff --git ' "../$hardened_patch" || {
-        echo "forward-port: $hardened_patch is not a git-format patch; cannot isolate its Makefile hunk" >&2
-        exit 4
-    }
     rc=0
-    awk '
-        /^diff --git / { insec = ($3 == "a/Makefile" && $4 == "b/Makefile"); if (insec) found = 1 }
-        insec {
-            if (/^[-+]/ && !/^(---|\+\+\+) / && !/^[-+]EXTRAVERSION[[:space:]]*=/) bad = 1
-            next
-        }
-        { print }
-        END { if (bad) exit 4; if (!found) exit 3 }
-    ' "../$hardened_patch" > "$patch_file" || rc=$?
+    fwd_filter_patch "../$hardened_patch" "$patch_file" || rc=$?
     case $rc in
         0) echo "forward-port: dropped the top-level Makefile EXTRAVERSION hunk (overridden at build time)" ;;
         3) echo "forward-port: patch has no top-level Makefile section; nothing to drop" ;;
         4) echo "forward-port: $hardened_patch changes the top-level Makefile beyond EXTRAVERSION;" >&2
            echo "  that needs a human port, not a mechanical re-apply" >&2
            exit 4 ;;
+        5) exit 4 ;;
         *) echo "forward-port: filtering $hardened_patch failed (awk exit $rc)" >&2; exit 4 ;;
     esac
     fuzz=(-F0)

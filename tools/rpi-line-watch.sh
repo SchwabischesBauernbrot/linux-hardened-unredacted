@@ -27,6 +27,12 @@
 #                   moved its default branch to another series
 #          unknown  could not tell (network); never fails the run
 #
+# The report's first line is a marker with every input of its advice (the
+# versions, Raspberry Pi's default branch, anthraxx's newest tag and the tag
+# to push); cve-watch.yml rewrites the issue when it changes. The tag advice
+# is for Raspberry Pi's version, the one a bump moves the pin to
+# (tools/hardened-tag.sh).
+#
 # The report also says how far Raspberry Pi trails kernel.org and anthraxx
 # trails Raspberry Pi (informational: pi5 builds are usually forward-ports of
 # anthraxx's newest same-series patch; docs/users/cve-policy.md).
@@ -85,6 +91,9 @@ if [[ -z $tags_file ]]; then
     curl -fsSL "https://api.github.com/repos/anthraxx/linux-hardened/tags?per_page=100" \
         | jq -r '.[].name' > "$tags_file" 2>/dev/null || : > "$tags_file"
 fi
+# No tags at all is an API failure, not "anthraxx has none": the tag advice
+# (and the issue's marker line) would flap with it.
+[[ -s $tags_file ]] || unknown "could not list anthraxx's tags"
 esc=${series//./\\.}
 anthraxx=$(grep -E "^v${esc}\.[0-9]+-hardened[1-9][0-9]*$" "$tags_file" | sort -V | tail -n1 || true)
 echo "anthraxx_tag=$anthraxx"
@@ -93,23 +102,33 @@ echo "anthraxx_tag=$anthraxx"
 newer() { [[ $1 != "$2" && $(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1) == "$1" ]]; }
 reasons=()
 if newer "$rpi_version" "$pin_version"; then
-    reasons+=("Raspberry Pi's \`$branch\` is at **$rpi_version**; we pin **$pin_version**. Bump \`$pin_rel\` (and its \`.delta\`) to \`$tip\`, then tag a $flavor build.")
+    reasons+=("Raspberry Pi's \`$branch\` is at **$rpi_version**; we pin **$pin_version**. Review and merge the source bump PR that moves \`$pin_rel\` (and its \`.delta\`) to \`$tip\` (\`source-bump.yml\` opens it; \`tools/bump-source.sh $flavor\` by hand), then tag a $flavor build.")
 fi
 if [[ $default_branch != "$branch" ]]; then
     reasons+=("Raspberry Pi's default branch is now **\`$default_branch\`** (we track \`$branch\`). Raspberry Pi OS moves series with it; the $flavor line can follow once anthraxx keeps a branch for that series (docs/operators/flavors.md, \"Series switches\").")
 fi
 anthraxx_kver=${anthraxx#v}; anthraxx_kver=${anthraxx_kver%%-*}
-if [[ -n $anthraxx ]] && ! newer "$anthraxx_kver" "$pin_version" && [[ $anthraxx_kver != "$pin_version" ]]; then
-    build_note="anthraxx's newest $series tag is \`$anthraxx\`, so a build of $pin_version is a forward-port: \`${tag_prefix}v${pin_version}-fwd-${anthraxx}\`."
-elif [[ -n $anthraxx ]]; then
-    build_note="anthraxx has tagged \`$anthraxx\` (at or past our $pin_version): build the genuine \`${tag_prefix}${anthraxx}\` once the source pin is at ${anthraxx_kver}."
-else
-    build_note="anthraxx has no $series tag in the last 100; no hardened patch to build with."
+# The tag for Raspberry Pi's version, which is what the bump targets (the
+# pin's own version was built already): the genuine one once anthraxx has
+# tagged it, since build-kernel.yml refuses a forward-port then.
+advice=$("$repo_root/tools/hardened-tag.sh" "$rpi_version" "$tags_file" "$tag_prefix")
+advice_get() { sed -n "s/^$1=//p" <<<"$advice"; }
+advice_kind=$(advice_get kind); advice_tag=$(advice_get tag); advice_patch=$(advice_get patch_tag)
+echo "advice_tag=$advice_tag"
+case $advice_kind in
+    genuine) build_note="anthraxx has tagged \`$advice_patch\`, so $rpi_version builds as the genuine \`$advice_tag\`." ;;
+    fwd)     build_note="anthraxx has not tagged $rpi_version (his newest older $series tag is \`$advice_patch\`), so a build of $rpi_version is a forward-port: \`$advice_tag\`." ;;
+    *)       build_note="anthraxx has no $series tag older than or at $rpi_version in the last 100; no hardened patch to build with." ;;
+esac
+if [[ $rpi_version != "$pin_version" ]]; then
+    build_note="$build_note Tag it after merging the source bump PR (\`source-bump.yml\` opens it), from an up-to-date \`main\`."
 fi
 
 if [[ -n $report ]]; then
     {
-        echo "<!-- rpi-line-watch flavor=$flavor series=$series rpi=$rpi_version pin=$pin_version default=$default_branch -->"
+        # cve-watch.yml rewrites the issue only when this line changes, so it
+        # carries everything the advice depends on, anthraxx's tags included.
+        echo "<!-- rpi-line-watch flavor=$flavor series=$series rpi=$rpi_version pin=$pin_version default=$default_branch anthraxx=${anthraxx:-none} tag=${advice_tag:-none} -->"
         echo "| | version | ref |"
         echo "|---|---|---|"
         echo "| our pin (\`$pin_rel\`) | $pin_version | \`$pin_commit\` |"
