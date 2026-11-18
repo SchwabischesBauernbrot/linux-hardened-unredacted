@@ -1,11 +1,11 @@
 name: seed-bump
 on:
   schedule:
-    - cron: '0 4 * * 1'   # weekly, Monday 04:00 UTC
+    - cron: '0 4 * * *'   # daily, 04:00 UTC
   workflow_dispatch:
     inputs:
       ref:
-        description: "anthraxx packaging ref to evaluate (tag/commit; default origin/HEAD = their latest)"
+        description: "anthraxx packaging ref to evaluate (tag/commit; default origin/HEAD = the repo tip). The newest commit at or before it that anthraxx signed is proposed."
         required: false
         default: origin/HEAD
         type: string
@@ -18,7 +18,15 @@ on:
 #     files the issue; a human pushes the tag). This workflow only touches
 #     the seed *config file*, which is exactly the kind of change a PR is
 #     for.
-#   - bump-seed.sh verifies the anthraxx commit's GPG signature against
+#   - It proposes the newest commit SIGNED BY ANTHRAXX, not blindly the
+#     repo's tip. Other Arch maintainers push rebuilds (pkgrel bumps) to the
+#     same packaging repo signed with their own keys, so the tip is often
+#     not his. tools/newest-signed-ref.sh walks back from the ref to the
+#     first commit that verifies against keys/anthraxx.gpg and logs every
+#     newer commit it skipped and why (the log lands in the PR body). The
+#     trust set stays the one pinned key; other maintainers' keys are not
+#     accepted.
+#   - bump-seed.sh then re-verifies that commit's GPG signature against
 #     keys/anthraxx.gpg, so an unsigned or mis-signed seed FAILS the job
 #     rather than opening a PR.
 #   - It proposes only when config.x86_64's sha256 actually changes — a
@@ -75,6 +83,21 @@ jobs:
           stable=$(python3 tools/lines.py stable-series)
           seed_file=$(python3 tools/lines.py seed-path "$stable")
           echo "evaluating anthraxx seed for stable line $stable ($seed_file) at ref: $ref"
+          # The ref's own commit is often a rebuild by another Arch maintainer,
+          # signed with a key we do not trust; bump-seed.sh would (rightly)
+          # refuse it. Resolve to the newest commit at or before the ref that
+          # IS signed by the pinned key. Its log (skipped commits and why)
+          # heads /tmp/bump.log, which the PR body embeds.
+          if ! resolved=$(./tools/newest-signed-ref.sh --pin-file "$seed_file" "$ref" 2>/tmp/resolve.log); then
+            cat /tmp/resolve.log
+            exit 1
+          fi
+          cat /tmp/resolve.log
+          if grep -q '^WARNING: .* skipped' /tmp/resolve.log; then
+            echo "::warning::seed-bump skipped anthraxx-packaging commits not signed by the pinned key; see the log above"
+          fi
+          ref=$resolved
+          cp /tmp/resolve.log /tmp/bump.log
           sha_of() { sed -nE 's/^sha256[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file"; }
           old_sha=$(sha_of)
           # bump-seed.sh clones anthraxx, verifies the target commit's GPG
@@ -82,7 +105,7 @@ jobs:
           # sha256, and rewrites the seed pin in place (logging a hardening-
           # relevant diff). A signature failure exits non-zero here and fails
           # the job (no PR).
-          ./tools/bump-seed.sh --pin-file "$seed_file" "$ref" | tee /tmp/bump.log
+          ./tools/bump-seed.sh --pin-file "$seed_file" "$ref" | tee -a /tmp/bump.log
           new_sha=$(sha_of)
           new_tag=$(sed -nE 's/^tag[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file")
           new_series=$(sed -nE 's/^([0-9]+\.[0-9]+)\..*/\1/p' <<<"$new_tag")
@@ -105,7 +128,8 @@ jobs:
             # refuses unless $ref really is a $new_series tag.
             echo "anthraxx tag $new_tag is series $new_series; stable line is $stable -> advancing the line"
             git checkout -- "$seed_file"
-            ./tools/advance-line.sh "$new_series" "$ref" | tee /tmp/bump.log
+            cp /tmp/resolve.log /tmp/bump.log
+            ./tools/advance-line.sh "$new_series" "$ref" | tee -a /tmp/bump.log
             seed_file="configs/seeds/${new_series}.toml"
             newcommit=$(sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$seed_file")
             {

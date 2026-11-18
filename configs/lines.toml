@@ -20,7 +20,7 @@
 # from the distro that maintains that LTS — see docs/operators/config-architecture.md.
 #
 # `kind` is one of:
-#   stable    exactly one; gets the unversioned umbrella metas and the weekly
+#   stable    exactly one; gets the unversioned umbrella metas and the daily
 #             seed bumps, and is the line new tags are normally cut from.
 #   previous  a line we no longer advance but still retain packages for
 #             (its keep_in_main keeps prune honest); no umbrella metas.
