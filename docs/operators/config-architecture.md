@@ -169,6 +169,14 @@ Run periodically (quarterly, or when `tools/reconcile-vs-anthraxx.sh` flags inte
 tools/bump-seed.sh --pin-file configs/seeds/7.1.toml 7.1.4.hardened1-1   # or a commit hash
 ```
 
+**Pick a commit anthraxx signed.** His packaging repo is shared with the other Arch maintainers, who push rebuilds (pkgrel bumps such as `7.2.15.hardened1-3`) signed with their own keys. `bump-seed.sh` accepts only the pinned key, so on such a commit it fails with `No public key`. That is intended: we do not trust the other maintainers' keys. To find the newest commit that will verify, run:
+
+```
+tools/newest-signed-ref.sh --pin-file configs/seeds/7.2.toml origin/HEAD
+```
+
+It walks first-parent history back from the ref, prints the first commit signed by the pin file's `signer_fpr`, and lists every newer commit it skipped with the signing key and, if the commit touched it, `CHANGES config.x86_64`. It stops at the current pin, so it prints the pinned commit when nothing newer is signed. It fails, without skipping, on a commit with a *bad* signature from the pinned key, because that is what a forged commit looks like. It only selects a commit: `bump-seed.sh` still runs its own strict check on whatever you pass it. A skipped rebuild that changes `config.x86_64` is a config change we do not adopt until anthraxx signs a commit on top of it; usually rebuilds touch only `PKGBUILD`/`.SRCINFO`.
+
 Always pass `--pin-file` for the line you mean. Without it the default target is the `configs/upstream-seed.toml` symlink, i.e. whichever line is *currently* stable — so a copy-pasted example naming an older series' ref silently rewrites the current line's pin to that series' config. `bump-seed.sh` prints a `SERIES BOUNDARY` warning when a bump crosses lines, but it still performs the rewrite.
 
 This:
@@ -194,7 +202,7 @@ tools/reconcile-vs-anthraxx.sh <ref>     # diff vs a specific tag/commit
 
 READ-ONLY. Reports which hardening-relevant symbols anthraxx has changed since the pinned seed. Use to decide whether to bump. (The default ref is `origin/HEAD` — anthraxx's latest — not a literal `HEAD`, which after the tool's detached baseline checkout would resolve back to the pinned commit and always report "no change".)
 
-**Automated:** `.forgejo/workflows/seed-bump.yml` runs this comparison weekly (and on manual dispatch). When anthraxx's `config.x86_64` *content* changes, it runs `tools/bump-seed.sh` (which verifies the commit's GPG signature) and opens a **PR** proposing the bump for review. When anthraxx's tag has moved to a *newer series* than our stable line, it instead runs `tools/advance-line.sh` and the PR is a full stable-line advance (see [Kernel lines](#kernel-lines-single-stable-line-multi-line-capable)). Either way it never merges, and never cuts a kernel tag (those stay human decisions). Requires the `SEED_BUMP_TOKEN` secret (see [runner-setup.md](runner-setup.md)).
+**Automated:** `.forgejo/workflows/seed-bump.yml` runs this comparison weekly (and on manual dispatch). It first resolves the ref (default `origin/HEAD`, the repo tip) with `tools/newest-signed-ref.sh` to the newest commit anthraxx signed, since the tip is often another maintainer's rebuild (see [Bumping the seed pin](#bumping-the-seed-pin)); the skipped commits and why are logged, raised as a job warning, and included at the top of the PR body. When `config.x86_64` *content* at that commit differs from the pin, it runs `tools/bump-seed.sh` (which re-verifies the commit's GPG signature) and opens a **PR** proposing the bump for review. When anthraxx's tag has moved to a *newer series* than our stable line, it instead runs `tools/advance-line.sh` and the PR is a full stable-line advance (see [Kernel lines](#kernel-lines-single-stable-line-multi-line-capable)). Either way it never merges, and never cuts a kernel tag (those stay human decisions). Requires the `SEED_BUMP_TOKEN` secret (see [runner-setup.md](runner-setup.md)).
 
 ### Changing our intent (rare)
 
@@ -262,6 +270,7 @@ Editing `CONFIG_LSM` to activate LoadPin also trips the drift guard's value comp
 | `tools/check-hardening-drift.sh` | Same-flavor, same-line drift guard: enabled hardening symbols and four value symbols. Bridge mode (`DRIFT_BRIDGE_FROM`) for a bridged line's first build. |
 | `tools/bump-seed.sh` | Operator helper to update the pin; drops a bridge's marker when it ends one. |
 | `tools/advance-line.sh` | Stands up a new stable line; `--bridge` does so on the previous line's seed. |
+| `tools/newest-signed-ref.sh` | Resolves an anthraxx ref to the newest commit signed by the pinned key (skips other maintainers' rebuilds). |
 | `tools/reconcile-vs-anthraxx.sh` | Operator-run drift report vs anthraxx HEAD. |
 | `tools/build-manifest.py` | Records the seed pin in `releases/<tag>/manifest.json` as `upstream_seed`. |
 | `tools/repro-check.sh` | Reads the historical pin from the manifest for independent rebuild. |
