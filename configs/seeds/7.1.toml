@@ -23,7 +23,7 @@
 # different UN-pinned hardening defaults, and the drift guard cannot catch the
 # difference until that line has published a release to baseline against. Bump
 # to a same-line config as soon as one ships (tools/bump-seed.sh --pin-file
-# configs/seeds/<X.Y>.toml <ref>, or the weekly seed-bump PR).
+# configs/seeds/<X.Y>.toml <ref>, or the daily seed-bump PR).
 #
 # Pinning model + bump procedure: docs/operators/config-architecture.md.
 

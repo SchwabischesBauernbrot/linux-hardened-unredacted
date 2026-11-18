@@ -13,7 +13,7 @@
 # so the repo's tip is often not an anthraxx-signed commit. tools/bump-seed.sh
 # accepts only commits signed by the pinned fingerprint (signer_fpr in the pin
 # file, keys/anthraxx.gpg) and fails on anything else, which left
-# seed-bump.yml failing every week a rebuild sat on top. This helper walks
+# seed-bump.yml failing on every run while a rebuild sat on top. This helper walks
 # first-parent history back from <ref> to the first commit that verifies
 # against the pinned key, and seed-bump.yml proposes that one.
 #
