@@ -69,7 +69,7 @@ seed         = "configs/seeds/7.1.toml"
 
 [[line]]
 series       = "7.2"
-kind         = "stable"
+kind         = "previous"
 keep_in_main = 3
 seed         = "configs/seeds/7.2.toml"
 
@@ -83,3 +83,9 @@ kind         = "stable"
 keep_in_main = 3
 seed         = "configs/seeds/pi5/6.18.toml"
 source       = "configs/sources/pi5/6.18.toml"
+
+[[line]]
+series       = "7.3"
+kind         = "stable"
+keep_in_main = 3
+seed         = "configs/seeds/7.3.toml"
