@@ -169,13 +169,23 @@ old_series=$(series_of "$old_tag")
 new_series=$(series_of "$new_tag")
 if [[ -n $old_series && -n $new_series && $old_series != "$new_series" ]]; then
     echo "  WARNING -- SERIES BOUNDARY: seed moves $old_series -> $new_series"
-    if [[ -n $pin_series && $new_series == "$pin_series" ]]; then
-        echo "    Line $pin_series now has a SAME-LINE seed; it was previously seeded"
-        echo "    cross-series from $old_series. The header comment almost certainly"
-        echo "    still describes the old fallback arrangement."
+    if [[ -n $pin_series && $new_series == "$pin_series" ]] \
+            && grep -qE '^# cross-series-seed:' "$pin_file"; then
+        echo "    BRIDGE ENDS: line $pin_series was bridged on the $old_series seed"
+        echo "    (tools/advance-line.sh $pin_series --bridge) and now gets anthraxx's own"
+        echo "    $pin_series config. The cross-series marker is dropped below; the generated"
+        echo "    header already describes a same-line pin. The next $pin_series build"
+        echo "    drift-checks against the bridged release(s): un-pinned defaults that"
+        echo "    anthraxx sets differently from what olddefconfig chose show up there."
+    else
+        if [[ -n $pin_series && $new_series == "$pin_series" ]]; then
+            echo "    Line $pin_series now has a SAME-LINE seed; it was previously seeded"
+            echo "    cross-series from $old_series. The header comment almost certainly"
+            echo "    still describes the old fallback arrangement."
+        fi
+        echo "    Re-read the header comment in $rel_pin and update it in the SAME"
+        echo "    commit/PR as this pin -- this script does not touch prose."
     fi
-    echo "    Re-read the header comment in $rel_pin and update it in the SAME"
-    echo "    commit/PR as this pin -- this script does not touch prose."
     echo
 elif [[ -n $pin_series && -n $new_series && $new_series != "$pin_series" ]]; then
     echo "  note: seed series $new_series differs from line $pin_series -- a"
@@ -235,6 +245,32 @@ for expect in "commit:$new_commit" "sha256:$new_sha" "tag:${new_tag:-<commit-onl
     fi
 done
 echo "updated $pin_file"
+
+# End of a bridge (tools/advance-line.sh <X.Y> --bridge): the file carried the
+# cross-series marker while it pinned an older line's config, and now pins a
+# same-series one. Drop the marker block -- the `# cross-series-seed:` line, the
+# comment lines that continue it, and the blank line after -- so the line is no
+# longer treated as bridged (tools/lines.py bridge-from) and validate.yml, which
+# rejects a marker on a same-series pin, passes. This is the one piece of prose
+# this script edits: it is a machine-read flag, not description.
+bridge_ended=""
+if [[ -n $pin_series && $(series_of "$new_tag") == "$pin_series" ]] \
+        && grep -qE '^# cross-series-seed:' "$pin_file"; then
+    tmp_pin=$(mktemp)
+    awk '
+        /^# cross-series-seed:/ { skipping = 1; next }
+        skipping && /^#/        { next }
+        skipping && /^$/        { skipping = 0; next }
+                                { skipping = 0; print }
+    ' "$pin_file" > "$tmp_pin"
+    mv "$tmp_pin" "$pin_file"
+    if grep -qE '^# cross-series-seed:' "$pin_file"; then
+        echo "ERROR: failed to drop the cross-series marker from $pin_file" >&2
+        exit 1
+    fi
+    bridge_ended=1
+fi
+[[ -z $bridge_ended ]] || echo "dropped the cross-series marker: line $pin_series is no longer bridged"
 echo
 echo "Next steps:"
 echo "  git diff $rel_pin"

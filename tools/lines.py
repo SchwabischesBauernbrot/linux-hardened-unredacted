@@ -34,6 +34,16 @@ trailing SET names the line set; without it the query is about amd64's:
     python3 tools/lines.py source-path 6.18 pi5 # source pin (rpi-git sets only)
     python3 tools/lines.py keep 7.0 [SET]       # keep_in_main for a series
     python3 tools/lines.py series-for 7.0.12    # series (X.Y) for a full version
+    python3 tools/lines.py bridge-from 7.3 [SET] # source series of a bridged
+                                                # seed, or nothing (see below)
+
+A BRIDGED line is one stood up before anthraxx packaged a config for it
+(`tools/advance-line.sh <X.Y> --bridge`): its seed file pins the previous
+line's config and carries a column-0 `# cross-series-seed:` marker. The
+source series is read from the pin's own `tag`, never from the marker's
+prose, so the two cannot disagree. build/fetch-seed.sh records it in the
+manifest and build-kernel.yml's drift guard baselines the line's first build
+on that series' newest release instead of skipping.
 
 Parsing uses the stdlib `tomllib` (Python 3.11+; the build runner is 3.13).
 """
@@ -236,6 +246,50 @@ def series_for_version(version: str) -> str:
     return m.group(1)
 
 
+# Column-0 marker a seed file carries while it pins another series' config.
+# validate.yml's seed-pins-well-formed job keys on the same text.
+CROSS_SERIES_MARKER = re.compile(r"^# cross-series-seed:", re.M)
+_TAG_LINE = re.compile(r'^tag[ \t]*=[ \t]*"([^"]*)"', re.M)
+
+
+def bridge_from(series: str, flavor: str = DEFAULT_FLAVOR,
+                root: Path | None = None) -> str | None:
+    """The series a line's seed is bridged from, or None if it is not bridged.
+
+    A line is bridged when its seed file (found by the same convention the
+    build uses, pin_path) carries the cross-series marker AND its pinned tag is
+    from an OLDER series. A marker on a same-series pin is stale -- the bridge
+    has ended -- and is not a bridge; validate.yml rejects it. A marker on a
+    NEWER series' pin is never legitimate and raises. Pins without a `tag`
+    (apt-deb seeds) are never bridged.
+
+    Does not read the registry, so it works for a series that is not (yet)
+    registered and for fixture trees under `root`.
+    """
+    if not _SERIES_RE.match(series):
+        raise ValueError(f"bad series {series!r} (want major.minor)")
+    pin = (root or _REPO_ROOT) / pin_path("seeds", series, flavor)
+    if not pin.is_file():
+        return None
+    text = pin.read_text()
+    if not CROSS_SERIES_MARKER.search(text):
+        return None
+    m = _TAG_LINE.search(text)
+    if not m:
+        return None
+    src = re.match(r"^(\d+\.\d+)\.", m.group(1))
+    if not src or src.group(1) == series:
+        return None
+    key = lambda v: tuple(int(x) for x in v.split("."))
+    if key(src.group(1)) > key(series):
+        raise ValueError(
+            f"{pin_path('seeds', series, flavor)} pins tag {m.group(1)!r}, from a "
+            f"NEWER series than {series}; a bridge only ever borrows an older "
+            f"line's config"
+        )
+    return src.group(1)
+
+
 def _cli(argv: list[str]) -> int:
     if not argv:
         print(__doc__, file=sys.stderr)
@@ -264,6 +318,10 @@ def _cli(argv: list[str]) -> int:
             print(keep)
         elif cmd == "series-for":
             print(series_for_version(rest[0]))
+        elif cmd == "bridge-from":
+            src = bridge_from(rest[0], flavor=rest[1] if len(rest) > 1 else DEFAULT_FLAVOR)
+            if src:
+                print(src)
         else:
             print(f"unknown query: {cmd}", file=sys.stderr)
             return 2

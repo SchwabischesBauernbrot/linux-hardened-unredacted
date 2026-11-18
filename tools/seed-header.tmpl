@@ -24,13 +24,16 @@
 # against the previous line's final.config. Once that release publishes, its
 # final.config becomes the baseline for every later @SERIES@ build.
 #
-# If this line ever has to be seeded CROSS-SERIES (stood up before anthraxx
-# publishes a @SERIES@ config.x86_64), add a marker line to this file reading
-# `# cross-series-seed: <why, and when it can be bumped>` at column 0 so
-# validate.yml's seed-pins-well-formed job accepts the pin, and bump to a
-# same-line config as soon as one ships. A cross-series config sets different
-# UN-pinned hardening defaults and the drift guard cannot see the difference
-# until this line has a published release to baseline against.
+# BRIDGED lines. When anthraxx has not packaged a @SERIES@ config.x86_64 yet,
+# `tools/advance-line.sh @SERIES@ --bridge` stands the line up on the previous
+# line's pin instead and adds a `# cross-series-seed:` marker block just above
+# the values. While that block is there: validate.yml accepts the cross-series
+# pin, the manifest records `cross_series_from`, and the first build drift-
+# checks against the previous line's newest release (listing every hardening
+# symbol @SERIES@ added) instead of skipping. seed-bump.yml moves the pin to his
+# first @SERIES@ config when it ships, and tools/bump-seed.sh then drops the
+# block. Never write the marker by hand on a same-series pin; validate.yml
+# rejects that.
 #
 # Pinning model, bump procedure, line advance: docs/operators/config-architecture.md.
 

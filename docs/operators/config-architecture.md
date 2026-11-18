@@ -98,13 +98,37 @@ One `[[line]]` block per tracked line is the single source of truth: `series`, `
 
 Each line's seed lives in `configs/seeds/<series>.toml`; `build/fetch-seed.sh` selects it from the tag-derived `SERIES`. The stable line's seed is anthraxx's Arch `config.x86_64`, signed-commit + sha256 verified (see [Trust chain](#trust-chain)) — Arch tracks current stable, so it auto-adopts new mainline hardening anthraxx picks up. `tools/bump-seed.sh` and `seed-bump.yml` keep it current.
 
-**If the tag's series has no seed pin, the build hard-fails.** `fetch-seed.sh` refuses to fall back to another line's seed, because doing so silently turns off *both* safety nets at once: the fidelity assertion still passes (the intent fragments are satisfied by either seed) and the hardening-drift guard finds no same-line baseline in `releases/`, so it skips. The result would be one series' kernel built from another series' config, in a green log. Stand the line up properly instead (`tools/advance-line.sh <X.Y> <ref>` does all three edits). For a deliberate one-off cross-series build, set the repo variable **`ALLOW_CROSS_SERIES_SEED=1`**, which downgrades the failure to a warning — unset it again afterwards, or the next genuine mistake passes silently. `cve-watch.yml` checks for the seed before it tells you to tag: when anthraxx tags a series that has no `configs/seeds/<X.Y>.toml` on `main`, the tracking issue says not to tag yet, and it updates itself (with a comment) once the advance-line PR merges.
+**If the tag's series has no seed pin, the build hard-fails.** `fetch-seed.sh` refuses to fall back to another line's seed, because doing so silently turns off *both* safety nets at once: the fidelity assertion still passes (the intent fragments are satisfied by either seed) and the hardening-drift guard finds no same-line baseline in `releases/`, so it skips. The result would be one series' kernel built from another series' config, in a green log. Stand the line up properly instead (`tools/advance-line.sh <X.Y> <ref>` does all three edits), or, when anthraxx has not packaged the series yet, [bridge it](#bridging-a-new-series) (`tools/advance-line.sh <X.Y> --bridge`). For a deliberate one-off cross-series build with none of the bridge's checks, the repo variable **`ALLOW_CROSS_SERIES_SEED=1`** downgrades the failure to a warning — unset it again afterwards, or the next genuine mistake passes silently. Prefer the bridge: it is a reviewed PR scoped to one line, recorded in the manifest, and drift-checked. `cve-watch.yml` checks for the seed before it tells you to tag: when anthraxx tags a series that has no `configs/seeds/<X.Y>.toml` on `main`, the tracking issue says not to tag yet and offers both ways forward, and it updates itself (with a comment) once either PR merges.
+
+### Bridging a new series
+
+anthraxx's hardened *patch* for a new series (`v7.3.5-hardened1`) regularly ships days or weeks before his Arch packaging carries a `config.x86_64` for that series. Waiting leaves users on the previous series for that whole time. A **bridge** stands the new line up on the previous line's config, the seed counterpart of a patch forward-port: the patch is the genuine new-series tag, only the seed is borrowed.
+
+```
+git switch main && git pull --ff-only
+tools/advance-line.sh 7.3 --bridge
+git add configs/lines.toml configs/upstream-seed.toml configs/seeds/7.3.toml
+git commit -m "lines: advance stable line 7.2 -> 7.3, bridged on the 7.2 seed"
+```
+
+Open that as a PR and merge it together with the first `v7.3.x` tag, as for any [line advance](#the-registry-configslinestoml). It differs from a normal advance in one file: `configs/seeds/7.3.toml` keeps the 7.2 pin's values unchanged (same signed commit and sha256, re-verified by every build) and carries a column-0 `# cross-series-seed:` marker block above them. `tools/lines.py bridge-from 7.3` reads the bridge back. It takes the source series from the pin's `tag`, not from the marker's prose. The script refuses to bridge from a line that is itself bridged.
+
+While the line is bridged:
+
+- **The manifest says so.** `build/fetch-seed.sh` logs a warning and records `"cross_series_from": "7.2"` in the release's `upstream_seed` block.
+- **The drift guard still runs.** Until 7.3 has a release of its own, `build-kernel.yml` compares the build against the newest 7.2 release, the config the seed came from, in `check-hardening-drift.sh`'s bridge mode. An enabled 7.2 hardening symbol that 7.3 still defines but turned off fails as a `REGRESSION`, as usual. One that 7.3 no longer defines at all (it scans the tree's `Kconfig` files) is a `REMOVED-UPSTREAM` warning, because there is nothing to pin. Check whether it was renamed. Value symbols (ASLR bits, LSM order, KFENCE interval) must not change, as usual.
+- **New symbols are listed for review.** Every hardening symbol 7.3 added (no line at all in the 7.2 baseline) appears as a `NEW-IN-7.3` warning with the value `olddefconfig` gave it. Nobody chose those values; anthraxx's 7.3 config would have. **Read that list before dispatching `publish.yml`**, and pin anything that matters in an intent fragment (a 7.3-only symbol goes in a new `configs/intent.v7_3.config`, like `intent.v7_2.config`) with its `POLICY.md` entry.
+- **The fidelity assertion is unchanged.** If 7.3 renamed a symbol we pin, the pin does not land and the build fails at configure time. That is the signal to add the new name.
+
+Once the first bridged build publishes, later 7.3 builds baseline against it like any other line.
+
+**How a bridge ends.** `seed-bump.yml` keeps a bridged stable line current from both sides. While anthraxx's packaging is still on 7.2, a new 7.2 config is proposed as a *bridge refresh* of `configs/seeds/7.3.toml`, and the marker stays. When his packaging reaches 7.3, the weekly run proposes an ordinary same-line bump. `tools/bump-seed.sh` then drops the marker block (it prints `BRIDGE ENDS`, and the PR body says so). The next 7.3 build drift-checks against the bridged release, so any un-pinned default anthraxx sets differently from what `olddefconfig` chose shows up there for review. If one matters for the release already out, rebuild it as `v7.3.5-hardened1.1`. `validate.yml` rejects a marker left on a same-series pin, and a pin that borrows from a *newer* series.
 
 ### How the mechanisms scope per line
 
 - **Meta-packages** (`build/build-debs.sh`): each line emits a versioned `linux-image-hardened-unredacted-<X.Y>-amd64`; the stable line additionally emits the unversioned umbrella `linux-image-hardened-unredacted-amd64`. Both depend directly on the concrete `linux-image-<kernelrelease>` (`=` version), so the umbrella tracks current stable and follows a 7.1 → 7.2 transition automatically. The umbrella must never depend on the per-line meta: it used to, and after each line advance the kernel autoremoval that apt ≥ 3.0 runs during `full-upgrade` deleted the old kernel but kept the old line's unused meta, so `apt full-upgrade` failed with "AutoRemover broke stuff". The comment above the meta-packages in `build-debs.sh` has the details.
 - **Retention** (`tools/prune.py`): attributes each package to the flavor that built it (its name ends `-hardened-unredacted-[<X.Y>-]<flavor>`; `unredacted-hardened-defaults` is the `defaults_package` flavor's; `linux-libc-dev`, which every build emits, follows the flavors that have its version), then buckets each flavor's versions by `(major, minor)` with that line's own `keep_in_main`; old minors are retained per line until you retire one by setting `keep_in_main = 0` (explicit sunset).
-- **Drift baseline** (`build-kernel.yml` via `tools/flavors.py drift-baseline <flavor> <X.Y>`): scoped to the same flavor and line, so advancing 7.0 → 7.1 doesn't false-fail against a cross-series `final.config`, and a pi5 build will never be compared with an amd64 one. The lookup matches release dirs by the flavor's tag prefix and the release-tag grammar, cross-checks each one's manifest `flavor` (manifests from before flavors are amd64), and takes the newest by version. `check-hardening-drift.sh` independently refuses two configs whose headers name a different architecture or line.
+- **Drift baseline** (`build-kernel.yml` via `tools/flavors.py drift-baseline <flavor> <X.Y>`): scoped to the same flavor and line, so advancing 7.0 → 7.1 doesn't false-fail against a cross-series `final.config`, and a pi5 build will never be compared with an amd64 one. The one cross-line comparison is a [bridged](#bridging-a-new-series) line's first build, against the line its seed came from. The lookup matches release dirs by the flavor's tag prefix and the release-tag grammar, cross-checks each one's manifest `flavor` (manifests from before flavors are amd64), and takes the newest by version. `check-hardening-drift.sh` independently refuses two configs whose headers name a different architecture or line.
 
 ### Adding an LTS line later
 
@@ -235,8 +259,9 @@ Editing `CONFIG_LSM` to activate LoadPin also trips the drift guard's value comp
 | `configs/POLICY.md` | Per-symbol rationale; bidirectional parity with the intent fragments. |
 | `build/fetch-seed.sh` | Network-on step: clone + verify-commit + sha256-check. |
 | `build/configure-kernel.sh` | Compose (seed + the flavor's fragments) + olddefconfig + fidelity assertion + key install. |
-| `tools/check-hardening-drift.sh` | Same-flavor, same-line drift guard: enabled hardening symbols and four value symbols. |
-| `tools/bump-seed.sh` | Operator helper to update the pin. |
+| `tools/check-hardening-drift.sh` | Same-flavor, same-line drift guard: enabled hardening symbols and four value symbols. Bridge mode (`DRIFT_BRIDGE_FROM`) for a bridged line's first build. |
+| `tools/bump-seed.sh` | Operator helper to update the pin; drops a bridge's marker when it ends one. |
+| `tools/advance-line.sh` | Stands up a new stable line; `--bridge` does so on the previous line's seed. |
 | `tools/reconcile-vs-anthraxx.sh` | Operator-run drift report vs anthraxx HEAD. |
 | `tools/build-manifest.py` | Records the seed pin in `releases/<tag>/manifest.json` as `upstream_seed`. |
 | `tools/repro-check.sh` | Reads the historical pin from the manifest for independent rebuild. |

@@ -108,9 +108,12 @@ elif [[ -n "${SERIES:-}" ]]; then
         echo "" >&2
         echo "To stand up the $SERIES line (new seed file, symlink, lines.toml, in one step):" >&2
         echo "  tools/advance-line.sh $SERIES <anthraxx $SERIES packaging ref>" >&2
+        echo "or, before anthraxx has packaged $SERIES, bridge it on the stable line's seed" >&2
+        echo "(reviewed, recorded in the manifest, and drift-checked against that line):" >&2
+        echo "  tools/advance-line.sh $SERIES --bridge" >&2
         echo "" >&2
-        echo "For a deliberate one-off cross-series build, set the repo variable" >&2
-        echo "ALLOW_CROSS_SERIES_SEED=1." >&2
+        echo "For a deliberate one-off cross-series build with none of that, set the" >&2
+        echo "repo variable ALLOW_CROSS_SERIES_SEED=1." >&2
         exit 1
     fi
 elif [[ -n "${SEED_PIN_PATH:-}" ]]; then
@@ -120,6 +123,19 @@ else
 fi
 [[ -f $pin_file ]] || { echo "missing seed pin: $pin_file" >&2; exit 1; }
 echo "seed pin file: $pin_file"
+
+# A BRIDGED line (tools/advance-line.sh <X.Y> --bridge) pins the previous
+# series' config on purpose. Say so in the log and record it in the manifest
+# (`cross_series_from` in upstream_seed), so the release says what it was built
+# from. Only for a pin read from the tree: a repro replaying a historical seed
+# through FETCH_SEED_* overrides is not reading this file's values.
+cross_series_from=""
+if [[ -n "${SERIES:-}" && $pin_file == "$line_pin" && -z "${FETCH_SEED_COMMIT:-}" ]]; then
+    cross_series_from=$(python3 "$repo_root/tools/lines.py" bridge-from "$SERIES" "$line_set")
+    if [[ -n $cross_series_from ]]; then
+        echo "::warning::line $SERIES is BRIDGED: its seed is the $cross_series_from line's config until anthraxx packages $SERIES (tools/advance-line.sh --bridge)"
+    fi
+fi
 
 # Record the verified config hash for the next workflow step (see the comment
 # at the end of the arch-git path below for why), shared by both seed types.
@@ -376,13 +392,18 @@ printf '%s  %s\n' "$seed_sha256" upstream-seed.config > "$WORKDIR/seed-hashes.tx
 
 # Provenance for the manifest. build-manifest.py reads this and folds it
 # in as the top-level `upstream_seed` key.
+# `cross_series_from` only for a bridged line (see the pin resolution above).
+bridge_field=""
+if [[ -n $cross_series_from ]]; then
+    bridge_field=$(printf '\n  "cross_series_from": "%s",' "$cross_series_from")
+fi
 cat > "$WORKDIR/seed-info.json" <<EOF
 {
   "url": "$seed_url",
   "commit": "$seed_commit",
   "config_path": "$seed_config_path",
   "sha256": "$seed_sha256",
-  "signer_fpr": "$seed_signer",
+  "signer_fpr": "$seed_signer",$bridge_field
   "signature_verified": true
 }
 EOF

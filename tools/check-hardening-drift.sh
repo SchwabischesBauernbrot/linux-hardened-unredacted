@@ -49,6 +49,26 @@
 # only for a reviewed, intentional drop or value change (e.g. upstream
 # removed the symbol); once that release publishes, its final.config becomes
 # the new baseline and the next build compares cleanly.
+#
+# BRIDGE MODE (DRIFT_BRIDGE_FROM=<X.Y>). A line stood up with
+# `tools/advance-line.sh <new> --bridge` is seeded from the previous line's
+# config, so until it has a release of its own the right baseline is that
+# line's newest release -- the config the seed actually came from. With
+# DRIFT_BRIDGE_FROM set to the baseline's line, and the candidate on a NEWER
+# line, the cross-line refusal below is lifted and the comparison changes in
+# two ways that only make sense across lines:
+#   - An enabled baseline symbol that the candidate's kernel no longer DEFINES
+#     at all (no `config SYM` in any Kconfig under KCONFIG_SRCTREE) is reported
+#     as REMOVED-UPSTREAM, a warning, not a regression: there is nothing to
+#     pin. A symbol that still exists but is off stays a REGRESSION. Without
+#     a readable KCONFIG_SRCTREE nothing is classed as removed (fail closed).
+#   - Every hardening symbol the candidate carries that the baseline has no
+#     line for at all -- what the new series added -- is listed with the value
+#     olddefconfig gave it, one ::warning:: each. Nobody chose those values:
+#     anthraxx's config for the new series would have. Review them before
+#     publishing and pin what matters in an intent fragment.
+# build-kernel.yml sets both variables only when the line is bridged
+# (tools/lines.py bridge-from) and has no same-line baseline yet.
 
 set -euo pipefail
 umask 022
@@ -64,6 +84,13 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Hardening symbols compared by VALUE (see the header).
 VALUE_SYMS=(ARCH_MMAP_RND_BITS ARCH_MMAP_RND_COMPAT_BITS LSM KFENCE_SAMPLE_INTERVAL)
+
+bridge_from=${DRIFT_BRIDGE_FROM:-}
+if [[ -n $bridge_from && ! $bridge_from =~ ^[0-9]+\.[0-9]+$ ]]; then
+    echo "hardening-drift: DRIFT_BRIDGE_FROM must be major.minor (got '$bridge_from')" >&2
+    exit 2
+fi
+bridge=0
 
 flavor_get() { python3 "$repo_root/tools/flavors.py" get "$flavor" "$1"; }
 kernel_arch=$(flavor_get kernel_arch)
@@ -125,10 +152,46 @@ if [[ ${base_hdr%% *} != "$kernel_arch" || ${cand_hdr%% *} != "$kernel_arch" ]];
     echo "  '${base_hdr%% *}' and the candidate '${cand_hdr%% *}'. Refusing a cross-arch comparison." >&2
     exit 1
 fi
-if [[ ${base_hdr#* } != "${cand_hdr#* }" ]]; then
-    echo "hardening-drift: baseline is line ${base_hdr#* }, candidate is line ${cand_hdr#* }." >&2
-    echo "Refusing a cross-line comparison; the baseline must be the same line's newest release." >&2
-    exit 1
+base_line=${base_hdr#* }
+cand_line=${cand_hdr#* }
+if [[ $base_line != "$cand_line" ]]; then
+    newer=$(printf '%s\n%s\n' "$base_line" "$cand_line" | sort -V | tail -n1)
+    if [[ -n $bridge_from && $base_line == "$bridge_from" && $newer == "$cand_line" ]]; then
+        bridge=1
+        echo "hardening-drift: BRIDGE mode -- line $cand_line is seeded from $base_line's config;"
+        echo "  comparing against the newest $base_line release ($baseline)"
+    else
+        echo "hardening-drift: baseline is line $base_line, candidate is line $cand_line." >&2
+        if [[ -n $bridge_from ]]; then
+            echo "DRIFT_BRIDGE_FROM=$bridge_from permits only a $bridge_from baseline for a newer candidate." >&2
+        fi
+        echo "Refusing a cross-line comparison; the baseline must be the same line's newest release." >&2
+        exit 1
+    fi
+fi
+
+# Bridge mode: the symbols the candidate's kernel defines, so a baseline
+# symbol that no longer exists can be told apart from one that was turned off.
+defined_syms=""
+if (( bridge )); then
+    srctree=${KCONFIG_SRCTREE:-}
+    if [[ -n $srctree && -f $srctree/Kconfig ]]; then
+        defined_syms=$(mktemp)
+        trap 'rm -f "$defined_syms"' EXIT
+        find "$srctree" -name 'Kconfig*' -type f -print0 \
+            | xargs -0 sed -nE 's/^[[:space:]]*(menu)?config[[:space:]]+([A-Za-z0-9_]+).*/CONFIG_\2/p' \
+            | sort -u > "$defined_syms"
+        # A tree with a top-level Kconfig defines thousands; a handful means
+        # the scan broke, and classing symbols as removed off it would hide
+        # regressions.
+        if (( $(wc -l < "$defined_syms") < 1000 )); then
+            echo "hardening-drift: found only $(wc -l < "$defined_syms") Kconfig symbols under $srctree;" >&2
+            echo "refusing to classify anything as removed upstream off that scan." >&2
+            exit 1
+        fi
+    else
+        echo "::warning::hardening-drift: bridge mode without a readable KCONFIG_SRCTREE; a symbol the new series removed will be reported as a REGRESSION"
+    fi
 fi
 
 # Same hardening-prefix heuristic as tools/reconcile-vs-anthraxx.sh and
@@ -182,14 +245,34 @@ if (( baseline_count < MIN_HARDENING_SYMS )); then
 fi
 
 regressed=0
+removed=0
 while IFS= read -r sym; do
     [[ -n $sym ]] || continue
     if ! grep -qE "^${sym}=(y|m)$" "$candidate"; then
         now=$(grep -E "^${sym}=|^# ${sym} is not set$" "$candidate" | head -n1 || true)
+        if [[ -n $defined_syms && -z $now ]] && ! grep -qxF "$sym" "$defined_syms"; then
+            echo "::warning::hardening-drift: REMOVED-UPSTREAM ${sym}: enabled in the $base_line baseline, not defined by the $cand_line kernel at all. Check whether it was renamed and the new name needs a pin."
+            removed=$((removed + 1))
+            continue
+        fi
         echo "  REGRESSION ${sym}: enabled in baseline, candidate has: ${now:-<absent>}" >&2
         regressed=1
     fi
 done <<<"$baseline_syms"
+
+# Bridge mode: the hardening symbols the new series added (no line of any kind
+# in the baseline), with the value they got. Report only; see the header.
+new_syms=0
+if (( bridge )); then
+    while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        sym=$(sed -nE 's/^(CONFIG_[A-Z0-9_]+)=.*/\1/p; s/^# (CONFIG_[A-Z0-9_]+) is not set$/\1/p' <<<"$line")
+        grep -qE "^${sym}=|^# ${sym} is not set$" "$baseline" && continue
+        echo "::warning::hardening-drift: NEW-IN-${cand_line} ${line} (absent from the $base_line baseline; olddefconfig chose this)"
+        new_syms=$((new_syms + 1))
+    done < <(grep -E '^CONFIG_[A-Z0-9_]+=|^# CONFIG_[A-Z0-9_]+ is not set$' "$candidate" \
+                 | grep -E "$(sed -E 's/^\^\(CONFIG_\)\?/^(# )?CONFIG_/' <<<"$HARDEN")" || true)
+fi
 
 # Value symbols: the whole value must be unchanged. "<absent>" covers both a
 # missing line and "# CONFIG_X is not set", so appearing or disappearing is a
@@ -259,4 +342,8 @@ fi
 # Report the counts, not just "OK". A bare OK is indistinguishable from a
 # vacuous pass in a 40-minute build log; a count makes "checked almost nothing"
 # visible even if some future change slips past the floors above.
-echo "hardening-drift: OK (flavor $flavor, line ${cand_hdr#* }: $baseline_count inherited hardening symbols checked, none regressed; ${#VALUE_SYMS[@]} value symbols compared, $values_present set, none changed)"
+if (( bridge )); then
+    echo "hardening-drift: OK (BRIDGE, flavor $flavor, line $cand_line against $base_line: $baseline_count inherited hardening symbols checked, none regressed, $removed removed upstream; ${#VALUE_SYMS[@]} value symbols compared, $values_present set, none changed; $new_syms new hardening symbols listed above for review)"
+else
+    echo "hardening-drift: OK (flavor $flavor, line $cand_line: $baseline_count inherited hardening symbols checked, none regressed; ${#VALUE_SYMS[@]} value symbols compared, $values_present set, none changed)"
+fi
