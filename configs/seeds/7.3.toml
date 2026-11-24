@@ -37,13 +37,9 @@
 #
 # Pinning model, bump procedure, line advance: docs/operators/config-architecture.md.
 
-# cross-series-seed: bridge -- anthraxx has not packaged a 7.3 config.x86_64
-# yet, so this pins the 7.2 line's (tools/advance-line.sh 7.3 --bridge).
-# seed-bump.yml replaces it with his first 7.3 config and drops these lines.
-
 url         = "https://gitlab.archlinux.org/archlinux/packaging/packages/linux-hardened.git"
-commit      = "feb517ba59735e128c484b2d2d5c500b737d1938"
-tag         = "7.2.10.hardened1-1"
+commit      = "0225f22c7b363a950390050e7d6df4532e50cc89"
+tag         = "7.3.6.hardened1-1"
 config_path = "config.x86_64"
-sha256      = "6b90537fc69367ecdafd06234a8e73dcb21490297a8a05cf562baf35e8374399"
+sha256      = "70e48ff95a81515e0cd0c224db540f2c4699f2366e974d3d76f3bb97bd7dc138"
 signer_fpr  = "E240B57E2C4630BA768E2F26FC1B547C8D8172C8"
