@@ -2,7 +2,10 @@
 # Print the newest release we have actually PUBLISHED, as a tag name
 # (e.g. v7.1.4-hardened1), or nothing if none exists.
 #
-# Usage: newest-published-release.sh [--releases-dir DIR] [--series X.Y]
+# Usage: newest-published-release.sh [--releases-dir DIR] [--series X.Y] [--prefix P]
+#
+#   --prefix  a flavor's tag prefix ("pi5-"); without it, only amd64's
+#             unprefixed v* releases count
 #
 # Why this exists, rather than reading `git tag`:
 #
@@ -28,12 +31,14 @@ set -euo pipefail
 
 releases_dir=""
 series=""
+prefix=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --releases-dir) releases_dir="$2"; shift 2 ;;
         --series) series="$2"; shift 2 ;;
+        --prefix) prefix="$2"; shift 2 ;;
         -h|--help)
-            echo "usage: newest-published-release.sh [--releases-dir DIR] [--series X.Y]"
+            echo "usage: newest-published-release.sh [--releases-dir DIR] [--series X.Y] [--prefix P]"
             exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -59,13 +64,15 @@ fi
 # forward-port correctly: v7.2.13-fwd-... sorts above v7.2.12-* and below the
 # genuine v7.2.13-hardened1 ("-fwd" < "-hardened"), as the .deb versions do.
 fwd='(-fwd-v[0-9]+\.[0-9]+\.[0-9]+)?'
-pattern="^v[0-9]+\.[0-9]+\.[0-9]+${fwd}-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$"
+[[ -z $prefix || $prefix =~ ^[a-z0-9]+-$ ]] || {
+    echo "--prefix must look like pi5-, got: $prefix" >&2; exit 2; }
+pattern="^${prefix}v[0-9]+\.[0-9]+\.[0-9]+${fwd}-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$"
 if [[ -n $series ]]; then
     [[ $series =~ ^[0-9]+\.[0-9]+$ ]] || {
         echo "--series must be X.Y, got: $series" >&2; exit 2; }
     # Escape the dot so --series 7.0 does not also match v7.10.*.
     esc=${series//./\\.}
-    pattern="^v${esc}\.[0-9]+${fwd}-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$"
+    pattern="^${prefix}v${esc}\.[0-9]+${fwd}-hardened[1-9][0-9]*(\.[1-9][0-9]*)?$"
 fi
 
 newest=""
