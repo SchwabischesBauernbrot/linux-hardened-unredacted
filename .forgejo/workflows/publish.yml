@@ -259,7 +259,25 @@ jobs:
           fi
           git commit -m "publish: ${VER}"
           remote="https://oauth2:${MANIFEST_COMMIT_TOKEN}@git.unredacted.org/${GITHUB_REPOSITORY}.git"
-          git push "$remote" "HEAD:main"
+          # main moves while a publish runs (a PR merged mid-run made the
+          # v7.3.6-hardened1 push fail "fetch first" AFTER every upload).
+          # This commit only adds releases/<tag>/, so it rebases onto any
+          # newer main without conflict: fetch, rebase, push again.
+          pushed=0
+          for attempt in 1 2 3 4 5; do
+            if git push "$remote" "HEAD:main"; then
+              pushed=1
+              break
+            fi
+            echo "push to main rejected (attempt $attempt); rebasing onto the new main"
+            git fetch "$remote" main
+            git rebase FETCH_HEAD
+            sleep $((attempt * 2))
+          done
+          if (( pushed == 0 )); then
+            echo "::error::could not push the publish commit to main after 5 attempts. The packages ARE uploaded; dispatch publish.yml again (it skips byte-identical packages)." >&2
+            exit 1
+          fi
 
       - name: publish the release (un-draft)
         # build-kernel.yml creates the Forgejo release as a DRAFT by design --

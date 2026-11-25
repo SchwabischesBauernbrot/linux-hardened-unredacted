@@ -6,7 +6,9 @@ Reads credentials from environment:
     FASTLY_SERVICE_ID, FASTLY_PURGE_TOKEN  required for cache purge
 
 Per spec §7.2 step 3, a 409 from Forgejo is a versioning bug. Do NOT
-retry — bump REVISION in build-debs.sh and rebuild.
+retry — bump REVISION in build-debs.sh and rebuild. The one exception is
+a 409 for a byte-identical file (a re-run of a publish that got partway):
+see upload_deb.
 
 Per spec §6.1, this script never holds source-fetch credentials. The
 caller is responsible for restricting its environment.
@@ -96,6 +98,47 @@ def _stream_put(
         conn.close()
 
 
+def registry_sha256(
+    owner: str, distribution: str, component: str, filename: str,
+    user: str, token: str, timeout: float = 60,
+) -> str | None:
+    """SHA256 the registry's Packages index lists for pool/<dist>/<comp>/<filename>.
+
+    Reads dists/<dist>/<comp>/binary-<arch>/Packages, where <arch> is the
+    filename's last `_` field (`all` included). The index is per distribution
+    and component, so a match means exactly this coordinate holds the file.
+    Returns None when the index has no such entry or cannot be read; callers
+    treat that as "not known to be identical" and fail closed.
+    """
+    stem = filename[:-4] if filename.endswith(".deb") else filename
+    arch = stem.rsplit("_", 1)[-1]
+    url = (
+        f"{FORGEJO_BASE}/api/packages/{quote(owner)}/debian/dists/"
+        f"{quote(distribution)}/{quote(component)}/binary-{quote(arch)}/Packages"
+    )
+    headers = {}
+    if user and token:
+        auth = base64.b64encode(f"{user}:{token}".encode()).decode()
+        headers["Authorization"] = f"Basic {auth}"
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(url, headers=headers), timeout=timeout,
+        ) as resp:
+            index = resp.read().decode(errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    want = f"pool/{distribution}/{component}/{filename}"
+    for stanza in index.split("\n\n"):
+        fields = {}
+        for line in stanza.splitlines():
+            key, sep, value = line.partition(":")
+            if sep and not line[:1].isspace():
+                fields[key] = value.strip()
+        if fields.get("Filename") == want:
+            return fields.get("SHA256")
+    return None
+
+
 def upload_deb(
     path: Path,
     owner: str,
@@ -115,6 +158,13 @@ def upload_deb(
     not retry; bump REVISION in build-debs.sh and rebuild) — UNLESS
     conflict_ok is set, which prune.py uses for the archive-side upload so
     a resumed rotation reads "already there" as success rather than aborting.
+
+    A 409 for a file the registry already holds BYTE-IDENTICAL (same SHA256
+    in this distribution/component's Packages index) is a resumed publish,
+    not a versioning bug: a run that uploaded everything and then failed
+    later (e.g. the manifest push lost a race with a merge to main) must be
+    re-runnable. That record keeps status 409 and gets "already_published":
+    true. A 409 with a different or unknown SHA256 still aborts.
 
     Transient failures (network errors, HTTP 5xx) are retried with
     exponential backoff up to max_retries. 4xx (including 409) is never
@@ -166,8 +216,17 @@ def upload_deb(
             if conflict_ok:
                 record["status"] = 409
                 return record
+            existing = registry_sha256(
+                owner, distribution, component, path.name, user, token,
+            )
+            if existing == digest:
+                record["status"] = 409
+                record["already_published"] = True
+                return record
             raise SystemExit(
-                f"CONFLICT: {path.name} already exists at {url}.\n"
+                f"CONFLICT: {path.name} already exists at {url}, and the "
+                f"registry's copy is not this file (registry sha256: "
+                f"{existing or 'unknown'}, ours: {digest}).\n"
                 "Per spec §7.2 step 3, this is a versioning bug, not a "
                 "retry condition. Bump REVISION in build-debs.sh and "
                 "rebuild."
@@ -349,7 +408,9 @@ def main(argv: list[str]) -> int:
             user, token, args.dry_run, timeout=args.timeout,
         )
         plan["uploads"].append(record)
-        if not args.dry_run:
+        if record.get("already_published"):
+            print(f"already published, identical: {deb.name} ({record['sha256'][:12]})")
+        elif not args.dry_run:
             print(f"uploaded {deb.name} ({record['sha256'][:12]})")
 
     plan["purge"] = purge_fastly(
